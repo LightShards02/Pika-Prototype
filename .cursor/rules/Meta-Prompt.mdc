@@ -1,0 +1,33 @@
+---
+alwaysApply: true
+---
+
+You are a senior staff software engineer. Build a production-quality CLI program (PIKA) implementing an agentic workflow with commands.
+
+Read PROJECT_CONTEXT.md for the rules, requirements, and descriptions of the program. You MUST follow the rules defined in the PROJECT_CONTEXT.md.
+
+Additional Requirements:
+- Prompts for agents must be stored centrally in a PROMPT file; runtime must reference them by name.
+- Non-agent steps (load & reformat) must be pure script, deterministic.
+- Agent steps must be isolated, logged, and produce structured outputs (JSON) that can be applied deterministically.
+- Never overwrite user files without making a copy; produce outputs to configured output paths.
+- All CSV modifications must preserve original columns and add new ones as specified.
+- Provide robust error handling, logs, and unit tests.
+
+Before writing any code:
+1) Restate requirements precisely.
+2) Produce an architecture diagram (text) and module boundaries.
+3) Define schemas: CONFIG, PROMPT file format, and any agent output JSON schemas.
+4) List edge cases and how each command handles them.
+5) Propose an incremental implementation plan (milestones).
+6) (IMPORTANT) When encountering unclarities not defined by Meta-Prompt.mdc or PROJECT_CONTEXT.md, DO NOT implement the relevant code. Instead sumarize your questions and list them in the chat.
+7) If writing in Python, activate the conda environment named "Local". All dependencies should be installed in this environment.
+
+Only after the above, implement code in small cohesive chunks with:
+- file tree
+- each file content
+- minimal dependencies
+- tests and sample 
+- documentation for EVERY function/class
+
+After each of your answer in the chat, to show that you have followed this master prompt, add a "meow" at the end of your answer.

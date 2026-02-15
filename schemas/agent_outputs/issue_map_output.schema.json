@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "IssueMapOutput",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "mappings",
+    "manual_resolution_items",
+    "run_summary",
+    "created_at"
+  ],
+  "properties": {
+    "mappings": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[A-Za-z]{2}[0-9]+$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "spec_ids",
+          "notes"
+        ],
+        "properties": {
+          "spec_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z][0-9]+$"
+            }
+          },
+          "notes": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "manual_resolution_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "command",
+          "entity_type",
+          "entity_id",
+          "reason",
+          "details",
+          "created_at"
+        ],
+        "properties": {
+          "command": {
+            "type": "string",
+            "const": "agent issue"
+          },
+          "entity_type": {
+            "type": "string",
+            "enum": [
+              "issue",
+              "mapping"
+            ]
+          },
+          "entity_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "details": {
+            "type": "string",
+            "minLength": 1
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "run_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "command",
+        "status",
+        "summary",
+        "blocking_items",
+        "storage_file"
+      ],
+      "properties": {
+        "command": {
+          "type": "string",
+          "const": "agent issue"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "success",
+            "partial",
+            "blocked",
+            "failed"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "blocking_items": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "storage_file": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 1
+    }
+  }
+}

@@ -1,0 +1,213 @@
+version: 1
+
+command_surface:
+  - agent load
+  - agent index
+  - agent implement
+  - agent issue
+
+prompts:
+  index_spec_to_code:
+    description: Map each design spec row to relevant code references.
+    output_schema_file: schemas/agent_outputs/index_output.schema.json
+    template_variables:
+      - name: output_schema_file
+        required: true
+        description: Schema file path that this prompt output must validate against.
+      - name: project_context
+        required: true
+        description: High-level project context and constraints.
+      - name: design_spec_rows_csv
+        required: true
+        description: Design spec rows as CSV text.
+      - name: design_spec_column_definitions
+        required: true
+        description: Column meanings/types/requirements for design spec table.
+      - name: codebase_snapshot
+        required: true
+        description: Relevant files and symbols for indexing.
+      - name: manual_resolution_file
+        required: true
+        description: Central CSV file path for all manual resolution items.
+      - name: run_summary_file
+        required: true
+        description: Central JSONL file path for run summaries.
+    system: |
+      You are a strict software indexing agent.
+      Return JSON only.
+      The JSON must validate against {{output_schema_file}}.
+      Do not include markdown fences.
+      Interpret CSV columns using design_spec_column_definitions.
+      Use function/class symbol names for code references, not line numbers.
+      Put any manual-only items into manual_resolution_items.
+    user: |
+      Context:
+      {{project_context}}
+
+      Design Specs (CSV):
+      {{design_spec_rows_csv}}
+
+      Design Spec Column Definitions:
+      {{design_spec_column_definitions}}
+
+      Codebase Snapshot:
+      {{codebase_snapshot}}
+
+      Manual Resolution File:
+      {{manual_resolution_file}}
+
+      Run Summary File:
+      {{run_summary_file}}
+
+  implement_from_specs:
+    description: Produce deterministic diffs and list ambiguities before execution.
+    output_schema_file: schemas/agent_outputs/implement_output.schema.json
+    template_variables:
+      - name: output_schema_file
+        required: true
+        description: Schema file path that this prompt output must validate against.
+      - name: project_context
+        required: true
+        description: Project rules and coding constraints.
+      - name: selected_specs_csv
+        required: true
+        description: Selected specs as CSV text.
+      - name: design_spec_column_definitions
+        required: true
+        description: Column meanings/types/requirements for design spec table.
+      - name: indexed_mappings_csv
+        required: true
+        description: Current mapping columns from design spec CSV.
+      - name: manual_resolution_file
+        required: true
+        description: Central CSV file path for all manual resolution items.
+      - name: run_summary_file
+        required: true
+        description: Central JSONL file path for run summaries.
+    system: |
+      You are a strict implementation planning agent.
+      Return JSON only.
+      The JSON must validate against {{output_schema_file}}.
+      All diffs must be deterministic and minimally scoped.
+      Interpret CSV columns using design_spec_column_definitions.
+      If any unclarity is blocking, include a run_summary entry and manual_resolution_items.
+    user: |
+      Context:
+      {{project_context}}
+
+      Selected Specs (CSV):
+      {{selected_specs_csv}}
+
+      Design Spec Column Definitions:
+      {{design_spec_column_definitions}}
+
+      Index Mappings (CSV):
+      {{indexed_mappings_csv}}
+
+      Manual Resolution File:
+      {{manual_resolution_file}}
+
+      Run Summary File:
+      {{run_summary_file}}
+
+  map_issues_to_specs:
+    description: Link issues to affected design specs.
+    output_schema_file: schemas/agent_outputs/issue_map_output.schema.json
+    template_variables:
+      - name: output_schema_file
+        required: true
+        description: Schema file path that this prompt output must validate against.
+      - name: issue_rows_csv
+        required: true
+        description: Issue tracking rows as CSV text.
+      - name: issue_tracking_column_definitions
+        required: true
+        description: Column meanings/types/requirements for issue tracking table.
+      - name: design_spec_rows_csv
+        required: true
+        description: Design spec rows as CSV text.
+      - name: design_spec_column_definitions
+        required: true
+        description: Column meanings/types/requirements for design spec table.
+      - name: manual_resolution_file
+        required: true
+        description: Central CSV file path for all manual resolution items.
+      - name: run_summary_file
+        required: true
+        description: Central JSONL file path for run summaries.
+    system: |
+      You are a strict issue mapping agent.
+      Return JSON only.
+      The JSON must validate against {{output_schema_file}}.
+      Mapping output must be suitable for the mapped_spec_ids CSV column.
+      Interpret CSV columns using provided column definitions.
+    user: |
+      Issues (CSV):
+      {{issue_rows_csv}}
+
+      Issue Tracking Column Definitions:
+      {{issue_tracking_column_definitions}}
+
+      Design Specs (CSV):
+      {{design_spec_rows_csv}}
+
+      Design Spec Column Definitions:
+      {{design_spec_column_definitions}}
+
+      Manual Resolution File:
+      {{manual_resolution_file}}
+
+      Run Summary File:
+      {{run_summary_file}}
+
+  resolve_issues_with_diffs:
+    description: Propose code diffs, optional issue notes, and required follow_up_uncertainties for selected issues.
+    output_schema_file: schemas/agent_outputs/issue_resolve_output.schema.json
+    template_variables:
+      - name: output_schema_file
+        required: true
+        description: Schema file path that this prompt output must validate against.
+      - name: selected_issues_csv
+        required: true
+        description: Selected issues as CSV text.
+      - name: issue_tracking_csv
+        required: true
+        description: Full issue tracking CSV including mapped_spec_ids.
+      - name: issue_tracking_column_definitions
+        required: true
+        description: Column meanings/types/requirements for issue tracking table.
+      - name: codebase_snapshot
+        required: true
+        description: Current code context for deterministic patch proposals.
+      - name: manual_resolution_file
+        required: true
+        description: Central CSV file path for all manual resolution items.
+      - name: run_summary_file
+        required: true
+        description: Central JSONL file path for run summaries.
+    system: |
+      You are a strict issue resolution agent.
+      Return JSON only.
+      The JSON must validate against {{output_schema_file}}.
+      Include only actionable diffs.
+      follow_up_uncertainties are mandatory for every issue in output.
+      If there are no uncertainties, explicitly say "No follow_up_uncertainties".
+      Interpret issue tracking CSV strictly via issue_tracking_column_definitions.
+    user: |
+      Selected Issues (CSV):
+      {{selected_issues_csv}}
+
+      Issue Tracking (CSV):
+      {{issue_tracking_csv}}
+
+      Issue Tracking Column Definitions:
+      {{issue_tracking_column_definitions}}
+
+      Codebase Snapshot:
+      {{codebase_snapshot}}
+
+      Manual Resolution File:
+      {{manual_resolution_file}}
+
+      Run Summary File:
+      {{run_summary_file}}

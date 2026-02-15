@@ -1,0 +1,91 @@
+version: 1
+
+project:
+  name: pika
+  root_dir: .
+
+inputs:
+  design_spec_path: data/design_spec.csv
+  issue_tracking_path: data/issue_tracking.csv
+  allowed_extensions:
+    - .csv
+    - .xlsx
+
+outputs:
+  root_dir:
+    path: out
+    no_overwrite: false
+  backups_dir:
+    path: out/backups
+    no_overwrite: false
+  normalized_dir:
+    path: out/normalized
+    no_overwrite: false
+  agent_runs_dir:
+    path: out/agent_runs
+    no_overwrite: false
+  run_summary_file:
+    path: out/agent_runs/run_summary.jsonl
+    no_overwrite: false
+  manual_resolution_file:
+    path: out/agent_runs/manual_resolution.csv
+    no_overwrite: false
+  logs_dir:
+    path: out/logs
+    no_overwrite: false
+
+prompts:
+  prompt_file: prompts/PROMPT.yaml
+
+schemas:
+  index_output: schemas/agent_outputs/index_output.schema.json
+  implement_output: schemas/agent_outputs/implement_output.schema.json
+  issue_map_output: schemas/agent_outputs/issue_map_output.schema.json
+  issue_resolve_output: schemas/agent_outputs/issue_resolve_output.schema.json
+
+commands:
+  load:
+    enabled: true
+    deterministic: true
+    copy_before_write: true
+  index:
+    enabled: true
+    prompt_name: index_spec_to_code
+  implement:
+    enabled: true
+    prompt_name: implement_from_specs
+  issue:
+    enabled: true
+    map_prompt_name: map_issues_to_specs
+    resolve_prompt_name: resolve_issues_with_diffs
+
+id_generation:
+  spec:
+    pattern: '^[A-Za-z][0-9]+$'
+  issue:
+    pattern: '^[A-Za-z]{2}[0-9]+$'
+  collision_scope: per_type_numeric_suffix
+  registry_path: out/state/id_registry.json
+
+csv_contracts:
+  design_spec:
+    add_if_missing:
+      - spec_id
+      - mapped_code_symbols
+      - index_status
+      - index_notes
+      - last_indexed_at
+  issue_tracking:
+    add_if_missing:
+      - issue_id
+      - author
+      - mapped_spec_ids
+      - issue_notes
+      - follow_up_uncertainties
+      - last_resolved_at
+
+logging:
+  level: INFO
+  verbose_level: DEBUG
+  json: true
+  log_dir: out/logs

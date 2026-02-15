@@ -1,0 +1,283 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "PikaConfig",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "version",
+      "project",
+      "inputs",
+      "outputs",
+      "prompts",
+      "schemas",
+      "commands",
+      "id_generation",
+      "csv_contracts",
+      "logging"
+    ],
+    "properties": {
+      "version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "project": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "root_dir"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "root_dir": { "type": "string", "minLength": 1 }
+        }
+      },
+      "inputs": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["design_spec_path", "issue_tracking_path", "allowed_extensions"],
+        "properties": {
+          "design_spec_path": { "type": "string", "minLength": 1 },
+          "issue_tracking_path": { "type": "string", "minLength": 1 },
+          "allowed_extensions": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": [".csv", ".xlsx"]
+            },
+            "allOf": [
+              { "contains": { "const": ".csv" } },
+              { "contains": { "const": ".xlsx" } }
+            ]
+          }
+        }
+      },
+      "outputs": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "root_dir",
+          "backups_dir",
+          "normalized_dir",
+          "agent_runs_dir",
+          "run_summary_file",
+          "manual_resolution_file",
+          "logs_dir"
+        ],
+        "properties": {
+          "root_dir": { "$ref": "#/$defs/output_target" },
+          "backups_dir": { "$ref": "#/$defs/output_target" },
+          "normalized_dir": { "$ref": "#/$defs/output_target" },
+          "agent_runs_dir": { "$ref": "#/$defs/output_target" },
+          "run_summary_file": { "$ref": "#/$defs/output_target" },
+          "manual_resolution_file": { "$ref": "#/$defs/output_target" },
+          "logs_dir": { "$ref": "#/$defs/output_target" }
+        }
+      },
+      "prompts": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["prompt_file"],
+        "properties": {
+          "prompt_file": { "type": "string", "minLength": 1 }
+        }
+      },
+      "schemas": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "index_output",
+          "implement_output",
+          "issue_map_output",
+          "issue_resolve_output"
+        ],
+        "properties": {
+          "index_output": { "type": "string", "minLength": 1 },
+          "implement_output": { "type": "string", "minLength": 1 },
+          "issue_map_output": { "type": "string", "minLength": 1 },
+          "issue_resolve_output": { "type": "string", "minLength": 1 }
+        }
+      },
+      "commands": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["load", "index", "implement", "issue"],
+        "properties": {
+          "load": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["enabled", "deterministic", "copy_before_write"],
+            "properties": {
+              "enabled": { "type": "boolean" },
+              "deterministic": { "type": "boolean", "const": true },
+              "copy_before_write": { "type": "boolean", "const": true }
+            }
+          },
+          "index": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["enabled", "prompt_name"],
+            "properties": {
+              "enabled": { "type": "boolean" },
+              "prompt_name": { "type": "string", "minLength": 1 }
+            }
+          },
+          "implement": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["enabled", "prompt_name"],
+            "properties": {
+              "enabled": { "type": "boolean" },
+              "prompt_name": { "type": "string", "minLength": 1 }
+            }
+          },
+          "issue": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["enabled", "map_prompt_name", "resolve_prompt_name"],
+            "properties": {
+              "enabled": { "type": "boolean" },
+              "map_prompt_name": { "type": "string", "minLength": 1 },
+              "resolve_prompt_name": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      },
+      "id_generation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["spec", "issue", "collision_scope", "registry_path"],
+        "properties": {
+          "spec": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["pattern"],
+            "properties": {
+              "pattern": {
+                "type": "string",
+                "const": "^[A-Za-z][0-9]+$"
+              }
+            }
+          },
+          "issue": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["pattern"],
+            "properties": {
+              "pattern": {
+                "type": "string",
+                "const": "^[A-Za-z]{2}[0-9]+$"
+              }
+            }
+          },
+          "collision_scope": {
+            "type": "string",
+            "enum": ["per_type_numeric_suffix"]
+          },
+          "registry_path": {
+            "type": "string",
+            "minLength": 1,
+            "const": "out/state/id_registry.json"
+          }
+        }
+      },
+      "csv_contracts": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["design_spec", "issue_tracking"],
+        "properties": {
+          "design_spec": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["add_if_missing"],
+            "properties": {
+              "add_if_missing": {
+                "type": "array",
+                "minItems": 5,
+                "maxItems": 5,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "spec_id",
+                    "mapped_code_symbols",
+                    "index_status",
+                    "index_notes",
+                    "last_indexed_at"
+                  ]
+                },
+                "allOf": [
+                  { "contains": { "const": "spec_id" } },
+                  { "contains": { "const": "mapped_code_symbols" } },
+                  { "contains": { "const": "index_status" } },
+                  { "contains": { "const": "index_notes" } },
+                  { "contains": { "const": "last_indexed_at" } }
+                ]
+              }
+            }
+          },
+          "issue_tracking": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["add_if_missing"],
+            "properties": {
+              "add_if_missing": {
+                "type": "array",
+                "minItems": 6,
+                "maxItems": 6,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "issue_id",
+                    "author",
+                    "mapped_spec_ids",
+                    "issue_notes",
+                    "follow_up_uncertainties",
+                    "last_resolved_at"
+                  ]
+                },
+                "allOf": [
+                  { "contains": { "const": "issue_id" } },
+                  { "contains": { "const": "author" } },
+                  { "contains": { "const": "mapped_spec_ids" } },
+                  { "contains": { "const": "issue_notes" } },
+                  { "contains": { "const": "follow_up_uncertainties" } },
+                  { "contains": { "const": "last_resolved_at" } }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "logging": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["level", "verbose_level", "json", "log_dir"],
+        "properties": {
+          "level": {
+            "type": "string",
+            "enum": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+          },
+          "verbose_level": {
+            "type": "string",
+            "enum": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+          },
+          "json": { "type": "boolean" },
+          "log_dir": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "$defs": {
+      "output_target": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "no_overwrite"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "no_overwrite": { "type": "boolean" }
+        }
+      }
+    }
+}
+  

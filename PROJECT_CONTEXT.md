@@ -1,0 +1,276 @@
+## PROJECT_CONTEXT.md
+
+### Purpose
+
+PIKA is a contract-first, schema-driven CLI that centrally orchestrates multiple agents and documents to deliver a software project from requirements → design → implementation → review → issue resolution.
+
+The workflow is multi-agent and document-centric:
+
+- **Agents (black boxes)** perform bounded reasoning and generate **schema-validated output files**.
+- **Documents (white boxes)** are the durable sources of truth and audit trail.
+- **PIKA is the only component that applies changes** to documents and code, by translating agent outputs into deterministic edits.
+
+PIKA’s job is to:
+1) load/normalize documents deterministically,  
+2) invoke the right agent with the right context,  
+3) validate agent outputs against JSON Schemas,  
+4) translate validated outputs into deterministic document/code changes,  
+5) persist logs and run artifacts for auditability.
+
+---
+
+### Critical Rule: Agents Never Directly Modify Documents or Code
+
+**None of the agents make direct changes to any document or artifact shown in the diagram**, including (but not limited to):
+- SRS
+- Raw SADS / Draft Formatted SADS / Formatted SADS
+- Design Issue Tracker
+- Implementation Issue Tracker
+- Code repository
+
+Instead:
+- Each agent **only produces output files** (typically JSON) that **must validate against a strict schema**.
+- The **PIKA program** is solely responsible for:
+  - validating the output against schema,
+  - applying the permitted transformations,
+  - writing updates to the target documents (CSV updates) and/or code (diff application),
+  - recording the applied changes and logs.
+
+This separation is mandatory for safety, determinism, auditability, and reproducibility.
+
+---
+
+### Critical Rule: Manual Resolution Is Blocking and Interactive
+
+Some situations require human decisions. These are emitted as **manual_resolution_items**.
+
+**Blocking rule**
+- If an agent determines that **any** manual_resolution_items are required, the agent must output **only** manual_resolution_items and **must not** output anything else (no diffs, no mappings, no tracker updates, no “partial” results).
+
+**Resolution workflow**
+- PIKA must resolve manual_resolution_items **before** proceeding with any agent output application.
+- PIKA resolves them interactively via CLI:
+  1) Present **one** manual_resolution_item at a time (in a deterministic order).
+  2) Ask the user for the required decision/input.
+  3) Record the user’s answer in a persistent, structured artifact (the “manual resolution log”).
+  4) Continue until **all** manual_resolution_items are resolved.
+
+**After resolution**
+- Once there are no manual_resolution_items (or all have been resolved), PIKA re-invokes the agent(s).
+- The agent(s) then produce normal schema outputs (e.g., mappings, diffs, issue updates) and PIKA proceeds with translation/application.
+
+---
+
+### Workflow Overview
+
+#### Documents
+- **SRS (Only human editable)**: the authoritative requirements.
+- **Raw SADS**: an unnormalized design spec source that may be incomplete or inconsistent.
+- **Draft Formatted SADS**: a normalized, structured draft produced before human sign-off.
+- **Formatted SADS**: the canonical design spec table used for implementation and traceability.
+- **Design Issue Tracker**: tracks design-time issues found during drafting/review.
+- **Code Repository**: source code + tests.
+- **Implementation Issue Tracker**: tracks implementation-time issues, bugs, regressions, and follow-ups.
+
+#### Phases (as defined by the diagram)
+- **Phase 0.a (Optional): Project Planning**
+  - Inputs: SRS (human-only)
+  - Agent: Project Designer
+  - Outputs: planning artifacts and/or contributions to Draft Formatted SADS (proposal-level)
+
+- **Phase 0.b (Optional): Project Planning / Formatting**
+  - Inputs: Raw SADS
+  - Agent/Process: SADS Formatter (deterministic only; no LLM)
+  - Outputs: Draft Formatted SADS (contract-compliant draft)
+
+- **Human Review Gate (Design Approval)**
+  - Inputs: Draft Formatted SADS + Design Issue Tracker
+  - Output: Formatted SADS (approved canonical spec)
+
+- **Phase 1: Project Implementation**
+  - Inputs: Formatted SADS
+  - Agent: Implementer
+  - Outputs: code-change plans/diffs and implementation notes; PIKA applies these to Code and Issue Tracker
+
+- **Phase 2: Design Backtracing**
+  - Inputs: Formatted SADS + Code + Implementation Issue Tracker
+  - Agents: SADS Mapper
+  - Outputs: mapping/backtrace code to design plans; PIKA translates these into table updates (and optional follow-up work)
+
+- **Phase 3: Human Review**
+  - Inputs: Code & Product review findings
+  - Output: new/updated items in Implementation Issue Tracker (human-authored)
+
+- **Phase 4: Issue Resolving**
+  - Inputs: Implementation Issue Tracker
+  - Agent: Resolution Organizer, Implementer
+  - Output: resolution plans and human-resolution artifacts; PIKA translates validated outputs into updates and handoffs
+
+---
+
+### Command Surface (One Command per Agent)
+
+Each agent is invoked by exactly one PIKA command. Each command:
+- produces schema-validated output files (no direct edits),
+- has deterministic translation rules for PIKA to apply updates to documents/code,
+- obeys the blocking manual_resolution_items rule.
+
+#### `plan` — Project Designer (Phase 0.a)
+
+**Goal:** produce a project plan and/or design outline from the SRS.
+
+Inputs:
+- SRS (read-only)
+- constraints from config (repo info, tech stack, non-functional requirements)
+
+Agent outputs (schema-validated files):
+- If manual resolution is required: **manual_resolution_items only**
+- Otherwise:
+  - project plan milestones
+  - proposed SADS outline
+
+PIKA translation:
+- writes planning artifacts to run outputs
+- populate or propose Draft SADS content via explicitly defined translation rules
+
+---
+
+#### `format` — SADS Formatter (Phase 0.b; deterministic only; no LLM)
+
+**Goal:** normalize Raw SADS into Draft Formatted SADS under a strict table contract.
+
+Inputs:
+- Raw SADS (CSV/XLSX)
+- config: sensitive keyword dictionary, required columns, ID rules
+
+Outputs:
+- Draft Formatted SADS (CSV)
+- updated ID registry (if used)
+- logs
+
+PIKA translation:
+- direct deterministic transformation (no agent output schema required)
+
+---
+
+#### `review` — Design Reviewer (Design gate support; Optional)
+
+**Goal:** review Draft Formatted SADS for gaps, contradictions, ambiguities, and testability.
+
+Inputs:
+- SRS (read-only)
+- Draft Formatted SADS
+
+Agent outputs (schema-validated files):
+- If manual resolution is required: **manual_resolution_items only**
+- Otherwise:
+  - Design Issue records to add/update
+  - per-spec review notes (optional)
+
+PIKA translation:
+- updates Design Issue Tracker per contract-defined column rules
+- persists review artifacts as run outputs
+
+---
+
+#### `map` — SADS Mapper (Phase 2)
+
+**Goal:** produce traceability mappings from each spec to code symbols (or “NA” if unmapped).
+
+Inputs:
+- Formatted SADS
+- repo code context / index
+
+Agent outputs (schema-validated files):
+- If manual resolution is required: **manual_resolution_items only**
+- Otherwise:
+  - per-`spec_id` mapping results (`mapped_code_symbols`, statuses, `agent_notes`)
+
+PIKA translation:
+- updates only mapping-related columns in Formatted SADS (contract-defined)
+
+---
+
+#### `implement` — Implementer (Phase 1)
+
+**Goal:** implement Formatted SADS requirements by producing diffs and implementation notes with `spec_id` traceability.
+
+Inputs:
+- Formatted SADS
+- repo context
+
+Agent outputs (schema-validated files):
+- If manual resolution is required: **manual_resolution_items only**
+- Otherwise:
+  - unified diffs to apply
+
+PIKA translation:
+- applies diffs safely to the Code repository
+- updates any explicitly allowed implementation-status columns in SADS/issue tracker (contract-defined)
+
+---
+
+#### `resolve_plan` — Resolution Organizer (Phase 2 and Phase 4)
+
+**Goal:** produce issue→spec mapping, prioritization, and resolution plans (no code diffs).
+
+Inputs:
+- Implementation Issue Tracker
+- Formatted SADS
+- repo context as needed
+
+Agent outputs (schema-validated files):
+- If manual resolution is required: **manual_resolution_items only**
+- Otherwise:
+  - per-issue `mapped_spec_ids`
+  - suspected root cause summary
+  - priority/severity recommendation
+  - next actions and resolution plan
+
+PIKA translation:
+- updates only the Implementation Issue Tracker planning/mapping columns (contract-defined)
+- persists resolution packets/checklists as run outputs
+
+---
+
+### Human-Driven Steps (Not Commands)
+
+#### Human Review Gate (Design Approval)
+Humans approve Draft Formatted SADS → Formatted SADS and resolve/close Design Issue Tracker entries.
+
+#### Phase 3: Human Review of Code & Product
+Humans review the product and code outcomes; findings become new/updated rows in the Implementation Issue Tracker.
+
+#### Phase 4: Human Resolution
+Humans make decisions needed to unblock or finalize issue resolution; those decisions are captured in the Implementation Issue Tracker and/or manual resolution artifacts.
+
+---
+
+### Contracts and Invariants (Hard Rules)
+
+1) **Schema validation is mandatory**
+- All agent output files must validate against their JSON Schemas.
+- `additionalProperties: false` means no invented fields.
+
+2) **Agents never mutate documents directly**
+- Agents only output schema-validated files.
+- PIKA alone translates validated outputs into edits.
+
+3) **Manual resolution is blocking**
+- If manual_resolution_items are present, the agent output must contain **only** manual_resolution_items.
+- PIKA must resolve them interactively (one-by-one) before re-running the agent to obtain normal outputs.
+
+4) **Allowed mutations are contract-defined**
+- CSV: never delete/reorder user columns; append missing contract columns at end in contract order
+- update only columns permitted for the invoking command
+
+5) **SRS is read-only**
+- Any required SRS change must be emitted as a manual_resolution_item for human action.
+
+6) **Code changes are diff-only**
+- Agents output unified diffs; PIKA applies them safely.
+
+7) **Traceability is required**
+- mappings reference `spec_id`
+- diffs and implementation notes reference `spec_id`
+- issue planning references issue IDs and mapped `spec_id`s
