@@ -478,7 +478,7 @@ class ContractValidator:
         return "checked prompt structure, template variables, and placeholders"
 
     def _check_agent_schema_contract(self) -> str:
-        """Check agent schema contract."""
+        """Check agent schema contract. Supports both flat and oneOf schemas."""
         config = self._load_yaml("agent_schema_contract", self.config_path)
         if not isinstance(config, dict):
             return "agent schema checks skipped because config is invalid"
@@ -507,116 +507,105 @@ class ContractValidator:
             if not isinstance(schema, dict):
                 continue
             loaded += 1
+            self._check_agent_schema_invariants(schema, rel_path)
+        return (
+            f"checked top-level created_at, manual_resolution_items, and run_summary "
+            f"invariants in {loaded} schema files"
+        )
 
-            required = self._json_path_get(schema, ["required"])
+    def _check_agent_schema_invariants(self, schema: dict, rel_path: Path) -> None:
+        """Check created_at, manual_resolution_items, run_summary invariants. Handles oneOf."""
+        variants: list[dict] = []
+        if "oneOf" in schema:
+            one_of = schema.get("oneOf")
+            if isinstance(one_of, list):
+                variants = [v for v in one_of if isinstance(v, dict)]
+        if not variants:
+            variants = [schema]
+
+        for idx, variant in enumerate(variants):
+            prefix = f"/oneOf[{idx}]" if "oneOf" in schema else ""
+            required = variant.get("required")
             if not isinstance(required, list):
                 self._record_error(
                     "agent_schema_contract",
                     rel_path,
-                    "/required",
-                    "Top-level required must be an array",
+                    f"{prefix}/required",
+                    "Required must be an array",
                 )
             elif "created_at" not in required:
                 self._record_error(
                     "agent_schema_contract",
                     rel_path,
-                    "/required",
-                    "Missing top-level required field: created_at",
+                    f"{prefix}/required",
+                    "Missing required field: created_at",
                 )
 
-            created_at_root = self._json_path_get(schema, ["properties", "created_at"])
-            if not isinstance(created_at_root, dict):
-                self._record_error(
-                    "agent_schema_contract",
-                    rel_path,
-                    "/properties/created_at",
-                    "Top-level created_at definition is missing",
-                )
-            else:
+            props = variant.get("properties", {})
+            created_at_root = props.get("created_at")
+            if isinstance(created_at_root, dict):
                 if created_at_root.get("type") != "string":
                     self._record_error(
                         "agent_schema_contract",
                         rel_path,
-                        "/properties/created_at/type",
+                        f"{prefix}/properties/created_at/type",
                         'created_at.type must be "string"',
                     )
                 if created_at_root.get("format") != "date-time":
                     self._record_error(
                         "agent_schema_contract",
                         rel_path,
-                        "/properties/created_at/format",
+                        f"{prefix}/properties/created_at/format",
                         'created_at.format must be "date-time"',
                     )
 
-            manual = self._json_path_get(
-                schema,
-                ["properties", "manual_resolution_items", "items", "required"],
-            )
-            if not isinstance(manual, list):
-                self._record_error(
-                    "agent_schema_contract",
-                    rel_path,
-                    "/properties/manual_resolution_items/items/required",
-                    "manual_resolution_items.items.required must be an array",
-                )
-            else:
-                for field in ("command", "entity_type", "entity_id", "reason", "details", "created_at"):
-                    if field not in manual:
-                        self._record_error(
-                            "agent_schema_contract",
-                            rel_path,
-                            "/properties/manual_resolution_items/items/required",
-                            f"Missing required manual resolution field: {field}",
-                        )
+            manual_items = props.get("manual_resolution_items")
+            if isinstance(manual_items, dict) and "items" in manual_items:
+                items_schema = manual_items["items"]
+                if "$ref" in items_schema:
+                    ref_name = items_schema["$ref"].split("/")[-1]
+                    defs = schema.get("$defs", {})
+                    manual_def = defs.get(ref_name)
+                    if isinstance(manual_def, dict):
+                        manual_req = manual_def.get("required", [])
+                        for field in ("command", "entity_type", "entity_id", "reason", "details", "created_at"):
+                            if field not in manual_req:
+                                self._record_error(
+                                    "agent_schema_contract",
+                                    rel_path,
+                                    f"/$defs/{ref_name}/required",
+                                    f"Missing required manual resolution field: {field}",
+                                )
+                elif isinstance(items_schema, dict):
+                    manual_req = items_schema.get("required", [])
+                    for field in ("command", "entity_type", "entity_id", "reason", "details", "created_at"):
+                        if field not in manual_req:
+                            self._record_error(
+                                "agent_schema_contract",
+                                rel_path,
+                                f"{prefix}/manual_resolution_items/items/required",
+                                f"Missing required manual resolution field: {field}",
+                            )
 
-            created_at_prop = self._json_path_get(
-                schema,
-                ["properties", "manual_resolution_items", "items", "properties", "created_at"],
-            )
-            if not isinstance(created_at_prop, dict):
-                self._record_error(
-                    "agent_schema_contract",
-                    rel_path,
-                    "/properties/manual_resolution_items/items/properties/created_at",
-                    "created_at definition is missing",
-                )
-            else:
-                if created_at_prop.get("type") != "string":
-                    self._record_error(
-                        "agent_schema_contract",
-                        rel_path,
-                        "/properties/manual_resolution_items/items/properties/created_at/type",
-                        'created_at.type must be "string"',
-                    )
-                if created_at_prop.get("format") != "date-time":
-                    self._record_error(
-                        "agent_schema_contract",
-                        rel_path,
-                        "/properties/manual_resolution_items/items/properties/created_at/format",
-                        'created_at.format must be "date-time"',
-                    )
-
-            run_summary_req = self._json_path_get(schema, ["properties", "run_summary", "required"])
-            if not isinstance(run_summary_req, list):
-                self._record_error(
-                    "agent_schema_contract",
-                    rel_path,
-                    "/properties/run_summary/required",
-                    "run_summary.required must be an array",
-                )
-            else:
+            run_summary = props.get("run_summary")
+            run_req: list = []
+            if isinstance(run_summary, dict):
+                if "$ref" in run_summary:
+                    ref_name = run_summary["$ref"].split("/")[-1]
+                    defs = schema.get("$defs", {})
+                    run_def = defs.get(ref_name)
+                    run_req = run_def.get("required", []) if isinstance(run_def, dict) else []
+                else:
+                    run_req = run_summary.get("required", [])
+            if run_req:
                 for field in ("command", "status", "summary", "blocking_items", "storage_file"):
-                    if field not in run_summary_req:
+                    if field not in run_req:
                         self._record_error(
                             "agent_schema_contract",
                             rel_path,
-                            "/properties/run_summary/required",
+                            f"{prefix}/run_summary/required",
                             f"Missing run_summary required field: {field}",
                         )
-        return (
-            f"checked top-level created_at, manual_resolution_items, and run_summary "
-            f"invariants in {loaded} schema files"
-        )
 
     def _check_csv_contract_doc(self) -> str:
         """Check csv contract doc."""

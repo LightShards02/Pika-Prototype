@@ -1,3 +1,5 @@
+"""PIKA CLI: contract-first, schema-driven agentic workflow per PROJECT_CONTEXT."""
+
 from __future__ import annotations
 
 import json
@@ -10,7 +12,8 @@ from typing import Any
 import click
 import typer
 
-from core.command_router import RuntimeContext, dispatch
+from core.command_router import dispatch
+from core.context import RuntimeContext
 from core.config_loader import load_and_validate_config
 from core.errors import (
     ConfigNotFoundError,
@@ -22,16 +25,13 @@ from core.errors import (
     PromptValidationError,
 )
 from core.logger import RUN_LOGGER_NAME, init_run_logger
+from core.pika_paths import get_config_schema_path
 from core.prompt_registry import PromptRegistry
+from core.pika_config import get_pika_config
 from core.safety import validate_command_preconditions
 
-
-PROJECT_ROOT = Path(__file__).resolve().parent
-
-CONFIG_CANDIDATES = [
-    Path("config/config.yaml"),
-    Path("config/config.example.yaml"),
-]
+# Workspace root: the project PIKA is used to build (config, outputs, inputs). Required.
+# When --config not provided, look under project root. Candidates from pika config.
 
 CSV_CONTRACT_PATH_KEYS = {
     "contract_file",
@@ -44,49 +44,57 @@ CSV_CONTRACT_PATH_KEYS = {
 SummaryContext = dict[str, Any]
 
 
-def _resolve_project_root(project_root: str | None) -> Path:
-    """Resolve project root."""
-    root = Path(project_root).resolve() if project_root else PROJECT_ROOT
+def _resolve_workspace_root(workspace_root: str | None) -> Path:
+    """Resolve workspace root (the project PIKA is used to build).
+
+    Required: must be provided. The workspace root contains the project's config,
+    outputs, and inputs.
+    """
+    if not workspace_root or not str(workspace_root).strip():
+        raise ValueError(
+            "Workspace root is required. Pass --project-root PATH (directory containing "
+            "project config and outputs)."
+        )
+    root = Path(workspace_root).resolve()
     if not root.exists():
-        raise ValueError(f"Project root does not exist: {root}")
+        raise ValueError(f"Workspace root does not exist: {root}")
     if not root.is_dir():
-        raise ValueError(f"Project root is not a directory: {root}")
+        raise ValueError(f"Workspace root is not a directory: {root}")
     return root
 
 
-def _default_config_path(project_root: Path) -> Path | None:
-    """Return default config path."""
-    for candidate in CONFIG_CANDIDATES:
-        resolved = (project_root / candidate).resolve()
+def _default_config_path(workspace_root: Path) -> Path | None:
+    """Return default config path from candidates under workspace root."""
+    candidates = [
+        Path(c) for c in get_pika_config().get("config_candidates", [])
+    ] or [Path("config.yaml"), Path("config/config.yaml"), Path("config/config.example.yaml")]
+    for candidate in candidates:
+        resolved = (workspace_root / candidate).resolve()
         if resolved.exists():
             return resolved
     return None
 
 
-def _resolve_config_path(config: str | None, project_root: Path) -> Path:
-    """Resolve config path."""
+def _resolve_config_path(config: str | None, workspace_root: Path) -> Path:
+    """Resolve config file path. Config lives under workspace root (project-variable)."""
     if config:
         candidate = Path(config)
         if not candidate.is_absolute():
-            candidate = project_root / candidate
+            candidate = workspace_root / candidate
         return candidate.resolve()
-    selected = _default_config_path(project_root)
+    selected = _default_config_path(workspace_root)
     if selected is None:
         raise ValueError(
             "Config path is required. Pass --config PATH or create "
-            f"{project_root / 'config/config.yaml'} or "
-            f"{project_root / 'config/config.example.yaml'}."
+            f"{workspace_root / 'config.yaml'} or "
+            f"{workspace_root / 'config/config.yaml'} or "
+            f"{workspace_root / 'config/config.example.yaml'} under the project root."
         )
     return selected
 
 
-def _resolve_schema_path(project_root: Path) -> Path:
-    """Resolve config schema path."""
-    return (project_root / "config/config.schema.json").resolve()
-
-
 def _collect_csv_contract_paths(node: Any) -> list[str]:
-    """Collect csv contract paths."""
+    """Collect CSV contract paths from config node."""
     paths: list[str] = []
     stack: list[Any] = [node]
     while stack:
@@ -103,7 +111,7 @@ def _collect_csv_contract_paths(node: Any) -> list[str]:
 
 
 def _collect_referenced_paths(config: dict[str, Any]) -> list[str]:
-    """Collect referenced paths."""
+    """Collect referenced file paths from config."""
     paths: list[str] = []
 
     prompts_section = config.get("prompts")
@@ -126,36 +134,61 @@ def _collect_referenced_paths(config: dict[str, Any]) -> list[str]:
 
 
 def _validate_referenced_files_exist(
-    config: dict[str, Any], *, source: str, project_root: Path
+    config: dict[str, Any], *, source: str, workspace_root: Path
 ) -> None:
-    """Validate referenced files exist."""
-    for path_value in _collect_referenced_paths(config):
-        candidate = Path(path_value)
-        resolved = (
-            candidate.resolve()
-            if candidate.is_absolute()
-            else (project_root / candidate).resolve()
-        )
-        if not resolved.exists():
+    """Validate all referenced files exist. Prompts from PIKA root; schemas workspace then PIKA."""
+    from core.pika_paths import resolve_prompts_path, resolve_schema_path
+
+    prompts_section = config.get("prompts")
+    prompt_file = prompts_section.get("prompt_file") if isinstance(prompts_section, dict) else None
+    if isinstance(prompt_file, str) and prompt_file.strip():
+        resolved = resolve_prompts_path(prompt_file)
+        if not resolved.exists() or not resolved.is_file():
             raise FileNotFoundError(
-                f"Referenced file not found in {source}: {path_value} "
-                f"(resolved: {resolved})"
+                f"Referenced prompt file not found in {source}: {prompt_file} "
+                f"(resolved from PIKA root: {resolved})"
             )
-        if not resolved.is_file():
-            raise ValueError(
-                f"Referenced path is not a file in {source}: {path_value} "
-                f"(resolved: {resolved})"
+
+    schemas_section = config.get("schemas")
+    if isinstance(schemas_section, dict):
+        for key, value in schemas_section.items():
+            if isinstance(value, str) and value.strip():
+                resolved = resolve_schema_path(value, key, workspace_root)
+                if not resolved.exists() or not resolved.is_file():
+                    raise FileNotFoundError(
+                        f"Referenced schema not found in {source}: schemas.{key}={value!r} "
+                        f"(tried workspace and PIKA root, resolved: {resolved})"
+                    )
+
+    csv_contracts = config.get("csv_contracts")
+    if isinstance(csv_contracts, dict):
+        for path_value in _collect_csv_contract_paths(csv_contracts):
+            candidate = Path(path_value)
+            resolved = (
+                candidate.resolve()
+                if candidate.is_absolute()
+                else (workspace_root / candidate).resolve()
             )
+            if not resolved.exists():
+                raise FileNotFoundError(
+                    f"Referenced file not found in {source}: {path_value} "
+                    f"(resolved: {resolved})"
+                )
+            if not resolved.is_file():
+                raise ValueError(
+                    f"Referenced path is not a file in {source}: {path_value} "
+                    f"(resolved: {resolved})"
+                )
 
 
 def _emit_summary(
     command_name: str, config_path: Path, runtime_ctx: SummaryContext, status: str
 ) -> None:
-    """Return emit summary."""
+    """Emit JSON summary to stdout."""
     payload = {
         "command": command_name,
         "config_path": str(config_path),
-        "project_root": runtime_ctx["project_root"],
+        "workspace_root": runtime_ctx["workspace_root"],
         "run_id": runtime_ctx.get("run_id"),
         "dry_run": runtime_ctx["dry_run"],
         "verbose": runtime_ctx["verbose"],
@@ -173,53 +206,53 @@ def _execute_command(
     dry_run: bool,
     verbose: bool,
     command_only_validation: bool,
+    input_overrides: dict[str, str] | None = None,
 ) -> None:
-    """Return execute command."""
+    """Execute command with config load, validation, and dispatch."""
+    resolved_workspace_root = _resolve_workspace_root(project_root)
     runtime_ctx: SummaryContext = {
         "run_id": None,
         "dry_run": dry_run,
         "verbose": verbose,
         "command_only_validation": command_only_validation,
-        "project_root": str(Path(project_root).resolve()) if project_root else str(PROJECT_ROOT),
+        "workspace_root": str(resolved_workspace_root),
     }
     summary_config_path = Path("<missing-config>")
     run_logger: logging.Logger | None = None
 
     try:
-        resolved_project_root = _resolve_project_root(project_root)
-        runtime_ctx["project_root"] = str(resolved_project_root)
         summary_config_path = (
-            (resolved_project_root / config).resolve()
+            (resolved_workspace_root / config).resolve()
             if config
-            else (_default_config_path(resolved_project_root) or Path("<missing-config>"))
+            else (_default_config_path(resolved_workspace_root) or Path("<missing-config>"))
         )
-        config_path = _resolve_config_path(config, resolved_project_root)
-        schema_path = _resolve_schema_path(resolved_project_root)
+        config_path = _resolve_config_path(config, resolved_workspace_root)
+        schema_path = get_config_schema_path()  # PIKA-internal, always from PIKA root
         summary_config_path = config_path
         config_data = load_and_validate_config(config_path, schema_path=schema_path)
 
         if command_only_validation:
-            prompt_registry = PromptRegistry.from_config(
-                config_data, project_root=resolved_project_root
-            )
+            prompt_registry = PromptRegistry.from_config(config_data)
             for prompt_name in prompt_registry.list_prompts():
                 _ = prompt_registry.get_schema_path(prompt_name)
             _validate_referenced_files_exist(
                 config_data,
                 source=str(config_path),
-                project_root=resolved_project_root,
+                workspace_root=resolved_workspace_root,
             )
             _emit_summary(command_name, config_path, runtime_ctx, "validated_only")
             return
 
+        overrides = input_overrides or {}
         preflight_ctx = RuntimeContext(
             command=command_name,
             dry_run=dry_run,
             verbose=verbose,
             command_only_validation=command_only_validation,
             run_id="",
-            project_root=str(resolved_project_root),
+            project_root=str(resolved_workspace_root),  # workspace root = project being built
             config_path=str(config_path),
+            input_overrides=overrides,
         )
         validate_command_preconditions(command_name, config_data, preflight_ctx)
 
@@ -231,11 +264,12 @@ def _execute_command(
             verbose=verbose,
             command_only_validation=command_only_validation,
             run_id=run_id,
-            project_root=str(resolved_project_root),
+            project_root=str(resolved_workspace_root),  # workspace root = project being built
             config_path=str(config_path),
+            input_overrides=overrides,
         )
         _ = init_run_logger(
-            project_root=resolved_project_root, config=config_data, ctx=router_ctx
+            project_root=resolved_workspace_root, config=config_data, ctx=router_ctx
         )
         run_logger = logging.getLogger(RUN_LOGGER_NAME)
         run_event_level = run_logger.getEffectiveLevel()
@@ -264,128 +298,177 @@ def _execute_command(
 
 
 app = typer.Typer(
-    help="Agentic workflow CLI.",
+    help="PIKA: contract-first, schema-driven agentic workflow CLI.",
     no_args_is_help=True,
     add_completion=False,
 )
 agent_app = typer.Typer(
-    help="Agent workflow commands.",
+    help="Agent workflow commands (plan, format, review, map, implement, resolve_plan).",
     no_args_is_help=True,
     add_completion=False,
 )
 app.add_typer(agent_app, name="agent")
 
 
-@agent_app.command("load")
-def agent_load_command(
-    config: str | None = typer.Option(
-        None,
-        "--config",
-        help=(
-            "Path to config YAML. Defaults to config/config.yaml, then "
-            "config/config.example.yaml."
-        ),
-    ),
-    project_root: str | None = typer.Option(
-        None,
-        "--project-root",
-        help=(
-            "Project root used to resolve config defaults, schema, and all runtime "
-            "validations. Defaults to the CLI repository root."
-        ),
-    ),
+@agent_app.command("plan")
+def agent_plan_command(
+    config: str | None = typer.Option(None, "--config", help="Path to config YAML."),
+    project_root: str = typer.Option(..., "--project-root", help="Workspace root (required): directory containing project config and outputs."),
+    srs: str | None = typer.Option(None, "--srs", help="Path to SRS file. Relative to project root or absolute."),
+    codebase_dir: str | None = typer.Option(None, "--codebase-dir", help="Path to codebase/source directory. Absolute or relative to project root."),
+    project_context: str | None = typer.Option(None, "--project-context", help="Path to project context file (e.g. PROJECT_CONTEXT.md). Absolute or relative to project root."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Run without side effects."),
     verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logs."),
     command_only_validation: bool = typer.Option(
-        False,
-        "--command-only-validation",
-        help=(
-            "Load config, validate config schema, and validate referenced files only; "
-            "skip command execution."
-        ),
+        False, "--command-only-validation", help="Validate only; skip execution."
     ),
 ) -> None:
-    """Handle the agent load command command."""
+    """Project Designer (Phase 0.a): produce project plan and/or design outline from SRS."""
+    overrides = {}
+    if srs:
+        overrides["srs_path"] = srs
+    if codebase_dir:
+        overrides["codebase_dir"] = codebase_dir
+    if project_context:
+        overrides["project_context_path"] = project_context
     _execute_command(
-        "load",
+        "plan",
         config=config,
         project_root=project_root,
         dry_run=dry_run,
         verbose=verbose,
         command_only_validation=command_only_validation,
+        input_overrides=overrides if overrides else None,
     )
 
 
-@agent_app.command("index")
-def agent_index_command(
-    config: str | None = typer.Option(
-        None,
-        "--config",
-        help=(
-            "Path to config YAML. Defaults to config/config.yaml, then "
-            "config/config.example.yaml."
-        ),
-    ),
-    project_root: str | None = typer.Option(
-        None,
-        "--project-root",
-        help=(
-            "Project root used to resolve config defaults, schema, and all runtime "
-            "validations. Defaults to the CLI repository root."
-        ),
-    ),
+@agent_app.command("format")
+def agent_format_command(
+    config: str | None = typer.Option(None, "--config", help="Path to config YAML."),
+    project_root: str = typer.Option(..., "--project-root", help="Workspace root (required): directory containing project config and outputs."),
+    input_path: str | None = typer.Option(None, "--input", help="Path to Raw SADS or design spec (CSV/XLSX). Relative to project root or absolute."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Run without side effects."),
     verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logs."),
     command_only_validation: bool = typer.Option(
-        False,
-        "--command-only-validation",
-        help=(
-            "Load config, validate config schema, and validate referenced files only; "
-            "skip command execution."
-        ),
+        False, "--command-only-validation", help="Validate only; skip execution."
     ),
 ) -> None:
-    """Handle the agent index command command."""
+    """SADS Formatter (Phase 0.b): normalize Raw SADS into Draft Formatted SADS (deterministic, no LLM)."""
+    overrides = None
+    if input_path:
+        overrides = {"raw_sads_path": input_path, "design_spec_path": input_path}
     _execute_command(
-        "index",
+        "format",
         config=config,
         project_root=project_root,
         dry_run=dry_run,
         verbose=verbose,
         command_only_validation=command_only_validation,
+        input_overrides=overrides,
+    )
+
+
+@agent_app.command("review")
+def agent_review_command(
+    config: str | None = typer.Option(None, "--config", help="Path to config YAML."),
+    project_root: str = typer.Option(..., "--project-root", help="Workspace root (required): directory containing project config and outputs."),
+    design_spec: str | None = typer.Option(None, "--design-spec", help="Path to Draft Formatted SADS. Relative to project root or absolute."),
+    srs: str | None = typer.Option(None, "--srs", help="Path to SRS file. Relative to project root or absolute."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Run without side effects."),
+    verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logs."),
+    command_only_validation: bool = typer.Option(
+        False, "--command-only-validation", help="Validate only; skip execution."
+    ),
+) -> None:
+    """Design Reviewer: review Draft Formatted SADS for gaps, contradictions, ambiguities."""
+    overrides = {}
+    if design_spec:
+        overrides["design_spec_path"] = design_spec
+    if srs:
+        overrides["srs_path"] = srs
+    _execute_command(
+        "review",
+        config=config,
+        project_root=project_root,
+        dry_run=dry_run,
+        verbose=verbose,
+        command_only_validation=command_only_validation,
+        input_overrides=overrides if overrides else None,
+    )
+
+
+@agent_app.command("map")
+def agent_map_command(
+    config: str | None = typer.Option(None, "--config", help="Path to config YAML."),
+    project_root: str = typer.Option(..., "--project-root", help="Workspace root (required): directory containing project config and outputs."),
+    design_spec: str | None = typer.Option(None, "--design-spec", help="Path to Formatted SADS. Relative to project root or absolute."),
+    codebase_dir: str | None = typer.Option(None, "--codebase-dir", help="Path to codebase/source directory. Absolute or relative to project root."),
+    project_context: str | None = typer.Option(None, "--project-context", help="Path to project context file (e.g. PROJECT_CONTEXT.md). Absolute or relative to project root."),
+    extra_prompt: str | None = typer.Option(
+        None,
+        "--extra-prompt",
+        help="Path to extra prompt .md file. Fallback: project root / inputs.extra_prompt_filename when configured. When both omitted, no extra section.",
+    ),
+    force_remap: bool = typer.Option(False, "--force-remap", help="Re-map all specs including already mapped."),
+    max_acceptance_chars: int | None = typer.Option(None, "--max-acceptance-chars", help="Truncate acceptance_criteria to N chars (0 = unlimited). Overrides config."),
+    apply_existing_outputs: str | None = typer.Option(
+        None, "--apply-existing-outputs",
+        help="Path to directory of map output JSON files. Skips agent invocation; merges and applies downstream processing.",
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Run without side effects."),
+    verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logs."),
+    command_only_validation: bool = typer.Option(
+        False, "--command-only-validation", help="Validate only; skip execution."
+    ),
+) -> None:
+    """SADS Mapper (Phase 2): produce traceability mappings from spec to code symbols."""
+    overrides = {}
+    if design_spec:
+        overrides["design_spec_path"] = design_spec
+    if codebase_dir:
+        overrides["codebase_dir"] = codebase_dir
+    if project_context:
+        overrides["project_context_path"] = project_context
+    if extra_prompt:
+        overrides["extra_prompt_path"] = extra_prompt
+    if force_remap:
+        overrides["force_remap"] = "true"
+    if max_acceptance_chars is not None:
+        overrides["max_acceptance_chars"] = str(max_acceptance_chars)
+    if apply_existing_outputs:
+        overrides["apply_existing_outputs"] = apply_existing_outputs
+    _execute_command(
+        "map",
+        config=config,
+        project_root=project_root,
+        dry_run=dry_run,
+        verbose=verbose,
+        command_only_validation=command_only_validation,
+        input_overrides=overrides if overrides else None,
     )
 
 
 @agent_app.command("implement")
 def agent_implement_command(
-    config: str | None = typer.Option(
-        None,
-        "--config",
-        help=(
-            "Path to config YAML. Defaults to config/config.yaml, then "
-            "config/config.example.yaml."
-        ),
-    ),
-    project_root: str | None = typer.Option(
-        None,
-        "--project-root",
-        help=(
-            "Project root used to resolve config defaults, schema, and all runtime "
-            "validations. Defaults to the CLI repository root."
-        ),
-    ),
+    config: str | None = typer.Option(None, "--config", help="Path to config YAML."),
+    project_root: str = typer.Option(..., "--project-root", help="Workspace root (required): directory containing project config and outputs."),
+    design_spec: str | None = typer.Option(None, "--design-spec", help="Path to Formatted SADS. Relative to project root or absolute."),
+    codebase_dir: str | None = typer.Option(None, "--codebase-dir", help="Path to codebase/source directory. Absolute or relative to project root."),
+    project_context: str | None = typer.Option(None, "--project-context", help="Path to project context file (e.g. PROJECT_CONTEXT.md). Absolute or relative to project root."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Run without side effects."),
     verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logs."),
     command_only_validation: bool = typer.Option(
-        False,
-        "--command-only-validation",
-        help=(
-            "Load config, validate config schema, and validate referenced files only; "
-            "skip command execution."
-        ),
+        False, "--command-only-validation", help="Validate only; skip execution."
     ),
 ) -> None:
-    """Handle the agent implement command command."""
+    """Implementer (Phase 1): implement Formatted SADS by producing diffs with spec_id traceability."""
+    overrides = {}
+    if design_spec:
+        overrides["design_spec_path"] = design_spec
+    if codebase_dir:
+        overrides["codebase_dir"] = codebase_dir
+    if project_context:
+        overrides["project_context_path"] = project_context
     _execute_command(
         "implement",
         config=config,
@@ -393,46 +476,36 @@ def agent_implement_command(
         dry_run=dry_run,
         verbose=verbose,
         command_only_validation=command_only_validation,
+        input_overrides=overrides if overrides else None,
     )
 
 
-@agent_app.command("issue")
-def agent_issue_command(
-    config: str | None = typer.Option(
-        None,
-        "--config",
-        help=(
-            "Path to config YAML. Defaults to config/config.yaml, then "
-            "config/config.example.yaml."
-        ),
-    ),
-    project_root: str | None = typer.Option(
-        None,
-        "--project-root",
-        help=(
-            "Project root used to resolve config defaults, schema, and all runtime "
-            "validations. Defaults to the CLI repository root."
-        ),
-    ),
+@agent_app.command("resolve_plan")
+def agent_resolve_plan_command(
+    config: str | None = typer.Option(None, "--config", help="Path to config YAML."),
+    project_root: str = typer.Option(..., "--project-root", help="Workspace root (required): directory containing project config and outputs."),
+    issue_tracking: str | None = typer.Option(None, "--issue-tracking", help="Path to Implementation Issue Tracker. Relative to project root or absolute."),
+    design_spec: str | None = typer.Option(None, "--design-spec", help="Path to Formatted SADS. Relative to project root or absolute."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Run without side effects."),
     verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logs."),
     command_only_validation: bool = typer.Option(
-        False,
-        "--command-only-validation",
-        help=(
-            "Load config, validate config schema, and validate referenced files only; "
-            "skip command execution."
-        ),
+        False, "--command-only-validation", help="Validate only; skip execution."
     ),
 ) -> None:
-    """Handle the agent issue command command."""
+    """Resolution Organizer (Phase 2/4): produce issue-to-spec mapping, prioritization, and resolution plans."""
+    overrides = {}
+    if issue_tracking:
+        overrides["issue_tracking_path"] = issue_tracking
+    if design_spec:
+        overrides["design_spec_path"] = design_spec
     _execute_command(
-        "issue",
+        "resolve_plan",
         config=config,
         project_root=project_root,
         dry_run=dry_run,
         verbose=verbose,
         command_only_validation=command_only_validation,
+        input_overrides=overrides if overrides else None,
     )
 
 
@@ -461,6 +534,8 @@ def main() -> int:
     except click.Abort:
         print("ERROR: Aborted.", file=sys.stderr)
         return 1
+    except typer.Exit as exc:
+        return exc.exit_code
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else 1
     except Exception as exc:  # noqa: BLE001

@@ -58,15 +58,15 @@ class CliLoggingTests(unittest.TestCase):
         temp_config.write_text(config_text, encoding="utf-8")
         return temp_config
 
-    def test_load_dry_run_creates_per_run_log_file(self) -> None:
-        """Test that load dry run creates per run log file."""
+    def test_format_dry_run_creates_per_run_log_file(self) -> None:
+        """Test that format dry run creates per run log file."""
         logs_dir = REPO_ROOT / "out" / "test-logs" / uuid.uuid4().hex
         config_path = self._write_temp_config(logs_dir=logs_dir)
 
         result = self._run_cli(
             [
                 "agent",
-                "load",
+                "format",
                 "--dry-run",
                 "--config",
                 str(config_path),
@@ -79,7 +79,7 @@ class CliLoggingTests(unittest.TestCase):
         self.assertIsInstance(run_id, str)
         self.assertTrue(run_id)
 
-        log_file = logs_dir / f"load_{run_id}.log"
+        log_file = logs_dir / f"format_{run_id}.log"
         self.assertTrue(log_file.exists())
 
         entries = [
@@ -99,7 +99,7 @@ class CliLoggingTests(unittest.TestCase):
         result = self._run_cli(
             [
                 "agent",
-                "load",
+                "format",
                 "--command-only-validation",
                 "--config",
                 str(config_path),

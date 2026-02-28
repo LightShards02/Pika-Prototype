@@ -29,18 +29,24 @@ class CliPromptValidationTests(unittest.TestCase):
         temp_dir = Path(tempfile.mkdtemp(prefix="cli-prompt-config-"))
         design_spec = temp_dir / "design_spec.csv"
         issue_tracking = temp_dir / "issue_tracking.csv"
-        design_spec.write_text("title\nexample\n", encoding="utf-8")
+        design_spec.write_text("spec_id,title,requirement\nA1,example,Do something\n", encoding="utf-8")
         issue_tracking.write_text("title\nexample\n", encoding="utf-8")
 
         config_text = EXAMPLE_CONFIG_PATH.read_text(encoding="utf-8")
-        config_text = config_text.replace(
-            "  design_spec_path: data/design_spec.csv",
-            f"  design_spec_path: {design_spec.as_posix()}",
-        )
-        config_text = config_text.replace(
-            "  issue_tracking_path: data/issue_tracking.csv",
-            f"  issue_tracking_path: {issue_tracking.as_posix()}",
-        )
+        if "design_spec_path:" not in config_text:
+            config_text = config_text.replace(
+                "  allowed_extensions:\n    - .csv\n    - .xlsx",
+                f"  allowed_extensions:\n    - .csv\n    - .xlsx\n  design_spec_path: {design_spec.as_posix()}\n  issue_tracking_path: {issue_tracking.as_posix()}",
+            )
+        else:
+            config_text = config_text.replace(
+                "  design_spec_path: data/design_spec.csv",
+                f"  design_spec_path: {design_spec.as_posix()}",
+            )
+            config_text = config_text.replace(
+                "  issue_tracking_path: data/issue_tracking.csv",
+                f"  issue_tracking_path: {issue_tracking.as_posix()}",
+            )
 
         config_path = temp_dir / "config.yaml"
         config_path.write_text(config_text, encoding="utf-8")
@@ -51,8 +57,10 @@ class CliPromptValidationTests(unittest.TestCase):
         result = self._run_cli(
             [
                 "agent",
-                "load",
+                "format",
                 "--command-only-validation",
+                "--project-root",
+                str(REPO_ROOT),
                 "--config",
                 "config/config.example.yaml",
             ]
@@ -66,7 +74,7 @@ class CliPromptValidationTests(unittest.TestCase):
         result = self._run_cli(
             [
                 "agent",
-                "load",
+                "format",
                 "--command-only-validation",
                 "--project-root",
                 str(REPO_ROOT),
@@ -78,21 +86,24 @@ class CliPromptValidationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn('"status":"validated_only"', result.stdout)
 
-    def test_load_dry_run_dispatches_and_initializes(self) -> None:
-        """Test that load dry run dispatches and initializes."""
+    def test_format_dry_run_dispatches_and_completes(self) -> None:
+        """Test that format dry run dispatches and completes lifecycle."""
         config_path = self._write_temp_config_with_inputs()
+        project_root = config_path.parent
         result = self._run_cli(
             [
                 "agent",
-                "load",
+                "format",
                 "--dry-run",
+                "--project-root",
+                str(project_root),
                 "--config",
                 str(config_path),
             ]
         )
 
         self.assertEqual(result.returncode, 0, msg=result.stderr)
-        self.assertIn('"status":"initialized"', result.stdout)
+        self.assertIn('"status":"completed"', result.stdout)
 
     def test_command_only_validation_fails_when_prompt_file_missing(self) -> None:
         """Test that command only validation fails when prompt file missing."""
@@ -109,8 +120,10 @@ class CliPromptValidationTests(unittest.TestCase):
             result = self._run_cli(
                 [
                     "agent",
-                    "load",
+                    "format",
                     "--command-only-validation",
+                    "--project-root",
+                    str(tmpdir),
                     "--config",
                     str(tmp_config_path),
                 ]

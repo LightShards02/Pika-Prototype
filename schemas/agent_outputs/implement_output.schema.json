@@ -1,189 +1,100 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ImplementOutput",
-  "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "diffs",
-    "unclarities",
-    "manual_resolution_items",
-    "run_summary",
-    "created_at"
-  ],
-  "properties": {
-    "diffs": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "path",
-          "action",
-          "diff_unified",
-          "spec_ids"
-        ],
-        "properties": {
-          "path": {
-            "type": "string",
-            "minLength": 1
-          },
-          "action": {
-            "type": "string",
-            "enum": [
-              "create",
-              "update",
-              "delete"
-            ]
-          },
-          "diff_unified": {
-            "type": "string",
-            "minLength": 1
-          },
-          "spec_ids": {
-            "type": "array",
-            "minItems": 1,
-            "items": {
-              "type": "string",
-              "pattern": "^[A-Za-z][0-9]+$"
-            }
-          },
-          "summary": {
-            "type": "string"
-          }
-        }
-      }
-    },
-    "unclarities": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "id",
-          "question",
-          "severity",
-          "blocking",
-          "spec_ids"
-        ],
-        "properties": {
-          "id": {
-            "type": "string",
-            "pattern": "^UNCLEAR-[0-9]{3}$"
-          },
-          "question": {
-            "type": "string",
-            "minLength": 1
-          },
-          "severity": {
-            "type": "string",
-            "enum": [
-              "low",
-              "medium",
-              "high"
-            ]
-          },
-          "blocking": {
-            "type": "boolean"
-          },
-          "spec_ids": {
-            "type": "array",
-            "minItems": 1,
-            "items": {
-              "type": "string",
-              "pattern": "^[A-Za-z][0-9]+$"
-            }
-          }
-        }
-      }
-    },
-    "manual_resolution_items": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "command",
-          "entity_type",
-          "entity_id",
-          "reason",
-          "details",
-          "created_at"
-        ],
-        "properties": {
-          "command": {
-            "type": "string",
-            "const": "agent implement"
-          },
-          "entity_type": {
-            "type": "string",
-            "enum": [
-              "spec",
-              "diff",
-              "unclarity"
-            ]
-          },
-          "entity_id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "reason": {
-            "type": "string",
-            "minLength": 1
-          },
-          "details": {
-            "type": "string",
-            "minLength": 1
-          },
-          "created_at": {
-            "type": "string",
-            "format": "date-time",
-            "minLength": 1
-          }
-        }
-      }
-    },
-    "run_summary": {
+  "description": "Implementer (agent implement) output. The agent writes each unified diff to a file in agent_artifacts_dir and returns diff_path. When manual_resolution_items is non-empty, output must contain ONLY manual_resolution_items (blocking rule).",
+  "oneOf": [
+    {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "command",
-        "status",
-        "summary",
-        "blocking_items",
-        "storage_file"
-      ],
+      "required": ["manual_resolution_items", "run_summary", "created_at"],
       "properties": {
-        "command": {
-          "type": "string",
-          "const": "agent implement"
+        "manual_resolution_items": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/manual_resolution_item_implement" }
         },
-        "status": {
-          "type": "string",
-          "enum": [
-            "success",
-            "partial",
-            "blocked",
-            "failed"
-          ]
-        },
-        "summary": {
-          "type": "string",
-          "minLength": 1
-        },
-        "blocking_items": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "storage_file": {
-          "type": "string",
-          "minLength": 1
-        }
+        "run_summary": { "$ref": "#/$defs/run_summary_implement" },
+        "created_at": { "type": "string", "format": "date-time", "minLength": 1 }
       }
     },
-    "created_at": {
-      "type": "string",
-      "format": "date-time",
-      "minLength": 1
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["diffs", "unclarities", "manual_resolution_items", "run_summary", "created_at"],
+      "properties": {
+        "diffs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "action", "diff_path", "spec_ids"],
+            "properties": {
+              "path": { "type": "string", "minLength": 1, "description": "Target file path in the workspace." },
+              "action": { "type": "string", "enum": ["create", "update", "delete"] },
+              "diff_path": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Path to file containing the unified diff, written by the agent in agent_artifacts_dir."
+              },
+              "spec_ids": {
+                "type": "array",
+                "minItems": 1,
+                "items": { "type": "string", "pattern": "^[A-Za-z][0-9]+$" }
+              },
+              "summary": { "type": "string" }
+            }
+          }
+        },
+        "unclarities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "question", "severity", "blocking", "spec_ids"],
+            "properties": {
+              "id": { "type": "string", "pattern": "^UNCLEAR-[0-9]{3}$" },
+              "question": { "type": "string", "minLength": 1 },
+              "severity": { "type": "string", "enum": ["low", "medium", "high"] },
+              "blocking": { "type": "boolean" },
+              "spec_ids": {
+                "type": "array",
+                "minItems": 1,
+                "items": { "type": "string", "pattern": "^[A-Za-z][0-9]+$" }
+              }
+            }
+          }
+        },
+        "manual_resolution_items": { "type": "array", "maxItems": 0 },
+        "run_summary": { "$ref": "#/$defs/run_summary_implement" },
+        "created_at": { "type": "string", "format": "date-time", "minLength": 1 }
+      }
+    }
+  ],
+  "$defs": {
+    "manual_resolution_item_implement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "entity_type", "entity_id", "reason", "details", "created_at"],
+      "properties": {
+        "command": { "type": "string", "const": "agent implement" },
+        "entity_type": { "type": "string", "enum": ["spec", "diff", "unclarity"] },
+        "entity_id": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 },
+        "details": { "type": "string", "minLength": 1 },
+        "created_at": { "type": "string", "format": "date-time", "minLength": 1 }
+      }
+    },
+    "run_summary_implement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "status", "summary", "blocking_items", "storage_file"],
+      "properties": {
+        "command": { "type": "string", "const": "agent implement" },
+        "status": { "type": "string", "enum": ["success", "partial", "blocked", "failed"] },
+        "summary": { "type": "string", "minLength": 1 },
+        "blocking_items": { "type": "integer", "minimum": 0 },
+        "storage_file": { "type": "string", "minLength": 1 }
+      }
     }
   }
 }

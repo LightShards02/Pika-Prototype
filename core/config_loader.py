@@ -10,17 +10,9 @@ from core.errors import (
     ConfigSchemaValidationError,
 )
 
-try:
-    import yaml
-except ImportError:  # pragma: no cover - environment dependency
-    yaml = None
-
-try:
-    from jsonschema import Draft202012Validator
-    from jsonschema.exceptions import SchemaError
-except ImportError:  # pragma: no cover - environment dependency
-    Draft202012Validator = None
-    SchemaError = Exception
+import yaml
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
 
 
 def _to_dot_path(parts: Iterable[Any]) -> str:

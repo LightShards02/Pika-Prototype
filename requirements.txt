@@ -1,0 +1,17 @@
+# PIKA dependencies
+# Core
+typer>=0.9.0
+click>=8.0.0
+pyyaml>=6.0
+jsonschema>=4.0.0
+openpyxl>=3.0.0
+
+# Agent providers
+requests>=2.28.0  # Required for kimi (NVIDIA API) provider
+
+# Codebase snapshot (AST extraction for API-based agents)
+tree-sitter>=0.24.0
+tree-sitter-languages>=1.10.0
+
+# Unicode to LaTeX conversion (math formulas, special chars in design spec)
+pylatexenc>=2.0

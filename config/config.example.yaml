@@ -1,3 +1,15 @@
+# Workspace config (project-specific). Validated against config.schema.json.
+# PIKA-level defaults live in config/pika.yaml (paths, codex, kimi, timeouts, etc.).
+#
+# Attributes that typically do NOT vary per project (have PIKA defaults):
+#   - inputs.allowed_extensions (.csv, .xlsx)
+#   - inputs.project_context_filename (PROJECT_CONTEXT.md)
+#   - prompts.prompt_file, schemas.* (resolved from PIKA root)
+#   - id_generation.pattern, collision_scope
+#   - csv_contracts.add_if_missing (contract-defined columns)
+#   - outputs.* path structure (out/, out/logs, etc.)
+# Workspace config overrides PIKA defaults when specified.
+
 version: 1
 
 project:
@@ -5,8 +17,10 @@ project:
   root_dir: .
 
 inputs:
-  design_spec_path: data/design_spec.csv
-  issue_tracking_path: data/issue_tracking.csv
+  # Input paths can be passed via CLI arguments. Config defaults are optional.
+  # codebase_dir: .  # Path to codebase for plan/map/implement (absolute or relative to project root)
+  project_context_filename: PROJECT_CONTEXT.md  # Filename for project context in project root (or use --project-context for explicit path)
+  # extra_prompt_filename: EXTRA-PROMPT.md  # Optional. Extra prompt for map command (or use --extra-prompt for explicit path)
   allowed_extensions:
     - .csv
     - .xlsx
@@ -24,6 +38,9 @@ outputs:
   agent_runs_dir:
     path: out/agent_runs
     no_overwrite: false
+  agent_artifacts_dir:
+    path: out/agent_artifacts
+    no_overwrite: false
   run_summary_file:
     path: out/agent_runs/run_summary.jsonl
     no_overwrite: false
@@ -33,28 +50,66 @@ outputs:
   logs_dir:
     path: out/logs
     no_overwrite: false
+  agent_view_csv:
+    path: out/intermediate/map/agent_view.csv
+    no_overwrite: false
+  # intermediate_map_dir:
+  #   path: out/intermediate/map
+  #   no_overwrite: false
+  # agent_input_codebase_content_dir:
+  #   path: out/agent_input/codebase_content
+  #   no_overwrite: false
+
+agent:
+  provider: stub  # stub | api | local
+  schema_validation_retries: 3
+  stream_output: true  # Stream output + heartbeat when agent runs (api, local).
+  # When provider is local (e.g. Codex CLI):
+  # local_command: codex
+  # When provider is api (remote HTTP chat completions):
+  # api_key_env: NVIDIA_API_KEY
+  # api_url: https://integrate.api.nvidia.com/v1/chat/completions
+  # api_model: moonshotai/kimi-k2.5
 
 prompts:
   prompt_file: prompts/PROMPT.yaml
 
 schemas:
-  index_output: schemas/agent_outputs/index_output.schema.json
+  plan_output: schemas/agent_outputs/plan_output.schema.json
+  map_output: schemas/agent_outputs/index_output.schema.json
   implement_output: schemas/agent_outputs/implement_output.schema.json
-  issue_map_output: schemas/agent_outputs/issue_map_output.schema.json
-  issue_resolve_output: schemas/agent_outputs/issue_resolve_output.schema.json
+  resolve_plan_map_output: schemas/agent_outputs/issue_map_output.schema.json
+  resolve_plan_output: schemas/agent_outputs/issue_resolve_output.schema.json
 
 commands:
-  load:
+  plan:
+    enabled: false
+    prompt_name: project_designer
+  format:
     enabled: true
     deterministic: true
     copy_before_write: true
-  index:
+    # Optional: replace sensitive terms. keywords required; case_sensitive optional.
+    sensitive_keywords:
+      "[SOFTWARE]":
+        keywords: [KGAS, SAGK]
+      "[PARTNER]":
+        keywords: [QX MGR]
+        case_sensitive: true
+    # Optional: SADS ID mapping output path (default: out/state/sads_id_mapping.json)
+    # sads_id_mapping_path: out/state/sads_id_mapping.json
+  review:
+    enabled: false
+    prompt_name: design_reviewer
+  map:
     enabled: true
-    prompt_name: index_spec_to_code
+    prompt_name: map_spec_to_code
+    skip_mapped: true           # Skip index_status=mapped on re-runs
+    max_acceptance_chars: 0     # Truncate acceptance_criteria at invocation (0 = unlimited)
   implement:
     enabled: true
     prompt_name: implement_from_specs
-  issue:
+  resolve_plan:
     enabled: true
     map_prompt_name: map_issues_to_specs
     resolve_prompt_name: resolve_issues_with_diffs
@@ -71,9 +126,14 @@ csv_contracts:
   design_spec:
     add_if_missing:
       - spec_id
+      - module_tag
+      - subunit
       - mapped_code_symbols
+      - mapped_confidence
+      - mapped_consistency_score
+      - mapped_problems
       - index_status
-      - index_notes
+      - assumptions
       - last_indexed_at
   issue_tracking:
     add_if_missing:

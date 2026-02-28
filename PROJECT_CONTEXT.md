@@ -76,7 +76,7 @@ Some situations require human decisions. These are emitted as **manual_resolutio
 - **Phase 0.a (Optional): Project Planning**
   - Inputs: SRS (human-only)
   - Agent: Project Designer
-  - Outputs: planning artifacts and/or contributions to Draft Formatted SADS (proposal-level)
+  - Outputs: **proposed_sads_outline_path** (path to SADS-compatible CSV written by agent in agent_artifacts_dir), milestones; PIKA copies to agent_runs_dir
 
 - **Phase 0.b (Optional): Project Planning / Formatting**
   - Inputs: Raw SADS
@@ -91,6 +91,7 @@ Some situations require human decisions. These are emitted as **manual_resolutio
   - Inputs: Formatted SADS
   - Agent: Implementer
   - Outputs: code-change plans/diffs and implementation notes; PIKA applies these to Code and Issue Tracker
+  - **Implement loop (future):** Each `implement` run can trigger: implement → test → issue tracking update → implement. On verification failure, PIKA adds rows to Implementation Issue Tracker; subsequent runs may consume those issues. Currently: single unit of implementation per run.
 
 - **Phase 2: Design Backtracing**
   - Inputs: Formatted SADS + Code + Implementation Issue Tracker
@@ -117,7 +118,7 @@ Each agent is invoked by exactly one PIKA command. Each command:
 
 #### `plan` — Project Designer (Phase 0.a)
 
-**Goal:** produce a project plan and/or design outline from the SRS.
+**Goal:** produce a project plan and a **detailed design** from the SRS. The output is **directly compatible with the Design Spec (SADS) table columns** per csv_contracts.md. The detailed design (unit logic, feature logic, edge cases, error handling, class and helper descriptions) is **embedded in the requirement and acceptance_criteria text** of each spec row, not as separate fields.
 
 Inputs:
 - SRS (read-only)
@@ -126,12 +127,17 @@ Inputs:
 Agent outputs (schema-validated files):
 - If manual resolution is required: **manual_resolution_items only**
 - Otherwise:
-  - project plan milestones
-  - proposed SADS outline
+  - **proposed_sads_outline_path** (required): path to SADS-compatible CSV file written by the agent in agent_artifacts_dir. The file contains rows with spec_id, title, requirement, acceptance_criteria, status. Each row's requirement and acceptance_criteria embed the detailed design:
+    - unit/module logic and responsibilities
+    - feature logic and flows
+    - edge cases and handling
+    - error handling strategy
+    - class and major helper descriptions
+  - project plan milestones (optional)
 
 PIKA translation:
-- writes planning artifacts to run outputs
-- populate or propose Draft SADS content via explicitly defined translation rules
+- copies proposed_sads_outline from agent-written path to agent_runs_dir
+- writes milestones JSON if present
 
 ---
 
@@ -184,7 +190,7 @@ Inputs:
 Agent outputs (schema-validated files):
 - If manual resolution is required: **manual_resolution_items only**
 - Otherwise:
-  - per-`spec_id` mapping results (`mapped_code_symbols`, statuses, `agent_notes`)
+  - per-`spec_id` mapping results (`mapped_code_symbols`, statuses, `assumptions`)
 
 PIKA translation:
 - updates only mapping-related columns in Formatted SADS (contract-defined)
@@ -202,7 +208,7 @@ Inputs:
 Agent outputs (schema-validated files):
 - If manual resolution is required: **manual_resolution_items only**
 - Otherwise:
-  - unified diffs to apply
+  - diffs array with path, action, diff_path (path to file containing unified diff), spec_ids. Agent writes each diff to a file in agent_artifacts_dir.
 
 PIKA translation:
 - applies diffs safely to the Code repository
@@ -249,7 +255,8 @@ Humans make decisions needed to unblock or finalize issue resolution; those deci
 ### Contracts and Invariants (Hard Rules)
 
 1) **Schema validation is mandatory**
-- All agent output files must validate against their JSON Schemas.
+- All agent output files must validate against their JSON Schemas. Agents MUST follow the output schema exactly.
+- Large content (design spec drafts, unified diffs) is written by the agent to files in agent_artifacts_dir; schemas reference paths only, not inline content.
 - `additionalProperties: false` means no invented fields.
 
 2) **Agents never mutate documents directly**
@@ -268,9 +275,27 @@ Humans make decisions needed to unblock or finalize issue resolution; those deci
 - Any required SRS change must be emitted as a manual_resolution_item for human action.
 
 6) **Code changes are diff-only**
-- Agents output unified diffs; PIKA applies them safely.
+- Agents write unified diffs to files in agent_artifacts_dir and return diff_path in output; PIKA reads from paths and applies them safely.
 
 7) **Traceability is required**
 - mappings reference `spec_id`
 - diffs and implementation notes reference `spec_id`
 - issue planning references issue IDs and mapped `spec_id`s
+
+---
+
+### Path Resolution: PIKA Root vs Workspace Root
+
+PIKA distinguishes two roots:
+
+1. **PIKA root** — Parent of `cli.py`; contains PIKA source, schemas, contracts, prompts.
+   - Project-independent paths: `config/config.schema.json`, `docs/csv_contracts.md`, `docs/project_context_contracts.md`, `prompts/PROMPT.yaml`, `schemas/agent_outputs/*.schema.json`
+   - Always resolved from the PIKA installation directory
+
+2. **Workspace root** — The project PIKA is used to build (required input via `--project-root`, defaults to current directory).
+   - Contains: project config (`config/config.yaml`), runtime outputs (`out/`), inputs (SRS, SADS, etc.)
+   - All project-variable paths in config are relative to this
+
+**Sanity check:** If a file/dir is project-independent, it lives under PIKA root; if it may vary per project, it lives under workspace root.
+
+Prompts are always resolved from PIKA root; only template variables vary per project. Schemas in config: workspace first, then PIKA root. Workspace root (`--project-root`) is required.

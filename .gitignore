@@ -205,3 +205,26 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# --- PIKA-specific ---
+
+# Local user config (paths, API keys, overrides)
+config/pika.yaml
+
+# Dataset output dirs (agent runs, backups, intermediate artifacts)
+dataset/CORE
+dataset/SRV
+
+# Sample/temp spec files at repo root
+Sample-Spec.xlsx
+
+# macOS
+.DS_Store
+
+# .NET build output (dataset/SRV C# projects)
+**/obj/
+**/bin/
+
+# Test artifacts
+*.pkl
+out

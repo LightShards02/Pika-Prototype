@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "HandshakeOutput",
+  "description": "Minimal schema for agent handshake tests.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["handshake"],
+  "properties": {
+    "handshake": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Echo string to confirm agent is responsive."
+    }
+  }
+}

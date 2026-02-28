@@ -1,170 +1,131 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "IndexOutput",
   "type": "object",
+  "title": "MapOutput",
+  "description": "SADS Mapper (agent map) output. When manual_resolution_items is non-empty (blocking), omit mappings. When successful, include mappings and set manual_resolution_items to [].",
   "additionalProperties": false,
-  "required": [
-    "mappings",
-    "manual_resolution_items",
-    "run_summary",
-    "created_at"
-  ],
+  "required": ["manual_resolution_items", "run_summary", "created_at", "mappings"],
   "properties": {
-    "mappings": {
-      "type": "object",
-      "minProperties": 1,
-      "propertyNames": {
-        "pattern": "^[A-Za-z][0-9]+$"
-      },
-      "additionalProperties": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "status",
-          "code_refs",
-          "notes"
-        ],
-        "properties": {
-          "status": {
-            "type": "string",
-            "enum": [
-              "mapped",
-              "partial",
-              "unmapped",
-              "blocked"
-            ]
-          },
-          "code_refs": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "path",
-                "symbol_name",
-                "symbol_type"
-              ],
-              "properties": {
-                "path": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "symbol_name": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "symbol_type": {
-                  "type": "string",
-                  "enum": [
-                    "class",
-                    "function",
-                    "module",
-                    "variable",
-                    "other"
-                  ]
-                },
-                "confidence": {
-                  "type": "number",
-                  "minimum": 0,
-                  "maximum": 1
-                }
-              }
-            }
-          },
-          "notes": {
-            "type": "string"
-          }
-        }
-      }
-    },
     "manual_resolution_items": {
       "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "command",
-          "entity_type",
-          "entity_id",
-          "reason",
-          "details",
-          "created_at"
-        ],
-        "properties": {
-          "command": {
-            "type": "string",
-            "const": "agent index"
-          },
-          "entity_type": {
-            "type": "string",
-            "enum": [
-              "spec",
-              "mapping",
-              "code_reference"
-            ]
-          },
-          "entity_id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "reason": {
-            "type": "string",
-            "minLength": 1
-          },
-          "details": {
-            "type": "string",
-            "minLength": 1
-          },
-          "created_at": {
-            "type": "string",
-            "format": "date-time",
-            "minLength": 1
-          }
-        }
-      }
+      "items": { "$ref": "#/$defs/manual_resolution_item_map" }
     },
-    "run_summary": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "command",
-        "status",
-        "summary",
-        "blocking_items",
-        "storage_file"
-      ],
-      "properties": {
-        "command": {
-          "type": "string",
-          "const": "agent index"
-        },
-        "status": {
-          "type": "string",
-          "enum": [
-            "success",
-            "partial",
-            "blocked",
-            "failed"
-          ]
-        },
-        "summary": {
-          "type": "string",
-          "minLength": 1
-        },
-        "blocking_items": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "storage_file": {
-          "type": "string",
-          "minLength": 1
-        }
-      }
-    },
+    "run_summary": { "$ref": "#/$defs/run_summary_map" },
     "created_at": {
       "type": "string",
       "format": "date-time",
       "minLength": 1
+    },
+    "mappings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/mapping_item" }
+    }
+  },
+  "$defs": {
+    "mapping_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["spec_id", "status", "code_refs"],
+      "properties": {
+        "spec_id": { "type": "string", "pattern": "^[A-Za-z][0-9]+$" },
+        "status": {
+          "type": "string",
+          "enum": ["mapped", "partial", "unmapped", "blocked"],
+          "description": "mapped: implementation fully matches the spec. partial: potential mapping found but consistency or confidence is low. unmapped: no code reference found. blocked: mapping requires manual resolution."
+        },
+        "code_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/code_ref" }
+        },
+        "assumptions": {
+          "type": ["string", "null"],
+          "description": "Assumptions made to produce this mapping. Nullable."
+        }
+      }
+    },
+    "mapping_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "code_refs"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["mapped", "partial", "unmapped", "blocked"],
+          "description": "mapped: implementation fully matches the spec. partial: potential mapping found but consistency or confidence is low. unmapped: no code reference found. blocked: mapping requires manual resolution."
+        },
+        "code_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/code_ref" }
+        },
+        "assumptions": {
+          "type": ["string", "null"],
+          "description": "Assumptions made to produce this mapping. Nullable."
+        }
+      }
+    },
+    "code_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "symbol_name", "symbol_type", "confidence", "consistency_score", "problems"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "symbol_name": { "type": "string", "minLength": 1 },
+        "symbol_type": {
+          "type": "string",
+          "enum": ["class", "function", "module", "variable", "other"]
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Confidence that this symbol implements the spec (0=no confidence, 1=high confidence)."
+        },
+        "consistency_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "How consistent the implementation is with the spec (1=highly consistent, 0=completely inconsistent)."
+        },
+        "problems": {
+          "type": "string",
+          "description": "Reason for low confidence or inconsistency. Must be empty when both confidence and consistency_score are high."
+        }
+      }
+    },
+    "manual_resolution_item_map": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "entity_type", "entity_id", "reason", "details", "created_at"],
+      "properties": {
+        "command": { "type": "string", "const": "agent map" },
+        "entity_type": {
+          "type": "string",
+          "enum": ["spec", "mapping", "code_reference"]
+        },
+        "entity_id": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 },
+        "details": { "type": "string", "minLength": 1 },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "minLength": 1
+        }
+      }
+    },
+    "run_summary_map": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "status", "summary", "blocking_items", "storage_file"],
+      "properties": {
+        "command": { "type": "string", "const": "agent map" },
+        "status": {
+          "type": "string",
+          "enum": ["success", "partial", "blocked", "failed"]
+        },
+        "summary": { "type": "string", "minLength": 1 },
+        "blocking_items": { "type": "integer", "minimum": 0 },
+        "storage_file": { "type": "string", "minLength": 1 }
+      }
     }
   }
 }

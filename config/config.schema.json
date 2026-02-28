@@ -1,283 +1,368 @@
 {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "title": "PikaConfig",
-    "type": "object",
-    "additionalProperties": false,
-    "required": [
-      "version",
-      "project",
-      "inputs",
-      "outputs",
-      "prompts",
-      "schemas",
-      "commands",
-      "id_generation",
-      "csv_contracts",
-      "logging"
-    ],
-    "properties": {
-      "version": {
-        "type": "integer",
-        "minimum": 1
-      },
-      "project": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["name", "root_dir"],
-        "properties": {
-          "name": { "type": "string", "minLength": 1 },
-          "root_dir": { "type": "string", "minLength": 1 }
-        }
-      },
-      "inputs": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["design_spec_path", "issue_tracking_path", "allowed_extensions"],
-        "properties": {
-          "design_spec_path": { "type": "string", "minLength": 1 },
-          "issue_tracking_path": { "type": "string", "minLength": 1 },
-          "allowed_extensions": {
-            "type": "array",
-            "minItems": 2,
-            "maxItems": 2,
-            "uniqueItems": true,
-            "items": {
-              "type": "string",
-              "enum": [".csv", ".xlsx"]
-            },
-            "allOf": [
-              { "contains": { "const": ".csv" } },
-              { "contains": { "const": ".xlsx" } }
-            ]
-          }
-        }
-      },
-      "outputs": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "root_dir",
-          "backups_dir",
-          "normalized_dir",
-          "agent_runs_dir",
-          "run_summary_file",
-          "manual_resolution_file",
-          "logs_dir"
-        ],
-        "properties": {
-          "root_dir": { "$ref": "#/$defs/output_target" },
-          "backups_dir": { "$ref": "#/$defs/output_target" },
-          "normalized_dir": { "$ref": "#/$defs/output_target" },
-          "agent_runs_dir": { "$ref": "#/$defs/output_target" },
-          "run_summary_file": { "$ref": "#/$defs/output_target" },
-          "manual_resolution_file": { "$ref": "#/$defs/output_target" },
-          "logs_dir": { "$ref": "#/$defs/output_target" }
-        }
-      },
-      "prompts": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["prompt_file"],
-        "properties": {
-          "prompt_file": { "type": "string", "minLength": 1 }
-        }
-      },
-      "schemas": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "index_output",
-          "implement_output",
-          "issue_map_output",
-          "issue_resolve_output"
-        ],
-        "properties": {
-          "index_output": { "type": "string", "minLength": 1 },
-          "implement_output": { "type": "string", "minLength": 1 },
-          "issue_map_output": { "type": "string", "minLength": 1 },
-          "issue_resolve_output": { "type": "string", "minLength": 1 }
-        }
-      },
-      "commands": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["load", "index", "implement", "issue"],
-        "properties": {
-          "load": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["enabled", "deterministic", "copy_before_write"],
-            "properties": {
-              "enabled": { "type": "boolean" },
-              "deterministic": { "type": "boolean", "const": true },
-              "copy_before_write": { "type": "boolean", "const": true }
-            }
-          },
-          "index": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["enabled", "prompt_name"],
-            "properties": {
-              "enabled": { "type": "boolean" },
-              "prompt_name": { "type": "string", "minLength": 1 }
-            }
-          },
-          "implement": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["enabled", "prompt_name"],
-            "properties": {
-              "enabled": { "type": "boolean" },
-              "prompt_name": { "type": "string", "minLength": 1 }
-            }
-          },
-          "issue": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["enabled", "map_prompt_name", "resolve_prompt_name"],
-            "properties": {
-              "enabled": { "type": "boolean" },
-              "map_prompt_name": { "type": "string", "minLength": 1 },
-              "resolve_prompt_name": { "type": "string", "minLength": 1 }
-            }
-          }
-        }
-      },
-      "id_generation": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["spec", "issue", "collision_scope", "registry_path"],
-        "properties": {
-          "spec": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["pattern"],
-            "properties": {
-              "pattern": {
-                "type": "string",
-                "const": "^[A-Za-z][0-9]+$"
-              }
-            }
-          },
-          "issue": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["pattern"],
-            "properties": {
-              "pattern": {
-                "type": "string",
-                "const": "^[A-Za-z]{2}[0-9]+$"
-              }
-            }
-          },
-          "collision_scope": {
-            "type": "string",
-            "enum": ["per_type_numeric_suffix"]
-          },
-          "registry_path": {
-            "type": "string",
-            "minLength": 1,
-            "const": "out/state/id_registry.json"
-          }
-        }
-      },
-      "csv_contracts": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["design_spec", "issue_tracking"],
-        "properties": {
-          "design_spec": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["add_if_missing"],
-            "properties": {
-              "add_if_missing": {
-                "type": "array",
-                "minItems": 5,
-                "maxItems": 5,
-                "uniqueItems": true,
-                "items": {
-                  "type": "string",
-                  "enum": [
-                    "spec_id",
-                    "mapped_code_symbols",
-                    "index_status",
-                    "index_notes",
-                    "last_indexed_at"
-                  ]
-                },
-                "allOf": [
-                  { "contains": { "const": "spec_id" } },
-                  { "contains": { "const": "mapped_code_symbols" } },
-                  { "contains": { "const": "index_status" } },
-                  { "contains": { "const": "index_notes" } },
-                  { "contains": { "const": "last_indexed_at" } }
-                ]
-              }
-            }
-          },
-          "issue_tracking": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["add_if_missing"],
-            "properties": {
-              "add_if_missing": {
-                "type": "array",
-                "minItems": 6,
-                "maxItems": 6,
-                "uniqueItems": true,
-                "items": {
-                  "type": "string",
-                  "enum": [
-                    "issue_id",
-                    "author",
-                    "mapped_spec_ids",
-                    "issue_notes",
-                    "follow_up_uncertainties",
-                    "last_resolved_at"
-                  ]
-                },
-                "allOf": [
-                  { "contains": { "const": "issue_id" } },
-                  { "contains": { "const": "author" } },
-                  { "contains": { "const": "mapped_spec_ids" } },
-                  { "contains": { "const": "issue_notes" } },
-                  { "contains": { "const": "follow_up_uncertainties" } },
-                  { "contains": { "const": "last_resolved_at" } }
-                ]
-              }
-            }
-          }
-        }
-      },
-      "logging": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["level", "verbose_level", "json", "log_dir"],
-        "properties": {
-          "level": {
-            "type": "string",
-            "enum": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
-          },
-          "verbose_level": {
-            "type": "string",
-            "enum": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
-          },
-          "json": { "type": "boolean" },
-          "log_dir": { "type": "string", "minLength": 1 }
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PikaConfig",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "project",
+    "inputs",
+    "outputs",
+    "prompts",
+    "schemas",
+    "commands",
+    "id_generation",
+    "csv_contracts",
+    "logging"
+  ],
+  "properties": {
+    "version": { "type": "integer", "minimum": 1 },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "root_dir"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "root_dir": { "type": "string", "minLength": 1 }
+      }
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowed_extensions", "project_context_filename"],
+      "properties": {
+        "srs_path": { "type": "string", "minLength": 1 },
+        "raw_sads_path": { "type": "string", "minLength": 1 },
+        "design_spec_path": { "type": "string", "minLength": 1 },
+        "codebase_dir": { "type": "string", "minLength": 1, "description": "Path to codebase/source directory for plan, map, implement. Used as fallback dir for project context file. Absolute or relative to project root." },
+        "project_context_filename": { "type": "string", "minLength": 1, "description": "Filename for project context in project root (e.g. PROJECT_CONTEXT.md). Used when --project-context not provided." },
+        "extra_prompt_filename": { "type": "string", "minLength": 1, "description": "Filename for extra prompt in project root (e.g. EXTRA-PROMPT.md). Used by map command when --extra-prompt not provided. Optional; when omitted in both config and CLI, no file is looked for and extra section is empty." },
+        "issue_tracking_path": { "type": "string", "minLength": 1 },
+        "allowed_extensions": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": { "type": "string", "enum": [".csv", ".xlsx"] },
+          "allOf": [
+            { "contains": { "const": ".csv" } },
+            { "contains": { "const": ".xlsx" } }
+          ]
         }
       }
     },
-    "$defs": {
-      "output_target": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["path", "no_overwrite"],
-        "properties": {
-          "path": { "type": "string", "minLength": 1 },
-          "no_overwrite": { "type": "boolean" }
+    "outputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root_dir",
+        "backups_dir",
+        "normalized_dir",
+        "agent_runs_dir",
+        "run_summary_file",
+        "manual_resolution_file",
+        "logs_dir"
+      ],
+      "properties": {
+        "root_dir": { "$ref": "#/$defs/output_target" },
+        "backups_dir": { "$ref": "#/$defs/output_target" },
+        "normalized_dir": { "$ref": "#/$defs/output_target" },
+        "agent_runs_dir": { "$ref": "#/$defs/output_target" },
+        "agent_artifacts_dir": { "$ref": "#/$defs/output_target" },
+        "run_summary_file": { "$ref": "#/$defs/output_target" },
+        "manual_resolution_file": { "$ref": "#/$defs/output_target" },
+        "logs_dir": { "$ref": "#/$defs/output_target" },
+        "agent_view_csv": { "$ref": "#/$defs/output_target" },
+        "intermediate_map_dir": { "$ref": "#/$defs/output_target" },
+        "agent_input_codebase_content_dir": { "$ref": "#/$defs/output_target" }
+      }
+    },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "type": "string",
+          "enum": ["stub", "api", "local"],
+          "description": "Agent provider: stub (mock), api (remote HTTP chat completions), or local (CLI subprocess e.g. Codex)."
+        },
+        "schema_validation_retries": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of retries when agent output fails schema validation. 0 = no retries."
+        },
+        "stream_output": {
+          "type": "boolean",
+          "description": "If true, stream agent output to terminal and show heartbeat when agent runs (api, local)."
+        },
+        "local_command": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Executable name or path when provider is local. Default: codex."
+        },
+        "api_key_env": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Environment variable name for API Bearer token when provider is api. Default from pika config."
+        },
+        "api_url": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Chat completions API URL when provider is api. Default from pika config."
+        },
+        "api_model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model ID when provider is api. Default from pika config."
         }
       }
+    },
+    "prompts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prompt_file"],
+      "properties": { "prompt_file": { "type": "string", "minLength": 1 } }
+    },
+    "schemas": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "map_output",
+        "implement_output",
+        "resolve_plan_map_output",
+        "resolve_plan_output"
+      ],
+      "properties": {
+        "plan_output": { "type": "string", "minLength": 1 },
+        "map_output": { "type": "string", "minLength": 1 },
+        "implement_output": { "type": "string", "minLength": 1 },
+        "resolve_plan_map_output": { "type": "string", "minLength": 1 },
+        "resolve_plan_output": { "type": "string", "minLength": 1 }
+      }
+    },
+    "commands": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "map", "implement", "resolve_plan"],
+      "properties": {
+        "plan": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "prompt_name"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "prompt_name": { "type": "string", "minLength": 1 }
+          }
+        },
+        "format": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "deterministic", "copy_before_write"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "deterministic": { "type": "boolean", "const": true },
+            "copy_before_write": { "type": "boolean", "const": true },
+            "sensitive_keywords": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "required": ["keywords"],
+                "properties": {
+                  "keywords": { "type": "array", "items": { "type": "string" } },
+                  "case_sensitive": { "type": "boolean", "default": false }
+                }
+              },
+              "description": "Replacement -> {keywords: [...], case_sensitive?: bool}. keywords required; case_sensitive optional (default false). Whole-word match."
+            },
+            "sads_id_mapping_path": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Path for SADS ID mapping JSON (by_sads_id, by_srs_id). Default: out/state/sads_id_mapping.json"
+            }
+          }
+        },
+        "review": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "prompt_name"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "prompt_name": { "type": "string", "minLength": 1 }
+          }
+        },
+        "map": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "prompt_name"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "prompt_name": { "type": "string", "minLength": 1 },
+            "skip_mapped": {
+              "type": "boolean",
+              "description": "Skip index_status=mapped on re-runs. Default true."
+            },
+            "max_acceptance_chars": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Truncate acceptance_criteria at invocation (0 = unlimited)."
+            }
+          }
+        },
+        "implement": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "prompt_name"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "prompt_name": { "type": "string", "minLength": 1 }
+          }
+        },
+        "resolve_plan": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "map_prompt_name", "resolve_prompt_name"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "map_prompt_name": { "type": "string", "minLength": 1 },
+            "resolve_prompt_name": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "id_generation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["spec", "issue", "collision_scope", "registry_path"],
+      "properties": {
+        "spec": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["pattern"],
+          "properties": { "pattern": { "type": "string", "const": "^[A-Za-z][0-9]+$" } }
+        },
+        "issue": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["pattern"],
+          "properties": { "pattern": { "type": "string", "const": "^[A-Za-z]{2}[0-9]+$" } }
+        },
+        "collision_scope": { "type": "string", "enum": ["per_type_numeric_suffix"] },
+        "registry_path": { "type": "string", "minLength": 1, "const": "out/state/id_registry.json" }
+      }
+    },
+    "csv_contracts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["design_spec", "issue_tracking"],
+      "properties": {
+        "design_spec": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["add_if_missing"],
+          "properties": {
+            "add_if_missing": {
+              "type": "array",
+              "minItems": 10,
+              "maxItems": 10,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "enum": [
+                  "spec_id",
+                  "module_tag",
+                  "subunit",
+                  "mapped_code_symbols",
+                  "mapped_confidence",
+                  "mapped_consistency_score",
+                  "mapped_problems",
+                  "index_status",
+                  "assumptions",
+                  "last_indexed_at"
+                ]
+              },
+              "allOf": [
+                { "contains": { "const": "spec_id" } },
+                { "contains": { "const": "module_tag" } },
+                { "contains": { "const": "subunit" } },
+                { "contains": { "const": "mapped_code_symbols" } },
+                { "contains": { "const": "mapped_confidence" } },
+                { "contains": { "const": "mapped_consistency_score" } },
+                { "contains": { "const": "mapped_problems" } },
+                { "contains": { "const": "index_status" } },
+                { "contains": { "const": "assumptions" } },
+                { "contains": { "const": "last_indexed_at" } }
+              ]
+            }
+          }
+        },
+        "issue_tracking": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["add_if_missing"],
+          "properties": {
+            "add_if_missing": {
+              "type": "array",
+              "minItems": 6,
+              "maxItems": 6,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "enum": [
+                  "issue_id",
+                  "author",
+                  "mapped_spec_ids",
+                  "issue_notes",
+                  "follow_up_uncertainties",
+                  "last_resolved_at"
+                ]
+              },
+              "allOf": [
+                { "contains": { "const": "issue_id" } },
+                { "contains": { "const": "author" } },
+                { "contains": { "const": "mapped_spec_ids" } },
+                { "contains": { "const": "issue_notes" } },
+                { "contains": { "const": "follow_up_uncertainties" } },
+                { "contains": { "const": "last_resolved_at" } }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "logging": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level", "verbose_level", "json", "log_dir"],
+      "properties": {
+        "level": { "type": "string", "enum": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] },
+        "verbose_level": { "type": "string", "enum": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] },
+        "json": { "type": "boolean" },
+        "log_dir": { "type": "string", "minLength": 1 }
+      }
+    },
+    "codebase_transmission": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Controls how source files are included in prompts for API-based agents. Ignored when provider is local.",
+      "properties": {
+        "max_summary_chars": { "type": "integer", "minimum": 1000, "description": "Cap on total snapshot (AST + raw files combined). Default 200000." },
+        "max_raw_files": { "type": "integer", "minimum": 1, "description": "For implement/resolve_plan: how many raw files to include. Default 10." },
+        "max_raw_chars_per_file": { "type": "integer", "minimum": 100, "description": "Truncate raw files longer than this. Default 5000." },
+        "include_extensions": { "type": "array", "items": { "type": "string" }, "description": "File extensions to include." },
+        "exclude_patterns": { "type": "array", "items": { "type": "string" }, "description": "Glob patterns to exclude." },
+        "depth_limit": { "type": "integer", "minimum": 1, "description": "Max directory depth from codebase root. Default 15." }
+      }
     }
+  },
+  "$defs": {
+    "output_target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "no_overwrite"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "no_overwrite": { "type": "boolean" }
+      }
+    }
+  }
 }
-  

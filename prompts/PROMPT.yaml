@@ -1,13 +1,70 @@
 version: 1
 
 command_surface:
-  - agent load
-  - agent index
+  - agent plan
+  - agent format
+  - agent review
+  - agent map
   - agent implement
-  - agent issue
+  - agent resolve_plan
 
 prompts:
-  index_spec_to_code:
+  project_designer:
+    description: Produce SADS-compatible spec rows from SRS. Embed unit logic, feature logic, edge cases, error handling, class/helper descriptions in requirement and acceptance_criteria text.
+    output_schema_file: schemas/agent_outputs/plan_output.schema.json
+    template_variables:
+      - name: output_schema_file
+        required: true
+        description: Schema file path that this prompt output must validate against.
+      - name: srs_content
+        required: true
+        description: Full SRS (Software Requirements Specification) content.
+      - name: project_context
+        required: true
+        description: Content of project context file (e.g. PROJECT_CONTEXT.md). Provided via --project-context or project root / inputs.project_context_filename.
+      - name: design_spec_column_definitions
+        required: true
+        description: Design Spec (SADS) column meanings per csv_contracts.md.
+      - name: manual_resolution_file
+        required: true
+        description: Central CSV file path for all manual resolution items.
+      - name: run_summary_file
+        required: true
+        description: Central JSONL file path for run summaries.
+      - name: agent_artifacts_dir
+        required: true
+        description: Directory where the agent must write large artifacts (e.g. design spec draft CSV). Paths in output schema reference files written here.
+    system: |
+      You are a strict project design agent.
+      You MUST follow the output schema exactly. Your output JSON must validate against {{output_schema_file}} without exception.
+      Return JSON only. Do not include markdown fences.
+      Write the design spec draft (proposed_sads_outline) to a file in {{agent_artifacts_dir}} and return its path in proposed_sads_outline_path. Do NOT embed large content inline in the JSON.
+      The design spec rows must be directly compatible with Design Spec (SADS) columns per design_spec_column_definitions.
+      Embed the detailed design in each row's requirement and acceptance_criteria text:
+      - requirement: unit/module logic, feature logic, edge cases, error handling, class and helper descriptions
+      - acceptance_criteria: verification criteria, concrete testable conditions
+      Do NOT produce separate fields for units, features, edge_cases, errors. All design detail goes into the SADS column text.
+      Put any blocking unclarities into manual_resolution_items.
+    user: |
+      SRS:
+      {{srs_content}}
+
+      Project Context:
+      {{project_context}}
+
+      Design Spec Column Definitions (SADS):
+      {{design_spec_column_definitions}}
+
+      Manual Resolution File:
+      {{manual_resolution_file}}
+
+      Run Summary File:
+      {{run_summary_file}}
+
+      Agent Artifacts Dir (write design spec draft here):
+      {{agent_artifacts_dir}}
+
+  map_spec_to_code:
     description: Map each design spec row to relevant code references.
     output_schema_file: schemas/agent_outputs/index_output.schema.json
     template_variables:
@@ -16,16 +73,22 @@ prompts:
         description: Schema file path that this prompt output must validate against.
       - name: project_context
         required: true
-        description: High-level project context and constraints.
+        description: Content of project context file (e.g. PROJECT_CONTEXT.md). Provided via --project-context or project root / inputs.project_context_filename.
+      - name: extra_prompt_section
+        required: false
+        description: Optional extra prompt section (heading + content). Built from --extra-prompt or project root / inputs.extra_prompt_filename. Empty string when not provided.
       - name: design_spec_rows_csv
         required: true
         description: Design spec rows as CSV text.
       - name: design_spec_column_definitions
         required: true
         description: Column meanings/types/requirements for design spec table.
-      - name: codebase_snapshot
+      - name: codebase_dir
         required: true
-        description: Relevant files and symbols for indexing.
+        description: Path to the codebase/source code directory to index. Absolute or relative to project root.
+      - name: codebase_content
+        required: false
+        description: AST summary of codebase (signatures, docstrings, call graph). Empty when provider has filesystem access.
       - name: manual_resolution_file
         required: true
         description: Central CSV file path for all manual resolution items.
@@ -34,15 +97,25 @@ prompts:
         description: Central JSONL file path for run summaries.
     system: |
       You are a strict software indexing agent.
-      Return JSON only.
-      The JSON must validate against {{output_schema_file}}.
-      Do not include markdown fences.
+      You MUST follow the output schema exactly. Your output JSON must validate against {{output_schema_file}} without exception.
+      Return JSON only. Do not include markdown fences.
       Interpret CSV columns using design_spec_column_definitions.
       Use function/class symbol names for code references, not line numbers.
       Put any manual-only items into manual_resolution_items.
+      When codebase_content is provided, use it to find matching symbols.
+      When codebase_content is empty, use codebase_dir to explore files directly.
+
+      Output schema field definitions:
+      - status (per mapping): "mapped" = implementation fully matches spec; "partial" = potential mapping found but consistency or confidence is low; "unmapped" = no code reference found; "blocked" = requires manual resolution.
+      - code_refs (per mapping): each entry has path, symbol_name, symbol_type, confidence, consistency_score, problems.
+      - confidence (per code_ref): 0-1, how confident the symbol implements the spec (1 = high).
+      - consistency_score (per code_ref): 0-1, how consistent the implementation is with the spec (1 = highly consistent, 0 = completely inconsistent).
+      - assumptions (per mapping): assumptions made to produce this mapping. Nullable.
+      - problems (per code_ref): reason for low confidence or inconsistency only. Must be empty when both confidence and consistency_score are high.
     user: |
       Context:
       {{project_context}}
+      {{extra_prompt_section}}
 
       Design Specs (CSV):
       {{design_spec_rows_csv}}
@@ -50,8 +123,11 @@ prompts:
       Design Spec Column Definitions:
       {{design_spec_column_definitions}}
 
-      Codebase Snapshot:
-      {{codebase_snapshot}}
+      Codebase Dir:
+      {{codebase_dir}}
+
+      Codebase Source (AST summary + selected files):
+      {{codebase_content}}
 
       Manual Resolution File:
       {{manual_resolution_file}}
@@ -68,7 +144,7 @@ prompts:
         description: Schema file path that this prompt output must validate against.
       - name: project_context
         required: true
-        description: Project rules and coding constraints.
+        description: Content of project context file (e.g. PROJECT_CONTEXT.md). Provided via --project-context or project root / inputs.project_context_filename.
       - name: selected_specs_csv
         required: true
         description: Selected specs as CSV text.
@@ -78,16 +154,26 @@ prompts:
       - name: indexed_mappings_csv
         required: true
         description: Current mapping columns from design spec CSV.
+      - name: codebase_dir
+        required: false
+        description: Path to codebase. Empty when provider has filesystem access.
+      - name: codebase_content
+        required: false
+        description: AST summary of codebase with selected raw files. Empty when provider has filesystem access.
       - name: manual_resolution_file
         required: true
         description: Central CSV file path for all manual resolution items.
       - name: run_summary_file
         required: true
         description: Central JSONL file path for run summaries.
+      - name: agent_artifacts_dir
+        required: true
+        description: Directory where the agent must write diff files. Each diff goes in a separate file; output schema expects diff_path.
     system: |
       You are a strict implementation planning agent.
-      Return JSON only.
-      The JSON must validate against {{output_schema_file}}.
+      You MUST follow the output schema exactly. Your output JSON must validate against {{output_schema_file}} without exception.
+      Return JSON only. Do not include markdown fences.
+      Write each unified diff to a separate file in {{agent_artifacts_dir}} and return diff_path (not diff_unified) in the JSON. Do NOT embed diff content inline.
       All diffs must be deterministic and minimally scoped.
       Interpret CSV columns using design_spec_column_definitions.
       If any unclarity is blocking, include a run_summary entry and manual_resolution_items.
@@ -104,11 +190,20 @@ prompts:
       Index Mappings (CSV):
       {{indexed_mappings_csv}}
 
+      Codebase Dir:
+      {{codebase_dir}}
+
+      Codebase Source (AST summary + selected files):
+      {{codebase_content}}
+
       Manual Resolution File:
       {{manual_resolution_file}}
 
       Run Summary File:
       {{run_summary_file}}
+
+      Agent Artifacts Dir (write diff files here):
+      {{agent_artifacts_dir}}
 
   map_issues_to_specs:
     description: Link issues to affected design specs.
@@ -137,8 +232,8 @@ prompts:
         description: Central JSONL file path for run summaries.
     system: |
       You are a strict issue mapping agent.
-      Return JSON only.
-      The JSON must validate against {{output_schema_file}}.
+      You MUST follow the output schema exactly. Your output JSON must validate against {{output_schema_file}} without exception.
+      Return JSON only. Do not include markdown fences.
       Mapping output must be suitable for the mapped_spec_ids CSV column.
       Interpret CSV columns using provided column definitions.
     user: |
@@ -185,10 +280,14 @@ prompts:
       - name: run_summary_file
         required: true
         description: Central JSONL file path for run summaries.
+      - name: agent_artifacts_dir
+        required: true
+        description: Directory where the agent must write diff files. Each diff goes in a separate file; output schema expects diff_path.
     system: |
       You are a strict issue resolution agent.
-      Return JSON only.
-      The JSON must validate against {{output_schema_file}}.
+      You MUST follow the output schema exactly. Your output JSON must validate against {{output_schema_file}} without exception.
+      Return JSON only. Do not include markdown fences.
+      Write each unified diff to a separate file in {{agent_artifacts_dir}} and return diff_path (not diff_unified) in the JSON. Do NOT embed diff content inline.
       Include only actionable diffs.
       follow_up_uncertainties are mandatory for every issue in output.
       If there are no uncertainties, explicitly say "No follow_up_uncertainties".
@@ -211,3 +310,6 @@ prompts:
 
       Run Summary File:
       {{run_summary_file}}
+
+      Agent Artifacts Dir (write diff files here):
+      {{agent_artifacts_dir}}

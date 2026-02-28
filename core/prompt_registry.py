@@ -30,23 +30,23 @@ class PromptSpec:
 
 
 class PromptRegistry:
-    """Loads and validates prompt specs from the central PROMPT file."""
+    """Loads and validates prompt specs from the central PROMPT file.
 
-    def __init__(
-        self, prompt_file: str | Path, project_root: str | Path | None = None
-    ) -> None:
-        """Initialize prompt registry."""
-        self._project_root = self._resolve_project_root(project_root)
-        self._prompt_file = self._resolve_project_path(prompt_file)
+    Prompt file and schema paths are resolved from PIKA root only.
+    Only template variables vary per project; the prompt template is project-independent.
+    """
+
+    def __init__(self, prompt_file: str | Path) -> None:
+        """Initialize prompt registry. prompt_file is resolved from PIKA root."""
+        from core.pika_paths import resolve_prompts_path
+        self._prompt_file = resolve_prompts_path(str(prompt_file))
         self._specs: dict[str, PromptSpec] = {}
         self._schema_paths: dict[str, Path] = {}
         self._load()
 
     @classmethod
-    def from_config(
-        cls, config: dict, project_root: str | Path | None = None
-    ) -> "PromptRegistry":
-        """Return from config."""
+    def from_config(cls, config: dict) -> "PromptRegistry":
+        """Return from config. prompts.prompt_file is resolved from PIKA root."""
         prompts_section = config.get("prompts")
         if not isinstance(prompts_section, dict):
             raise PromptValidationError(
@@ -59,7 +59,7 @@ class PromptRegistry:
                 "Config field prompts.prompt_file must be a non-empty string."
             )
 
-        return cls(prompt_file=prompt_file, project_root=project_root)
+        return cls(prompt_file=prompt_file)
 
     def list_prompts(self) -> list[str]:
         """List prompts."""
@@ -158,7 +158,7 @@ class PromptRegistry:
                 prompt_name, prompt_node
             )
 
-            schema_path = self._resolve_project_path(output_schema_file)
+            schema_path = self._resolve_schema_path(output_schema_file)
             if not schema_path.exists() or not schema_path.is_file():
                 raise PromptValidationError(
                     f"Prompt '{prompt_name}' has invalid field 'output_schema_file': "
@@ -254,22 +254,7 @@ class PromptRegistry:
 
         return normalized
 
-    @staticmethod
-    def _resolve_project_root(project_root: str | Path | None) -> Path:
-        """Resolve project root."""
-        if project_root is not None:
-            return Path(project_root).resolve()
-
-        current = Path(__file__).resolve().parent
-        for candidate in (current, *current.parents):
-            if (candidate / "config").is_dir():
-                return candidate
-
-        return Path(__file__).resolve().parents[1]
-
-    def _resolve_project_path(self, path_value: str | Path) -> Path:
-        """Resolve project path."""
-        candidate = Path(path_value)
-        if candidate.is_absolute():
-            return candidate.resolve()
-        return (self._project_root / candidate).resolve()
+    def _resolve_schema_path(self, path_value: str | Path) -> Path:
+        """Resolve schema path from PIKA root (project-independent)."""
+        from core.pika_paths import resolve_path_from_pika_root
+        return resolve_path_from_pika_root(path_value)

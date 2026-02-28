@@ -27,16 +27,16 @@ class PromptRegistryTests(unittest.TestCase):
     def test_from_config_loads_prompt_and_lookups(self) -> None:
         """Test that from config loads prompt and lookups."""
         root = self._make_root()
-        self._write_schema(root)
+        schema_path = self._write_schema(root)
         prompt_file = root / "prompts" / "PROMPT.yaml"
         prompt_file.write_text(
-            """
+            f"""
 prompts:
-  index_spec_to_code:
+  map_spec_to_code:
     version: "1.0"
     system: "system text"
     user: "user text"
-    output_schema_file: schemas/agent_outputs/test.schema.json
+    output_schema_file: {schema_path.as_posix()}
     template_variables:
       - name: project_context
         required: true
@@ -46,50 +46,50 @@ prompts:
             encoding="utf-8",
         )
 
-        config = {"prompts": {"prompt_file": "prompts/PROMPT.yaml"}}
-        registry = PromptRegistry.from_config(config, project_root=root)
+        config = {"prompts": {"prompt_file": str(prompt_file)}}
+        registry = PromptRegistry.from_config(config)
 
-        self.assertEqual(registry.list_prompts(), ["index_spec_to_code"])
-        spec = registry.get("index_spec_to_code")
-        self.assertEqual(spec.name, "index_spec_to_code")
+        self.assertEqual(registry.list_prompts(), ["map_spec_to_code"])
+        spec = registry.get("map_spec_to_code")
+        self.assertEqual(spec.name, "map_spec_to_code")
         self.assertEqual(spec.version, "1.0")
         self.assertEqual(spec.system_prompt, "system text")
         self.assertEqual(spec.user_prompt, "user text")
         self.assertEqual(
-            spec.output_schema_file, "schemas/agent_outputs/test.schema.json"
+            spec.output_schema_file, schema_path.as_posix()
         )
         self.assertEqual(
             spec.template_variables,
             {"project_context": {"required": True, "description": "context"}},
         )
         self.assertEqual(
-            registry.get_template_variables("index_spec_to_code"),
+            registry.get_template_variables("map_spec_to_code"),
             {"project_context": {"required": True, "description": "context"}},
         )
         self.assertEqual(
-            registry.get_schema_path("index_spec_to_code"),
-            (root / "schemas" / "agent_outputs" / "test.schema.json").resolve(),
+            registry.get_schema_path("map_spec_to_code"),
+            schema_path.resolve(),
         )
 
     def test_legacy_prompt_shape_is_normalized(self) -> None:
         """Test that legacy prompt shape is normalized."""
         root = self._make_root()
-        self._write_schema(root)
+        schema_path = self._write_schema(root)
         prompt_file = root / "prompts" / "PROMPT.yaml"
         prompt_file.write_text(
-            """
+            f"""
 version: 1
 prompts:
   map_issues_to_specs:
     system: "sys block"
     user: "user block"
-    output_schema_file: schemas/agent_outputs/test.schema.json
+    output_schema_file: {schema_path.as_posix()}
 """.strip()
             + "\n",
             encoding="utf-8",
         )
 
-        registry = PromptRegistry(prompt_file=prompt_file, project_root=root)
+        registry = PromptRegistry(prompt_file=prompt_file)
         spec = registry.get("map_issues_to_specs")
 
         self.assertEqual(spec.version, "1")
@@ -99,22 +99,22 @@ prompts:
     def test_missing_required_field_raises_validation_error(self) -> None:
         """Test that missing required field raises validation error."""
         root = self._make_root()
-        self._write_schema(root)
+        schema_path = self._write_schema(root)
         prompt_file = root / "prompts" / "PROMPT.yaml"
         prompt_file.write_text(
-            """
+            f"""
 prompts:
   implement_from_specs:
     version: "1"
     user: "user text"
-    output_schema_file: schemas/agent_outputs/test.schema.json
+    output_schema_file: {schema_path.as_posix()}
 """.strip()
             + "\n",
             encoding="utf-8",
         )
 
         with self.assertRaises(PromptValidationError) as ctx:
-            PromptRegistry(prompt_file=prompt_file, project_root=root)
+            PromptRegistry(prompt_file=prompt_file)
 
         self.assertIn("implement_from_specs", str(ctx.exception))
         self.assertIn("system", str(ctx.exception))
@@ -123,21 +123,22 @@ prompts:
         """Test that missing schema file raises validation error."""
         root = self._make_root()
         prompt_file = root / "prompts" / "PROMPT.yaml"
+        missing_schema = root / "schemas" / "agent_outputs" / "missing.schema.json"
         prompt_file.write_text(
-            """
+            f"""
 prompts:
   resolve_issues_with_diffs:
     version: "2"
     system: "plan changes"
     user: "apply changes"
-    output_schema_file: schemas/agent_outputs/missing.schema.json
+    output_schema_file: {missing_schema.as_posix()}
 """.strip()
             + "\n",
             encoding="utf-8",
         )
 
         with self.assertRaises(PromptValidationError) as ctx:
-            PromptRegistry(prompt_file=prompt_file, project_root=root)
+            PromptRegistry(prompt_file=prompt_file)
 
         self.assertIn("resolve_issues_with_diffs", str(ctx.exception))
         self.assertIn("output_schema_file", str(ctx.exception))
@@ -149,27 +150,27 @@ prompts:
         prompt_file.write_text("prompts: [invalid\n", encoding="utf-8")
 
         with self.assertRaises(PromptParseError):
-            PromptRegistry(prompt_file=prompt_file, project_root=root)
+            PromptRegistry(prompt_file=prompt_file)
 
     def test_get_unknown_prompt_raises_not_found(self) -> None:
         """Test that get unknown prompt raises not found."""
         root = self._make_root()
-        self._write_schema(root)
+        schema_path = self._write_schema(root)
         prompt_file = root / "prompts" / "PROMPT.yaml"
         prompt_file.write_text(
-            """
+            f"""
 prompts:
   index_spec_to_code:
     version: "1"
     system: "json"
     user: "json"
-    output_schema_file: schemas/agent_outputs/test.schema.json
+    output_schema_file: {schema_path.as_posix()}
 """.strip()
             + "\n",
             encoding="utf-8",
         )
 
-        registry = PromptRegistry(prompt_file=prompt_file, project_root=root)
+        registry = PromptRegistry(prompt_file=prompt_file)
         with self.assertRaises(PromptNotFoundError):
             registry.get("does_not_exist")
 

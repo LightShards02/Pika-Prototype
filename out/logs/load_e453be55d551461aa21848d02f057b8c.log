@@ -1,2 +1,0 @@
-{"timestamp":"2026-02-14T00:57:54.565+00:00","level":"INFO","event":"command_start","command":"load","run_id":"e453be55d551461aa21848d02f057b8c","config_path":"C:\\Users\\night\\Work\\Echelondx\\Pika\\config\\config.example.yaml","dry_run":true,"command_only_validation":false}
-{"timestamp":"2026-02-14T00:57:54.566+00:00","level":"INFO","event":"command_end","command":"load","run_id":"e453be55d551461aa21848d02f057b8c","config_path":"C:\\Users\\night\\Work\\Echelondx\\Pika\\config\\config.example.yaml","dry_run":true,"command_only_validation":false,"status":"initialized"}
