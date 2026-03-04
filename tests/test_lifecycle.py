@@ -14,12 +14,63 @@ from core.lifecycle import (
     get_agent_provider,
     get_api_config,
     get_local_command,
+    get_reasoning_effort,
     get_schema_validation_retries,
     invoke_agent_stub,
     invoke_agent_with_schema_retry,
+    resolve_agent_artifacts_dir_for_command,
     resolve_agent_input_codebase_content_dir,
+    resolve_agent_runs_dir_for_command,
+    resolve_manual_resolution_path_for_command,
+    resolve_run_summary_path_for_command,
     validate_output_against_schema,
 )
+
+
+class CommandAwareResolveTests(unittest.TestCase):
+    """Tests for command-aware output path resolution."""
+
+    def test_resolve_agent_runs_dir_for_command(self) -> None:
+        """agent_runs uses base/command/run_id structure."""
+        root = Path(__file__).parent.parent
+        config = {"outputs": {"agent_runs_dir": {"path": "out/agent_runs", "no_overwrite": False}}}
+        # Without run_id
+        path = resolve_agent_runs_dir_for_command(config, root, "map")
+        self.assertIn("agent_runs", path.parts)
+        self.assertIn("map", path.parts)
+        self.assertEqual(path.name, "map")
+        # With run_id
+        path = resolve_agent_runs_dir_for_command(config, root, "implement", "run-123")
+        self.assertIn("agent_runs", path.parts)
+        self.assertIn("implement", path.parts)
+        self.assertEqual(path.name, "run-123")
+
+    def test_resolve_agent_artifacts_dir_for_command(self) -> None:
+        """agent_artifacts uses base/command/run_id structure."""
+        root = Path(__file__).parent.parent
+        config = {"outputs": {"agent_artifacts_dir": {"path": "out/agent_artifacts", "no_overwrite": False}}}
+        path = resolve_agent_artifacts_dir_for_command(config, root, "plan", "run-abc")
+        self.assertIn("agent_artifacts", path.parts)
+        self.assertIn("plan", path.parts)
+        self.assertEqual(path.name, "run-abc")
+
+    def test_resolve_run_summary_path_for_command(self) -> None:
+        """run_summary uses base/command/run_summary.jsonl."""
+        root = Path(__file__).parent.parent
+        config = {"outputs": {"agent_runs_dir": {"path": "out/agent_runs", "no_overwrite": False}}}
+        path = resolve_run_summary_path_for_command(config, root, "map")
+        self.assertIn("agent_runs", path.parts)
+        self.assertIn("map", path.parts)
+        self.assertEqual(path.name, "run_summary.jsonl")
+
+    def test_resolve_manual_resolution_path_for_command(self) -> None:
+        """manual_resolution uses base/command/manual_resolution.csv."""
+        root = Path(__file__).parent.parent
+        config = {"outputs": {"agent_runs_dir": {"path": "out/agent_runs", "no_overwrite": False}}}
+        path = resolve_manual_resolution_path_for_command(config, root, "resolve_plan")
+        self.assertIn("agent_runs", path.parts)
+        self.assertIn("resolve_plan", path.parts)
+        self.assertEqual(path.name, "manual_resolution.csv")
 
 
 class LifecycleTests(unittest.TestCase):
@@ -101,6 +152,41 @@ class AgentProviderTests(unittest.TestCase):
             get_local_command({"agent": {"local_command": "codex"}}),
             "codex",
         )
+
+
+class GetReasoningEffortTests(unittest.TestCase):
+    """Tests for get_reasoning_effort."""
+
+    def test_project_override_prompt_specific(self) -> None:
+        """Project config prompt-specific overrides pika."""
+        config = {
+            "agent": {
+                "reasoning_effort": {
+                    "implement_from_specs": "xhigh",
+                    "map_spec_to_code": "low",
+                }
+            }
+        }
+        self.assertEqual(get_reasoning_effort(config, "implement_from_specs"), "xhigh")
+        self.assertEqual(get_reasoning_effort(config, "map_spec_to_code"), "low")
+
+    def test_project_override_default(self) -> None:
+        """Project config default applies to unknown prompts."""
+        config = {"agent": {"reasoning_effort": {"default": "high"}}}
+        self.assertEqual(get_reasoning_effort(config, "unknown_prompt"), "high")
+
+    def test_pika_defaults(self) -> None:
+        """Pika defaults apply when no project override."""
+        config = {}
+        # implement_from_specs defaults to high in pika
+        self.assertEqual(get_reasoning_effort(config, "implement_from_specs"), "high")
+        # map_spec_to_code defaults to medium in pika
+        self.assertEqual(get_reasoning_effort(config, "map_spec_to_code"), "medium")
+
+    def test_fallback_medium(self) -> None:
+        """Unknown prompt with no config falls back to medium."""
+        config = {}
+        self.assertEqual(get_reasoning_effort(config, "nonexistent_prompt"), "medium")
 
 
 class ApiConfigTests(unittest.TestCase):
@@ -219,19 +305,25 @@ class ResolveAgentInputCodebaseContentDirTests(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
     def test_uses_config_when_configured(self) -> None:
-        """Uses outputs.agent_input_codebase_content_dir when set."""
+        """Uses commands.map.outputs.agent_input_codebase_content_dir when set."""
         tmp = _test_tmpdir()
         try:
             root = tmp
             config = {
-                "outputs": {
-                    "agent_input_codebase_content_dir": {
-                        "path": "custom/agent_input",
-                        "no_overwrite": False,
+                "commands": {
+                    "map": {
+                        "outputs": {
+                            "agent_input_codebase_content_dir": {
+                                "path": "custom/agent_input",
+                                "no_overwrite": False,
+                            }
+                        }
                     }
                 }
             }
-            result = resolve_agent_input_codebase_content_dir(config, root)
+            result = resolve_agent_input_codebase_content_dir(
+                config, root, command="map"
+            )
             self.assertEqual(result, root / "custom" / "agent_input")
         finally:
             shutil.rmtree(tmp, ignore_errors=True)

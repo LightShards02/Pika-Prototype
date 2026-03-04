@@ -21,11 +21,14 @@ from core.lifecycle import (
     has_blocking_manual_resolution,
     invoke_agent_with_schema_retry,
     log_lifecycle_event,
+    resolve_agent_artifacts_dir_for_command,
+    resolve_agent_runs_dir_for_command,
     resolve_codebase_dir_path,
     resolve_input_path,
-    resolve_output_path,
+    resolve_manual_resolution_path_for_command,
     resolve_output_schema_path,
     resolve_project_context_content,
+    resolve_run_summary_path_for_command,
 )
 
 
@@ -39,7 +42,8 @@ def run_plan(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
     # 3. Load required inputs
     log_lifecycle_event("lifecycle_load_inputs", command="plan", run_id=ctx.run_id)
     srs_path = resolve_input_path(
-        config, project_root, "srs_path", overrides=ctx.input_overrides
+        config, project_root, "srs_path",
+        overrides=ctx.input_overrides, command="plan",
     )
     if srs_path is None or not srs_path.exists():
         return {"command": "plan", "status": "skipped", "reason": "srs_path not configured or missing"}
@@ -51,7 +55,9 @@ def run_plan(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
 
     # 4. No deterministic preprocessing for plan
     # 5. Invoke agent (stub) with schema validation and retry
-    schema_path = resolve_output_schema_path(config, project_root, "plan_output")
+    schema_path = resolve_output_schema_path(
+        config, project_root, "plan_output", command="plan"
+    )
     output = invoke_agent_with_schema_retry(
         prompt_name=_get_prompt_name(config),
         template_vars=template_vars,
@@ -63,7 +69,7 @@ def run_plan(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
     # 7. Manual-resolution: append items to file and return blocked
     if has_blocking_manual_resolution(output):
         log_lifecycle_event("lifecycle_manual_resolution", command="plan", run_id=ctx.run_id)
-        manual_path = resolve_output_path(config, project_root, "manual_resolution_file")
+        manual_path = resolve_manual_resolution_path_for_command(config, project_root, "plan")
         if manual_path:
             append_manual_resolution_items_to_file(
                 output["manual_resolution_items"],
@@ -90,12 +96,16 @@ def _build_template_vars(
     inputs: dict[str, Any],
 ) -> dict[str, Any]:
     """Build template variables for project_designer prompt."""
-    manual_path = resolve_output_path(config, project_root, "manual_resolution_file")
-    run_summary_path = resolve_output_path(config, project_root, "run_summary_file")
-    schema_path = resolve_output_schema_path(config, project_root, "plan_output")
+    manual_path = resolve_manual_resolution_path_for_command(config, project_root, "plan")
+    run_summary_path = resolve_run_summary_path_for_command(config, project_root, "plan")
+    schema_path = resolve_output_schema_path(
+        config, project_root, "plan_output", command="plan"
+    )
     schema_file = str(schema_path) if schema_path and schema_path.exists() else ""
-    artifacts_dir = resolve_output_path(config, project_root, "agent_artifacts_dir")
-    artifacts_path = (artifacts_dir / ctx.run_id) if (artifacts_dir and ctx.run_id) else artifacts_dir
+    run_id = ctx.run_id or "run"
+    artifacts_path = resolve_agent_artifacts_dir_for_command(
+        config, project_root, "plan", run_id
+    )
 
     # Resolve codebase_dir: CLI/config or default to project_root
     codebase_dir_path = resolve_codebase_dir_path(config, project_root, ctx)
@@ -109,9 +119,9 @@ def _build_template_vars(
         "srs_content": inputs.get("srs_content", ""),
         "project_context": project_context_content,
         "design_spec_column_definitions": DESIGN_SPEC_COLUMN_DEFINITIONS.strip(),
-        "manual_resolution_file": str(manual_path) if manual_path else "",
-        "run_summary_file": str(run_summary_path) if run_summary_path else "",
-        "agent_artifacts_dir": str(artifacts_path) if artifacts_path else "",
+        "manual_resolution_file": str(manual_path),
+        "run_summary_file": str(run_summary_path),
+        "agent_artifacts_dir": str(artifacts_path),
     }
 
 
@@ -155,9 +165,7 @@ def _translate_plan(
     if ctx.dry_run:
         return
     project_root = Path(ctx.project_root)
-    out_dir = resolve_output_path(config, project_root, "agent_runs_dir")
-    if not out_dir:
-        return
+    out_dir = resolve_agent_runs_dir_for_command(config, project_root, "plan")
     out_dir.mkdir(parents=True, exist_ok=True)
     _ = inputs
     if "milestones" in output:

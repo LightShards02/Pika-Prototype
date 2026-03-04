@@ -1,0 +1,32 @@
+---
+description: Apply this rule when drafting or revising SADS design spec rows so requirements follow EARS, stay atomic, and describe concrete deterministic workflows.
+globs:
+  - "**/design_spec*.csv"
+  - "**/*SADS*.csv"
+  - "docs/csv_contracts.md"
+alwaysApply: false
+---
+
+When drafting or revising SADS rows, enforce the following:
+
+1. Write each requirement in EARS form:
+   `When the user/system [trigger], [UNIT]-[subunit] shall [observable behavior].`
+2. Keep each row atomic:
+   Split multi-step flow, branching logic, and complex processing into separate rows.
+3. Describe concrete workflow behavior:
+   - UI: layout placement, user interactions, and state transitions.
+   - Service: handshake/verification (when relevant), request handling, response logic, and edge/error handling.
+4. Avoid vague wording:
+   Do not use broad adjectives like robust/flexible/user-friendly without measurable behavior.
+5. Use positive expected behavior:
+   Avoid negative `shall not` phrasing.
+6. For interactions between two modules:
+   Create separate specs in each module. The sender-module spec defines trigger and request contents; the receiver-module spec defines request handling workflow and response outcomes.
+7. For subunit naming:
+   Use generalized subunit buckets and assign the same subunit value to all rows in one workflow part (for example `user_management`).
+
+Before finalizing a SADS draft, verify:
+- Every requirement uses `When/If the user`, `When/If the system`, or `When/If the {module}` for conditional design specs; uses `the system` or `the {module}` for non-conditional specs; and includes `shall` for all specs.
+- Acceptance criteria are deterministic and testable.
+- No row combines unrelated behaviors.
+- Each workflow part uses one shared generalized subunit.

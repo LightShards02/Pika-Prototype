@@ -34,13 +34,18 @@ class CliLoggingTests(unittest.TestCase):
                 return json.loads(line)
         self.fail(f"No JSON summary found in stdout:\n{stdout}")
 
-    def _write_temp_config(self, *, logs_dir: Path) -> Path:
+    def _write_temp_config(self, *, logs_dir: Path, temp_dir: Path | None = None) -> Path:
         """Write temp config."""
-        temp_dir = Path(tempfile.mkdtemp(prefix="cli-logging-config-"))
+        if temp_dir is None:
+            temp_dir = Path(tempfile.mkdtemp(prefix="cli-logging-config-"))
         design_spec = temp_dir / "design_spec.csv"
         issue_tracking = temp_dir / "issue_tracking.csv"
-        design_spec.write_text("title\nexample\n", encoding="utf-8")
+        design_spec.write_text(
+            "spec_id,title,requirement\nA1,Example,Do something\n",
+            encoding="utf-8",
+        )
         issue_tracking.write_text("title\nexample\n", encoding="utf-8")
+        (temp_dir / "PROJECT_CONTEXT.md").write_text("# Project\n", encoding="utf-8")
         temp_config = temp_dir / "config.yaml"
         config_text = EXAMPLE_CONFIG_PATH.read_text(encoding="utf-8")
         config_text = config_text.replace(
@@ -48,26 +53,33 @@ class CliLoggingTests(unittest.TestCase):
             f"  log_dir: {logs_dir.as_posix()}",
         )
         config_text = config_text.replace(
-            "  design_spec_path: data/design_spec.csv",
-            f"  design_spec_path: {design_spec.as_posix()}",
+            "design_spec_path: out/state/DESIGN-SPEC.csv",
+            f"design_spec_path: {design_spec.as_posix()}",
         )
         config_text = config_text.replace(
-            "  issue_tracking_path: data/issue_tracking.csv",
-            f"  issue_tracking_path: {issue_tracking.as_posix()}",
+            "design_spec_path: raw-design-spec.csv",
+            f"design_spec_path: {design_spec.as_posix()}",
+        )
+        config_text = config_text.replace(
+            "issue_tracking_path: out/issue_tracking.csv",
+            f"issue_tracking_path: {issue_tracking.as_posix()}",
         )
         temp_config.write_text(config_text, encoding="utf-8")
         return temp_config
 
     def test_format_dry_run_creates_per_run_log_file(self) -> None:
         """Test that format dry run creates per run log file."""
-        logs_dir = REPO_ROOT / "out" / "test-logs" / uuid.uuid4().hex
-        config_path = self._write_temp_config(logs_dir=logs_dir)
+        temp_dir = Path(tempfile.mkdtemp(prefix="cli-logging-config-"))
+        logs_dir = temp_dir / "out" / "test-logs" / uuid.uuid4().hex
+        config_path = self._write_temp_config(logs_dir=logs_dir, temp_dir=temp_dir)
 
         result = self._run_cli(
             [
                 "agent",
                 "format",
                 "--dry-run",
+                "--project-root",
+                str(config_path.parent),
                 "--config",
                 str(config_path),
             ]
@@ -93,14 +105,17 @@ class CliLoggingTests(unittest.TestCase):
 
     def test_command_only_validation_creates_no_run_log_file(self) -> None:
         """Test that command only validation creates no run log file."""
-        logs_dir = REPO_ROOT / "out" / "test-logs" / uuid.uuid4().hex
-        config_path = self._write_temp_config(logs_dir=logs_dir)
+        temp_dir = Path(tempfile.mkdtemp(prefix="cli-logging-config-"))
+        logs_dir = temp_dir / "out" / "test-logs" / uuid.uuid4().hex
+        config_path = self._write_temp_config(logs_dir=logs_dir, temp_dir=temp_dir)
 
         result = self._run_cli(
             [
                 "agent",
                 "format",
                 "--command-only-validation",
+                "--project-root",
+                str(config_path.parent),
                 "--config",
                 str(config_path),
             ]

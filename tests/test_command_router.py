@@ -31,11 +31,10 @@ class CommandRouterTests(unittest.TestCase):
         )
 
     def test_dispatch_format_returns_skipped_when_no_inputs(self) -> None:
-        """Test that dispatch format returns skipped when inputs not configured."""
-        result = dispatch("format", {}, self._make_ctx("format"))
-        self.assertEqual(result["command"], "format")
-        self.assertEqual(result["status"], "skipped")
-        self.assertIn("reason", result)
+        """Test that dispatch format raises when inputs not configured (no fallback)."""
+        with self.assertRaises(ValueError) as ctx:
+            dispatch("format", {}, self._make_ctx("format"))
+        self.assertIn("Format command requires input", str(ctx.exception))
 
     def test_dispatch_format_returns_completed_with_valid_inputs(self) -> None:
         """Test that dispatch format returns completed when inputs exist."""
@@ -45,7 +44,28 @@ class CommandRouterTests(unittest.TestCase):
         csv_file.write_text("spec_id,title,requirement\nA1,Test,Do something\n", encoding="utf-8")
         try:
             config = {
-                "inputs": {"design_spec_path": str(csv_file.relative_to(root))},
+                "project": {
+                    "name": "test",
+                    "root_dir": ".",
+                    "state": {
+                        "design_spec_path": "out/state/DESIGN-SPEC.csv",
+                        "id_registry_path": "out/state/id_registry.json",
+                        "sads_id_mapping_path": "out/state/sads_id_mapping.json",
+                    },
+                },
+                "commands": {
+                    "format": {
+                        "enabled": True,
+                        "deterministic": True,
+                        "copy_before_write": True,
+                        "inputs": {"design_spec_path": str(csv_file.relative_to(root))},
+                        "outputs": {
+                            "design_spec_path": {"path": "out/state/DESIGN-SPEC.csv", "no_overwrite": False},
+                            "backups_dir": {"path": "out/backups", "no_overwrite": False},
+                        },
+                    },
+                },
+                "id_generation": {"registry_path": "out/state/id_registry.json"},
                 "csv_contracts": {
                     "design_spec": {
                         "add_if_missing": [
@@ -56,9 +76,9 @@ class CommandRouterTests(unittest.TestCase):
                             "mapped_confidence",
                             "mapped_consistency_score",
                             "mapped_problems",
-                            "index_status",
-                            "assumptions",
-                            "last_indexed_at",
+                            "map_status",
+                            "map_assumptions",
+                            "mapped_at",
                         ]
                     },
                     "issue_tracking": {"add_if_missing": []},
@@ -74,23 +94,38 @@ class CommandRouterTests(unittest.TestCase):
     def test_dispatch_format_writes_formatted_stem_csv_and_backup_in_format_subdir(
         self,
     ) -> None:
-        """Format writes formatted_{stem}.csv and backups go to backups_dir/format/."""
+        """Format writes to commands.format.outputs.design_spec_path and backups go to backups_dir/format/."""
         root = Path(__file__).parent / "test_data_format_output"
         root.mkdir(parents=True, exist_ok=True)
         csv_file = root / "MySpec.csv"
-        normalized_dir = root / "out" / "normalized"
+        design_spec_path = root / "out" / "state" / "DESIGN-SPEC.csv"
         backups_dir = root / "out" / "backups"
         try:
             csv_file.write_text(
                 "spec_id,title,requirement\nA1,Test,Do something\n", encoding="utf-8"
             )
             config = {
-                "inputs": {"design_spec_path": str(csv_file)},
-                "outputs": {
-                    "normalized_dir": {"path": str(normalized_dir), "no_overwrite": False},
-                    "backups_dir": {"path": str(backups_dir), "no_overwrite": False},
+                "project": {
+                    "name": "test",
+                    "root_dir": ".",
+                    "state": {
+                        "design_spec_path": str(design_spec_path),
+                        "id_registry_path": str(root / "out" / "state" / "id_registry.json"),
+                        "sads_id_mapping_path": str(root / "out" / "state" / "sads_id_mapping.json"),
+                    },
                 },
-                "commands": {"format": {"copy_before_write": True}},
+                "commands": {
+                    "format": {
+                        "enabled": True,
+                        "deterministic": True,
+                        "copy_before_write": True,
+                        "inputs": {"design_spec_path": str(csv_file)},
+                        "outputs": {
+                            "design_spec_path": {"path": str(design_spec_path), "no_overwrite": False},
+                            "backups_dir": {"path": str(backups_dir), "no_overwrite": False},
+                        },
+                    },
+                },
                 "csv_contracts": {
                     "design_spec": {
                         "add_if_missing": [
@@ -101,9 +136,9 @@ class CommandRouterTests(unittest.TestCase):
                             "mapped_confidence",
                             "mapped_consistency_score",
                             "mapped_problems",
-                            "index_status",
-                            "assumptions",
-                            "last_indexed_at",
+                            "map_status",
+                            "map_assumptions",
+                            "mapped_at",
                         ]
                     },
                     "issue_tracking": {"add_if_missing": []},
@@ -123,14 +158,13 @@ class CommandRouterTests(unittest.TestCase):
             )
             result = dispatch("format", config, ctx)
             self.assertEqual(result["status"], "completed")
-            out_file = normalized_dir / "formatted_MySpec.csv"
-            self.assertTrue(out_file.exists(), f"Expected {out_file} to exist")
+            self.assertTrue(design_spec_path.exists(), f"Expected {design_spec_path} to exist")
             # Second run: backup should go to backups_dir/format/
             result2 = dispatch("format", config, ctx)
             self.assertEqual(result2["status"], "completed")
             format_backups = backups_dir / "format"
             self.assertTrue(format_backups.is_dir(), f"Expected {format_backups} to exist")
-            backups_list = list(format_backups.glob("formatted_MySpec_*.csv"))
+            backups_list = list(format_backups.glob("DESIGN-SPEC_*.csv"))
             self.assertGreater(len(backups_list), 0, "Expected at least one backup file")
         finally:
             if root.exists():
@@ -156,9 +190,28 @@ class CommandRouterTests(unittest.TestCase):
             )
             context_file.write_text("# Project Context\nTest context for map.\n", encoding="utf-8")
             config = {
-                "inputs": {
-                    "design_spec_path": str(csv_file),
-                    "project_context_filename": "PROJECT_CONTEXT.md",
+                "project": {
+                    "name": "test",
+                    "root_dir": ".",
+                    "state": {
+                        "design_spec_path": str(csv_file),
+                        "id_registry_path": str(root / "out" / "state" / "id_registry.json"),
+                        "sads_id_mapping_path": str(root / "out" / "state" / "sads_id_mapping.json"),
+                    },
+                },
+                "commands": {
+                    "map": {
+                        "enabled": True,
+                        "prompt_name": "map_spec_to_code",
+                        "inputs": {
+                            "design_spec_path": str(csv_file),
+                            "codebase_dir": ".",
+                            "project_context_filename": "PROJECT_CONTEXT.md",
+                        },
+                        "outputs": {
+                            "backups_dir": {"path": str(root / "out" / "backups"), "no_overwrite": False},
+                        },
+                    },
                 },
                 "csv_contracts": {
                     "design_spec": {
@@ -170,9 +223,9 @@ class CommandRouterTests(unittest.TestCase):
                             "mapped_confidence",
                             "mapped_consistency_score",
                             "mapped_problems",
-                            "index_status",
-                            "assumptions",
-                            "last_indexed_at",
+                            "map_status",
+                            "map_assumptions",
+                            "mapped_at",
                         ]
                     },
                     "issue_tracking": {"add_if_missing": []},
@@ -196,9 +249,28 @@ class CommandRouterTests(unittest.TestCase):
                 encoding="utf-8",
             )
             config = {
-                "inputs": {
-                    "design_spec_path": str(csv_file),
-                    "project_context_filename": "PROJECT_CONTEXT.md",
+                "project": {
+                    "name": "test",
+                    "root_dir": ".",
+                    "state": {
+                        "design_spec_path": str(csv_file),
+                        "id_registry_path": str(root / "out" / "state" / "id_registry.json"),
+                        "sads_id_mapping_path": str(root / "out" / "state" / "sads_id_mapping.json"),
+                    },
+                },
+                "commands": {
+                    "map": {
+                        "enabled": True,
+                        "prompt_name": "map_spec_to_code",
+                        "inputs": {
+                            "design_spec_path": str(csv_file),
+                            "codebase_dir": ".",
+                            "project_context_filename": "PROJECT_CONTEXT.md",
+                        },
+                        "outputs": {
+                            "backups_dir": {"path": str(root / "out" / "backups"), "no_overwrite": False},
+                        },
+                    },
                 },
                 "csv_contracts": {
                     "design_spec": {
@@ -210,9 +282,9 @@ class CommandRouterTests(unittest.TestCase):
                             "mapped_confidence",
                             "mapped_consistency_score",
                             "mapped_problems",
-                            "index_status",
-                            "assumptions",
-                            "last_indexed_at",
+                            "map_status",
+                            "map_assumptions",
+                            "mapped_at",
                         ]
                     },
                     "issue_tracking": {"add_if_missing": []},
@@ -249,13 +321,27 @@ class CommandRouterTests(unittest.TestCase):
             srs_file.write_text("# SRS\nRequirement: do X\n", encoding="utf-8")
             context_file.write_text("# Project Context\nTest context.\n", encoding="utf-8")
             config = {
-                "inputs": {
-                    "srs_path": str(srs_file),
-                    "project_context_filename": "PROJECT_CONTEXT.md",
+                "project": {
+                    "name": "test",
+                    "root_dir": ".",
+                    "state": {
+                        "design_spec_path": "out/state/DESIGN-SPEC.csv",
+                        "id_registry_path": "out/state/id_registry.json",
+                        "sads_id_mapping_path": "out/state/sads_id_mapping.json",
+                    },
                 },
-                "outputs": {"agent_runs_dir": {"path": str(out_dir), "no_overwrite": False}},
+                "commands": {
+                    "plan": {
+                        "enabled": True,
+                        "prompt_name": "project_designer",
+                        "inputs": {
+                            "srs_path": str(srs_file),
+                            "project_context_filename": "PROJECT_CONTEXT.md",
+                        },
+                        "outputs": {"agent_runs_dir": {"path": str(out_dir), "no_overwrite": False}},
+                    },
+                },
                 "schemas": {"plan_output": "schemas/agent_outputs/plan_output.schema.json"},
-                "project": {"name": "test", "root_dir": "."},
             }
             result = dispatch(
                 "plan",
@@ -264,8 +350,10 @@ class CommandRouterTests(unittest.TestCase):
             )
             self.assertEqual(result["command"], "plan")
             self.assertEqual(result["status"], "completed")
-            milestones = out_dir / "plan_milestones.json"
-            sads_csv = out_dir / "plan_proposed_sads.csv"
+            # Outputs go to out/agent_runs/plan/
+            plan_dir = out_dir / "plan"
+            milestones = plan_dir / "plan_milestones.json"
+            sads_csv = plan_dir / "plan_proposed_sads.csv"
             self.assertTrue(milestones.exists(), f"Expected {milestones} to exist")
             self.assertTrue(sads_csv.exists(), f"Expected {sads_csv} to exist")
         finally:
@@ -291,14 +379,29 @@ class CommandRouterTests(unittest.TestCase):
                 encoding="utf-8",
             )
             config = {
-                "inputs": {
-                    "design_spec_path": str(csv_file),
-                    "project_context_filename": "PROJECT_CONTEXT.md",
+                "project": {
+                    "name": "test",
+                    "root_dir": ".",
+                    "state": {
+                        "design_spec_path": str(csv_file),
+                        "id_registry_path": str(root / "out" / "state" / "id_registry.json"),
+                        "sads_id_mapping_path": str(root / "out" / "state" / "sads_id_mapping.json"),
+                    },
                 },
-                "outputs": {
-                    "normalized_dir": {"path": str(root / "out" / "normalized"), "no_overwrite": False},
-                    "backups_dir": {"path": str(root / "out" / "backups"), "no_overwrite": False},
-                    "logs_dir": {"path": str(root / "out" / "logs"), "no_overwrite": False},
+                "commands": {
+                    "map": {
+                        "enabled": True,
+                        "prompt_name": "map_spec_to_code",
+                        "inputs": {
+                            "design_spec_path": str(csv_file),
+                            "codebase_dir": ".",
+                            "project_context_filename": "PROJECT_CONTEXT.md",
+                        },
+                        "outputs": {
+                            "backups_dir": {"path": str(root / "out" / "backups"), "no_overwrite": False},
+                            "logs_dir": {"path": str(root / "out" / "logs"), "no_overwrite": False},
+                        },
+                    },
                 },
             }
             ctx = self._make_ctx("map", project_root=str(root))
@@ -307,7 +410,7 @@ class CommandRouterTests(unittest.TestCase):
             msg = str(exc_ctx.exception)
             self.assertIn("Missing required columns", msg)
             self.assertIn("requirement", msg)
-            self.assertIn("index_status", msg)
+            self.assertIn("map_status", msg)
         finally:
             if root.exists():
                 shutil.rmtree(root, ignore_errors=True)
@@ -320,11 +423,25 @@ class CommandRouterTests(unittest.TestCase):
         try:
             context_file.write_text("# Project\nOnly a title, no Purpose/Overview/Workflow.\n", encoding="utf-8")
             config = {
-                "inputs": {"project_context_filename": "PROJECT_CONTEXT.md"},
-                "outputs": {
-                    "normalized_dir": {"path": str(root / "out" / "normalized"), "no_overwrite": False},
-                    "backups_dir": {"path": str(root / "out" / "backups"), "no_overwrite": False},
-                    "logs_dir": {"path": str(root / "out" / "logs"), "no_overwrite": False},
+                "project": {
+                    "name": "test",
+                    "root_dir": ".",
+                    "state": {
+                        "design_spec_path": str(root / "out" / "state" / "DESIGN-SPEC.csv"),
+                        "id_registry_path": str(root / "out" / "state" / "id_registry.json"),
+                        "sads_id_mapping_path": str(root / "out" / "state" / "sads_id_mapping.json"),
+                    },
+                },
+                "commands": {
+                    "plan": {
+                        "enabled": True,
+                        "prompt_name": "project_designer",
+                        "inputs": {"project_context_filename": "PROJECT_CONTEXT.md"},
+                        "outputs": {
+                            "backups_dir": {"path": str(root / "out" / "backups"), "no_overwrite": False},
+                            "logs_dir": {"path": str(root / "out" / "logs"), "no_overwrite": False},
+                        },
+                    },
                 },
             }
             ctx = self._make_ctx("plan", project_root=str(root))

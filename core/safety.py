@@ -18,7 +18,10 @@ from core.contracts import (
 )
 from core.errors import SafetyPreconditionError
 from core.lifecycle import (
+    _get_effective_inputs,
+    _get_effective_outputs,
     resolve_codebase_dir_path,
+    resolve_format_source_path,
     resolve_input_path,
     resolve_project_context_path,
 )
@@ -50,8 +53,8 @@ def validate_command_preconditions(command: str, config: dict[str, Any], ctx: An
         _raise_if_errors(errors, command)
         return  # unreachable
 
-    _run_step_2_dirs_writable(config, project_root, errors)
-    _run_step_3_no_overwrite(config, project_root, errors)
+    _run_step_2_dirs_writable(config, project_root, command, errors)
+    _run_step_3_no_overwrite(config, project_root, command, errors)
     _run_step_4_input_files(command, config, project_root, ctx, errors)
     _run_step_5_csv_contracts(command, config, project_root, ctx, errors)
     _run_step_6_project_context_contract(command, config, project_root, ctx, errors)
@@ -84,7 +87,10 @@ def _run_step_1_project_root(ctx: Any, errors: list[str]) -> Path | None:
 # Step 2: Log dir, output dirs, state dir writable and under project root
 # ---------------------------------------------------------------------------
 def _run_step_2_dirs_writable(
-    config: dict[str, Any], project_root: Path, errors: list[str]
+    config: dict[str, Any],
+    project_root: Path,
+    command: str,
+    errors: list[str],
 ) -> None:
     """Step 2: Validate log dir, output dirs, state dir."""
     log_dir = _resolve_log_dir(project_root, config)
@@ -96,7 +102,7 @@ def _run_step_2_dirs_writable(
         _ensure_directory_writable(log_dir, "log_dir", errors)
 
     checked_dirs: set[Path] = set()
-    for output_key, output_path, _ in _iter_output_specs(config):
+    for output_key, output_path, _ in _iter_output_specs(config, command):
         resolved_output = _resolve_path(project_root, output_path)
         if not _is_under_root(project_root, resolved_output):
             errors.append(
@@ -122,10 +128,13 @@ def _run_step_2_dirs_writable(
 # Step 3: No-overwrite outputs
 # ---------------------------------------------------------------------------
 def _run_step_3_no_overwrite(
-    config: dict[str, Any], project_root: Path, errors: list[str]
+    config: dict[str, Any],
+    project_root: Path,
+    command: str,
+    errors: list[str],
 ) -> None:
     """Step 3: Refuse to overwrite existing files when no_overwrite is enabled."""
-    for output_key, output_path, no_overwrite in _iter_output_specs(config):
+    for output_key, output_path, no_overwrite in _iter_output_specs(config, command):
         if no_overwrite and not output_key.endswith("_dir"):
             resolved_output = _resolve_path(project_root, output_path)
             if resolved_output.exists():
@@ -146,7 +155,11 @@ def _run_step_4_input_files(
     errors: list[str],
 ) -> None:
     """Step 4: Validate required input files exist when defined."""
-    inputs_map = _build_inputs_map(config, ctx)
+    try:
+        inputs_map = _build_inputs_map(config, ctx, project_root, command)
+    except ValueError as exc:
+        errors.append(str(exc))
+        return
 
     if command == "plan":
         _validate_input_file_if_defined(
@@ -156,7 +169,7 @@ def _run_step_4_input_files(
     if command == "format":
         _validate_input_file_if_defined(
             inputs_map,
-            keys=("raw_sads_path", "design_spec_path"),
+            keys=("design_spec_path",),
             project_root=project_root,
             command=command,
             errors=errors,
@@ -187,7 +200,11 @@ def _run_step_5_csv_contracts(
     errors: list[str],
 ) -> None:
     """Step 5: Validate required CSV columns per contract (docs/csv_contracts.md)."""
-    inputs_map = _build_inputs_map(config, ctx)
+    try:
+        inputs_map = _build_inputs_map(config, ctx, project_root, command)
+    except ValueError as exc:
+        errors.append(str(exc))
+        return
 
     try:
         design_required = get_design_spec_required_columns()
@@ -236,7 +253,8 @@ def _run_step_6_project_context_contract(
     context_path = resolve_project_context_path(config, project_root_path, ctx, codebase_dir_path)
 
     if context_path is None:
-        filename = config.get("inputs", {}).get("project_context_filename", "PROJECT_CONTEXT.md")
+        inputs = _get_effective_inputs(config, command)
+        filename = inputs.get("project_context_filename", "PROJECT_CONTEXT.md")
         if isinstance(filename, str):
             errors.append(
                 f"Project context file not found. Provide via --project-context PATH or place "
@@ -371,12 +389,32 @@ def _resolve_project_root(ctx: Any) -> Path:
     raise SafetyPreconditionError("Runtime context missing a valid 'project_root'.")
 
 
-def _build_inputs_map(config: dict[str, Any], ctx: Any) -> dict[str, str]:
-    """Build merged inputs from config and overrides."""
-    inputs = config.get("inputs")
+def _build_inputs_map(
+    config: dict[str, Any],
+    ctx: Any,
+    project_root: Path,
+    command: str,
+) -> dict[str, str]:
+    """Build merged inputs from config and overrides.
+
+    For design_spec_path: uses resolve_input_path/resolve_format_source_path
+    (CLI > commands.<cmd>.inputs > project.state). For format, uses format source resolution.
+    Uses merged inputs (top-level + commands.<cmd>.inputs).
+    """
+    inputs = _get_effective_inputs(config, command)
     inputs_map = dict(inputs) if isinstance(inputs, dict) else {}
     overrides = getattr(ctx, "input_overrides", None) or {}
     inputs_map.update({k: v for k, v in overrides.items() if isinstance(v, str) and v.strip()})
+    if command == "format":
+        src = resolve_format_source_path(config, project_root, overrides)
+        inputs_map["design_spec_path"] = str(src)
+    elif command in ("map", "implement", "review", "resolve_plan"):
+        design_path = resolve_input_path(
+            config, project_root, "design_spec_path",
+            overrides=overrides, command=command
+        )
+        if design_path is not None:
+            inputs_map["design_spec_path"] = str(design_path)
     return inputs_map
 
 
@@ -401,19 +439,29 @@ def _resolve_path(project_root: Path, path_value: str) -> Path:
     return (project_root / candidate).resolve()
 
 
-def _iter_output_specs(config: dict[str, Any]) -> Iterable[tuple[str, str, bool]]:
-    """Iterate output specs (key, path, no_overwrite)."""
-    outputs = config.get("outputs")
-    if not isinstance(outputs, dict):
-        return ()
-    return (
-        (key, path_value, no_overwrite)
-        for key, value in outputs.items()
-        if isinstance(value, dict)
-        and isinstance((path_value := value.get("path")), str)
-        and path_value.strip()
-        and isinstance((no_overwrite := value.get("no_overwrite")), bool)
-    )
+def _iter_output_specs(
+    config: dict[str, Any], command: str | None = None
+) -> Iterable[tuple[str, str, bool]]:
+    """Iterate output specs (key, path, no_overwrite).
+
+    Includes merged outputs (top-level + commands.<cmd>.outputs).
+    When command is format, includes commands.format.outputs.design_spec_path.
+    """
+    outputs = _get_effective_outputs(config, command)
+    seen: set[str] = set()
+    for key, value in outputs.items():
+        if not isinstance(value, dict):
+            continue
+        path_value = value.get("path")
+        no_overwrite = value.get("no_overwrite")
+        if (
+            isinstance(path_value, str)
+            and path_value.strip()
+            and isinstance(no_overwrite, bool)
+            and key not in seen
+        ):
+            seen.add(key)
+            yield key, path_value, no_overwrite
 
 
 def _target_directory_for_output(output_key: str, resolved_output: Path) -> Path:
@@ -473,9 +521,11 @@ def _resolve_state_dir(config: dict[str, Any], project_root: Path) -> Path:
     return _resolve_path(project_root, state_dir_value)
 
 
-def _get_allowed_extensions(config: dict[str, Any]) -> tuple[str, ...]:
+def _get_allowed_extensions(
+    config: dict[str, Any], command: str = "format"
+) -> tuple[str, ...]:
     """Return allowed extensions for format input from config. Default (.csv, .xlsx)."""
-    inputs = config.get("inputs")
+    inputs = _get_effective_inputs(config, command)
     if not isinstance(inputs, dict):
         return (".csv", ".xlsx")
     ext_list = inputs.get("allowed_extensions")
@@ -517,7 +567,7 @@ def _validate_input_file_if_defined(
             )
             return
         if check_format_extension and config:
-            allowed = _get_allowed_extensions(config)
+            allowed = _get_allowed_extensions(config, command)
             suffix = resolved_input.suffix.lower()
             if suffix not in allowed:
                 errors.append(

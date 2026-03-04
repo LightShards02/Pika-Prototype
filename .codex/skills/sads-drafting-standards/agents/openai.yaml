@@ -1,0 +1,4 @@
+interface:
+  display_name: "SADS Drafting Standards"
+  short_description: "Apply EARS and atomic workflow detail when drafting SADS rows"
+  default_prompt: "Use this skill to draft or revise SADS design spec rows with strict EARS phrasing, atomic scope, concrete workflow detail, and positive deterministic statements."

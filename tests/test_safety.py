@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import tempfile
@@ -32,31 +33,41 @@ class SafetyRailTests(unittest.TestCase):
         design_spec_path: str,
         issue_tracking_path: str,
         log_dir: str | None = None,
-        run_summary_file: str | None = None,
+        agent_runs_dir: str | None = None,
+        format_output_path: str | None = None,
     ) -> Path:
-        """Write config. Injects design_spec_path and issue_tracking_path into inputs."""
+        """Write config. Injects design_spec_path into project.state, format inputs, and issue_tracking_path."""
         config_text = EXAMPLE_CONFIG_PATH.read_text(encoding="utf-8")
-        # Example config may not have design_spec_path; inject after allowed_extensions
-        if "design_spec_path:" not in config_text:
-            config_text = config_text.replace(
-                "  allowed_extensions:\n    - .csv\n    - .xlsx",
-                f"  allowed_extensions:\n    - .csv\n    - .xlsx\n  design_spec_path: {design_spec_path}\n  issue_tracking_path: {issue_tracking_path}",
-            )
-        else:
-            config_text = config_text.replace(
-                "  design_spec_path: data/design_spec.csv",
-                f"  design_spec_path: {design_spec_path}",
-            )
-            config_text = config_text.replace(
-                "  issue_tracking_path: data/issue_tracking.csv",
-                f"  issue_tracking_path: {issue_tracking_path}",
-            )
+        # project.state.design_spec_path
+        config_text = re.sub(
+            r"(\n  state:\n    design_spec_path:)\s*[^\n]+",
+            rf"\1 {design_spec_path}",
+            config_text,
+            count=1,
+        )
+        # commands.format.inputs (format uses design_spec_path only)
+        config_text = config_text.replace(
+            "design_spec_path: raw-design-spec.csv",
+            f"design_spec_path: {design_spec_path}",
+        )
+        # commands.resolve_plan.inputs.issue_tracking_path
+        config_text = config_text.replace(
+            "issue_tracking_path: out/issue_tracking.csv",
+            f"issue_tracking_path: {issue_tracking_path}",
+        )
         if log_dir is not None:
             config_text = config_text.replace("  log_dir: out/logs", f"  log_dir: {log_dir}")
-        if run_summary_file is not None:
+        if agent_runs_dir is not None:
             config_text = config_text.replace(
-                "    path: out/agent_runs/run_summary.jsonl",
-                f"    path: {run_summary_file}",
+                "path: out/agent_runs",
+                f"path: {agent_runs_dir}",
+                1,
+            )
+        if format_output_path is not None:
+            config_text = config_text.replace(
+                "path: out/state/DESIGN-SPEC.csv",
+                f"path: {format_output_path}",
+                1,
             )
 
         config_path = temp_dir / "config.yaml"
@@ -136,18 +147,21 @@ class SafetyRailTests(unittest.TestCase):
             temp_dir = Path(raw_tmp)
             design_spec = temp_dir / "design_spec.csv"
             issue_tracking = temp_dir / "issue_tracking.csv"
-            design_spec.write_text("title\nspec\n", encoding="utf-8")
+            design_spec.write_text(
+                "spec_id,title,requirement\nA1,Test,Do something\n",
+                encoding="utf-8",
+            )
             issue_tracking.write_text("title\nissue\n", encoding="utf-8")
 
-            # Path outside project root (parent of temp_dir)
+            # Format output path outside project root
             outside_output = (
-                Path(temp_dir).parent / "outside_project_run_summary.jsonl"
+                Path(temp_dir).parent / "outside_project_design_spec.csv"
             ).resolve().as_posix()
             config_path = self._write_config(
                 temp_dir,
                 design_spec_path=design_spec.as_posix(),
                 issue_tracking_path=issue_tracking.as_posix(),
-                run_summary_file=outside_output,
+                format_output_path=outside_output,
             )
 
             result = self._run_cli(
@@ -172,10 +186,11 @@ class SafetyRailTests(unittest.TestCase):
             temp_dir = Path(raw_tmp)
             design_spec = temp_dir / "design_spec.csv"
             issue_tracking = temp_dir / "issue_tracking.csv"
-            design_spec.write_text("title\nspec\n", encoding="utf-8")
+            design_spec.write_text("spec_id,title,requirement\nA1,Test,Do something\n", encoding="utf-8")
             issue_tracking.write_text("title\nissue\n", encoding="utf-8")
 
-            existing_output = REPO_ROOT / "out" / "test-no-overwrite" / f"{uuid.uuid4().hex}.jsonl"
+            # Create existing format output to trigger no-overwrite
+            existing_output = temp_dir / "out" / "state" / "DESIGN-SPEC.csv"
             existing_output.parent.mkdir(parents=True, exist_ok=True)
             existing_output.write_text("already exists\n", encoding="utf-8")
 
@@ -183,12 +198,12 @@ class SafetyRailTests(unittest.TestCase):
                 temp_dir,
                 design_spec_path=design_spec.as_posix(),
                 issue_tracking_path=issue_tracking.as_posix(),
-                run_summary_file=existing_output.as_posix(),
             )
 
+            # Set format outputs design_spec_path no_overwrite to true
             config_text = config_path.read_text(encoding="utf-8").replace(
-                f"  run_summary_file:\n    path: {existing_output.as_posix()}\n    no_overwrite: false",
-                f"  run_summary_file:\n    path: {existing_output.as_posix()}\n    no_overwrite: true",
+                "design_spec_path:\n        path: out/state/DESIGN-SPEC.csv\n        no_overwrite: false",
+                "design_spec_path:\n        path: out/state/DESIGN-SPEC.csv\n        no_overwrite: true",
             )
             config_path.write_text(config_text, encoding="utf-8")
 
@@ -209,7 +224,7 @@ class SafetyRailTests(unittest.TestCase):
             self.assertIn('"status":"failed"', result.stdout)
 
     def test_format_accepts_input_via_cli_override(self) -> None:
-        """Test that format accepts CSV/XLSX input via --input and processes normally."""
+        """Test that format accepts CSV/XLSX input via --design-spec and processes normally."""
         with tempfile.TemporaryDirectory(prefix="safety-format-input-") as raw_tmp:
             temp_dir = Path(raw_tmp)
             csv_file = temp_dir / "spec.csv"
@@ -235,7 +250,7 @@ class SafetyRailTests(unittest.TestCase):
                     str(temp_dir),
                     "--config",
                     str(config_path),
-                    "--input",
+                    "--design-spec",
                     str(csv_file),
                 ]
             )

@@ -90,8 +90,8 @@ Some situations require human decisions. These are emitted as **manual_resolutio
 - **Phase 1: Project Implementation**
   - Inputs: Formatted SADS
   - Agent: Implementer
-  - Outputs: code-change plans/diffs and implementation notes; PIKA applies these to Code and Issue Tracker
-  - **Implement loop (future):** Each `implement` run can trigger: implement → test → issue tracking update → implement. On verification failure, PIKA adds rows to Implementation Issue Tracker; subsequent runs may consume those issues. Currently: single unit of implementation per run.
+  - Outputs: planner/linker artifacts, deterministic batch plans/briefs, and per-batch spec-keyed diff plans; PIKA applies validated patches to Code and mapping updates to tables
+  - **Implement loop (future):** Each `implement` run can trigger: implement → test → issue tracking update → implement. On verification failure, PIKA adds rows to Implementation Issue Tracker; subsequent runs may consume those issues. Current implementation executes multiple deterministic batches per run.
 
 - **Phase 2: Design Backtracing**
   - Inputs: Formatted SADS + Code + Implementation Issue Tracker
@@ -199,7 +199,7 @@ PIKA translation:
 
 #### `implement` — Implementer (Phase 1)
 
-**Goal:** implement Formatted SADS requirements by producing diffs and implementation notes with `spec_id` traceability.
+**Goal:** implement Formatted SADS requirements through deterministic planning + batch execution with `spec_id` traceability.
 
 Inputs:
 - Formatted SADS
@@ -208,11 +208,15 @@ Inputs:
 Agent outputs (schema-validated files):
 - If manual resolution is required: **manual_resolution_items only**
 - Otherwise:
-  - diffs array with path, action, diff_path (path to file containing unified diff), spec_ids. Agent writes each diff to a file in agent_artifacts_dir.
+  - module-local anchor plans (`planned_anchors`, `provided_intents`, `required_intents`)
+  - global link plan (`contracts`, `bindings`, optional `integration_actions`)
+  - per-batch implement output keyed by `spec_id`, including `diffs[].diff_path` (agent writes unified diff files to `agent_artifacts_dir`)
 
 PIKA translation:
+- validates link plan and batch plan dependency integrity
+- builds deterministic batch briefs and executes batches in dependency order
 - applies diffs safely to the Code repository
-- updates any explicitly allowed implementation-status columns in SADS/issue tracker (contract-defined)
+- updates mapped columns in Design Spec and deduplicated test mappings in test spec output
 
 ---
 

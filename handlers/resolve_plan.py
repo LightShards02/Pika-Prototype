@@ -12,7 +12,7 @@ from core.lifecycle import (
     invoke_agent_with_schema_retry,
     log_lifecycle_event,
     resolve_input_path,
-    resolve_output_path,
+    resolve_manual_resolution_path_for_command,
     resolve_output_schema_path,
 )
 
@@ -29,10 +29,15 @@ def run_resolve_plan(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, A
     # 3. Load required inputs
     log_lifecycle_event("lifecycle_load_inputs", command="resolve_plan", run_id=ctx.run_id)
     issue_path = resolve_input_path(
-        config, project_root, "issue_tracking_path", overrides=ctx.input_overrides
+        config, project_root, "issue_tracking_path",
+        overrides=ctx.input_overrides, command="resolve_plan",
     )
     design_path = resolve_input_path(
-        config, project_root, "design_spec_path", overrides=ctx.input_overrides
+        config,
+        project_root,
+        "design_spec_path",
+        overrides=ctx.input_overrides,
+        command="resolve_plan",
     )
     if issue_path is None or not issue_path.exists():
         return {"command": "resolve_plan", "status": "skipped", "reason": "issue_tracking_path not configured or missing"}
@@ -45,7 +50,9 @@ def run_resolve_plan(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, A
 
     # 4. No deterministic preprocessing
     # 5. Invoke agent (stub) with schema validation and retry
-    schema_path = resolve_output_schema_path(config, project_root, "resolve_plan_map_output")
+    schema_path = resolve_output_schema_path(
+        config, project_root, "resolve_plan_map_output", command="resolve_plan"
+    )
     output = invoke_agent_with_schema_retry(
         prompt_name=_get_map_prompt_name(config),
         template_vars={
@@ -60,12 +67,11 @@ def run_resolve_plan(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, A
     # 7. Manual-resolution: append items to file and return blocked
     if has_blocking_manual_resolution(output):
         log_lifecycle_event("lifecycle_manual_resolution", command="resolve_plan", run_id=ctx.run_id)
-        manual_path = resolve_output_path(config, project_root, "manual_resolution_file")
-        if manual_path:
-            append_manual_resolution_items_to_file(
-                output["manual_resolution_items"],
-                manual_path,
-            )
+        manual_path = resolve_manual_resolution_path_for_command(config, project_root, "resolve_plan")
+        append_manual_resolution_items_to_file(
+            output["manual_resolution_items"],
+            manual_path,
+        )
         return {
             "command": "resolve_plan",
             "status": "blocked",

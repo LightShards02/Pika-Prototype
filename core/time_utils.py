@@ -73,6 +73,37 @@ def normalize_timestamp_for_display(ts: str) -> str:
     return format_timestamp_local_minutes(dt)
 
 
+def generate_run_id(dt: datetime | None = None) -> str:
+    """Generate a run_id from current timestamp; safe for filenames and directories.
+
+    Uses the same local-timezone semantics as format_timestamp_local_minutes_filename,
+    but with seconds for uniqueness. Invalid filename characters (e.g. : + - in
+    some contexts) are removed or replaced so the result is safe on all platforms.
+
+    Format: YYYYMMDD_HHMMSS_tz (e.g. 20260301_174124_p0800 for UTC+8,
+    20260301_174124_m0500 for UTC-5).
+
+    Args:
+        dt: Datetime to format. If None, uses now. If naive, treats as UTC.
+
+    Returns:
+        Filename-safe run_id string.
+    """
+    if dt is None:
+        dt = datetime.now().astimezone()
+    elif dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc).astimezone()
+    else:
+        dt = dt.astimezone()
+    base = dt.strftime("%Y%m%d_%H%M%S")
+    tz_str = dt.strftime("%z")
+    if not tz_str or len(tz_str) < 5:
+        return base
+    sign, hours, mins = tz_str[0], tz_str[1:3], tz_str[3:5]
+    tz_safe = f"m{hours}{mins}" if sign == "-" else f"p{hours}{mins}"
+    return f"{base}_{tz_safe}"
+
+
 def format_timestamp_local_minutes_filename(dt: datetime | None = None) -> str:
     """Return compact timestamp for filenames: YYYYMMDD_HHMM with timezone suffix.
 

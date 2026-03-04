@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ResolvePlanOutput",
   "description": "Resolution Organizer resolve phase (agent resolve_plan) output. The agent writes each unified diff to a file in agent_artifacts_dir and returns diff_path. When manual_resolution_items is non-empty, output must contain ONLY manual_resolution_items (blocking rule).",
+  "type": "object",
   "oneOf": [
     {
       "type": "object",

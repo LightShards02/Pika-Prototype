@@ -17,6 +17,7 @@ import csv
 import io
 import json
 import logging
+import re
 import subprocess
 import sys
 from core.time_utils import format_timestamp_local_minutes
@@ -32,36 +33,93 @@ from core.prompt_registry import PromptRegistry
 RUN_LOGGER_NAME = "agent_cli.run"
 
 
+def _get_effective_inputs(config: dict[str, Any], command: str | None) -> dict[str, Any]:
+    """Return commands.<cmd>.inputs. Single source of truth; no top-level merge."""
+    if not command:
+        return {}
+    cmd_cfg = (config.get("commands") or {}).get(command)
+    if not isinstance(cmd_cfg, dict):
+        return {}
+    cmd_inputs = cmd_cfg.get("inputs")
+    if not isinstance(cmd_inputs, dict):
+        return {}
+    return dict(cmd_inputs)
+
+
+def _get_effective_outputs(config: dict[str, Any], command: str | None) -> dict[str, Any]:
+    """Return commands.<cmd>.outputs. Single source of truth; no top-level merge."""
+    if not command:
+        return {}
+    cmd_cfg = (config.get("commands") or {}).get(command)
+    if not isinstance(cmd_cfg, dict):
+        return {}
+    cmd_outputs = cmd_cfg.get("outputs")
+    if not isinstance(cmd_outputs, dict):
+        return {}
+    return dict(cmd_outputs)
+
+
+def _get_effective_schemas(config: dict[str, Any], command: str | None) -> dict[str, Any]:
+    """Return commands.<cmd>.schemas. Single source of truth; no top-level merge."""
+    if not command:
+        return {}
+    cmd_cfg = (config.get("commands") or {}).get(command)
+    if not isinstance(cmd_cfg, dict):
+        return {}
+    cmd_schemas = cmd_cfg.get("schemas")
+    if not isinstance(cmd_schemas, dict):
+        return {}
+    return dict(cmd_schemas)
+
+
 def resolve_output_schema_path(
-    config: dict[str, Any], workspace_root: Path, schema_key: str
+    config: dict[str, Any],
+    workspace_root: Path,
+    schema_key: str,
+    *,
+    command: str | None = None,
 ) -> Path | None:
-    """Resolve output schema path from config. Tries workspace first, then PIKA root."""
-    schemas = config.get("schemas", {})
-    if not isinstance(schemas, dict) or schema_key not in schemas:
-        return None
-    path_val = schemas[schema_key]
+    """Resolve output schema path from config.
+
+    Resolution order: commands.<cmd>.schemas.<key> > top-level schemas.<key>.
+    Tries workspace first, then PIKA root.
+    """
+    schemas = _get_effective_schemas(config, command)
+    if schema_key not in schemas:
+        top = config.get("schemas") or {}
+        if isinstance(top, dict) and schema_key in top:
+            schemas = top
+        else:
+            return None
+    path_val = schemas.get(schema_key)
     if not isinstance(path_val, str) or not path_val.strip():
         return None
     return resolve_schema_path(path_val, schema_key, workspace_root)
 
 
-def _get_project_context_filename(config: dict[str, Any]) -> str:
-    """Return project context filename from config (required in inputs)."""
-    inputs = config.get("inputs")
-    if isinstance(inputs, dict):
-        val = inputs.get("project_context_filename")
-        if isinstance(val, str) and val.strip():
-            return val.strip()
-    raise ValueError("inputs.project_context_filename is required in config")
+def _get_project_context_filename(config: dict[str, Any], command: str | None = None) -> str:
+    """Return project context filename from config (required in commands.<cmd>.inputs).
+
+    Uses commands.<cmd>.inputs.project_context_filename when command is provided.
+    """
+    inputs = _get_effective_inputs(config, command)
+    val = inputs.get("project_context_filename")
+    if isinstance(val, str) and val.strip():
+        return val.strip()
+    raise ValueError(
+        "commands.<cmd>.inputs.project_context_filename is required in config"
+    )
 
 
-def _get_extra_prompt_filename(config: dict[str, Any]) -> str | None:
-    """Return extra prompt filename from config. None when not configured."""
-    inputs = config.get("inputs")
-    if isinstance(inputs, dict):
-        val = inputs.get("extra_prompt_filename")
-        if isinstance(val, str) and val.strip():
-            return val.strip()
+def _get_extra_prompt_filename(config: dict[str, Any], command: str | None = None) -> str | None:
+    """Return extra prompt filename from config. None when not configured.
+
+    Uses commands.<cmd>.inputs.extra_prompt_filename when command is provided.
+    """
+    inputs = _get_effective_inputs(config, command)
+    val = inputs.get("extra_prompt_filename")
+    if isinstance(val, str) and val.strip():
+        return val.strip()
     return None
 
 
@@ -83,7 +141,7 @@ def resolve_extra_prompt_content(
     )
     if context_path is not None and context_path.exists() and context_path.is_file():
         return context_path.read_text(encoding="utf-8")
-    filename = _get_extra_prompt_filename(config)
+    filename = _get_extra_prompt_filename(config, ctx.command)
     if filename is None:
         return ""
     fallback_path = project_root / filename
@@ -118,20 +176,54 @@ def load_prompt_registry(config: dict[str, Any]) -> PromptRegistry:
     return PromptRegistry.from_config(config)
 
 
+def _resolve_path_from_value(value: str, project_root: Path) -> Path:
+    """Resolve path string to Path. Handles absolute and relative paths."""
+    candidate = Path(value)
+    if candidate.is_absolute():
+        return candidate.resolve()
+    return (project_root / value).resolve()
+
+
+def resolve_project_state_path(
+    config: dict[str, Any],
+    project_root: Path,
+    key: str,
+) -> Path | None:
+    """Resolve a path from project.state (design_spec_path, id_registry_path, sads_id_mapping_path)."""
+    project = config.get("project")
+    if not isinstance(project, dict):
+        return None
+    state = project.get("state")
+    if not isinstance(state, dict):
+        return None
+    value = state.get(key)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return _resolve_path_from_value(value.strip(), project_root)
+
+
 def resolve_input_path(
     config: dict[str, Any],
     project_root: Path,
     key: str,
     *,
     overrides: dict[str, str] | None = None,
+    command: str | None = None,
 ) -> Path | None:
-    """Resolve an input path from CLI overrides or config inputs section.
+    """Resolve an input path from CLI overrides, command inputs, or config.
+
+    For design_spec_path when command is map, implement, review, or resolve_plan:
+    Resolution order: CLI override > commands.<cmd>.inputs.design_spec_path >
+    project.state.design_spec_path.
+
+    For other keys: CLI override > commands.<cmd>.inputs.<key>.
 
     Args:
         config: Full PIKA config.
         project_root: Project root path.
-        key: Input key (e.g. raw_sads_path, design_spec_path, srs_path, issue_tracking_path).
-        overrides: Optional dict of key -> path from CLI args. Takes precedence over config.
+        key: Input key (e.g. design_spec_path, srs_path, issue_tracking_path).
+        overrides: Optional dict of key -> path from CLI args. Takes precedence.
+        command: Optional command name for command-specific resolution (design_spec_path).
 
     Returns:
         Resolved Path or None if not configured.
@@ -139,20 +231,106 @@ def resolve_input_path(
     if overrides:
         value = overrides.get(key)
         if isinstance(value, str) and value.strip():
-            candidate = Path(value)
-            if candidate.is_absolute():
-                return candidate.resolve()
-            return (project_root / value).resolve()
-    inputs = config.get("inputs")
-    if not isinstance(inputs, dict):
+            return _resolve_path_from_value(value.strip(), project_root)
+
+    # design_spec_path: command-specific resolution for map, implement, review, resolve_plan
+    if key == "design_spec_path" and command in ("map", "implement", "review", "resolve_plan"):
+        commands_cfg = config.get("commands")
+        if isinstance(commands_cfg, dict):
+            cmd_cfg = commands_cfg.get(command)
+            if isinstance(cmd_cfg, dict):
+                inputs = cmd_cfg.get("inputs")
+                if isinstance(inputs, dict):
+                    value = inputs.get("design_spec_path")
+                    if isinstance(value, str) and value.strip():
+                        return _resolve_path_from_value(value.strip(), project_root)
+        state_path = resolve_project_state_path(config, project_root, "design_spec_path")
+        if state_path is not None:
+            return state_path
+        from core.pika_config import get_pika_config
+
+        default = (
+            get_pika_config()
+            .get("default_workspace", {})
+            .get("project", {})
+            .get("state", {})
+            .get("design_spec_path")
+        )
+        if isinstance(default, str) and default.strip():
+            return _resolve_path_from_value(default.strip(), project_root)
         return None
+
+    # Merged inputs (top-level + commands.<cmd>.inputs)
+    inputs = _get_effective_inputs(config, command)
     value = inputs.get(key)
-    if not isinstance(value, str) or not value.strip():
-        return None
-    candidate = Path(value)
-    if candidate.is_absolute():
-        return candidate.resolve()
-    return (project_root / value).resolve()
+    if isinstance(value, str) and value.strip():
+        return _resolve_path_from_value(value.strip(), project_root)
+    return None
+
+
+def resolve_format_source_path(
+    config: dict[str, Any],
+    project_root: Path,
+    overrides: dict[str, str] | None,
+) -> Path:
+    """Resolve format command source path.
+
+    Resolution order: CLI override (--design-spec) > commands.format.inputs.design_spec_path.
+    No further fallback. Raises ValueError if neither is set.
+    """
+    if overrides:
+        v = overrides.get("design_spec_path")
+        if isinstance(v, str) and v.strip():
+            return _resolve_path_from_value(v.strip(), project_root)
+    commands_cfg = config.get("commands")
+    if isinstance(commands_cfg, dict):
+        fmt = commands_cfg.get("format")
+        if isinstance(fmt, dict):
+            inputs = fmt.get("inputs")
+            if isinstance(inputs, dict):
+                v = inputs.get("design_spec_path")
+                if isinstance(v, str) and v.strip():
+                    return _resolve_path_from_value(v.strip(), project_root)
+    raise ValueError(
+        "Format command requires input. Provide via CLI (--design-spec PATH) or "
+        "commands.format.inputs.design_spec_path in config."
+    )
+
+
+def resolve_format_output_path(
+    config: dict[str, Any],
+    project_root: Path,
+) -> Path | None:
+    """Resolve format command output path.
+
+    Resolution order: commands.format.outputs.design_spec_path > project.state.design_spec_path.
+    """
+    commands_cfg = config.get("commands")
+    if isinstance(commands_cfg, dict):
+        fmt = commands_cfg.get("format")
+        if isinstance(fmt, dict):
+            outputs = fmt.get("outputs")
+            if isinstance(outputs, dict):
+                spec = outputs.get("design_spec_path")
+                if isinstance(spec, dict):
+                    path_value = spec.get("path")
+                    if isinstance(path_value, str) and path_value.strip():
+                        return _resolve_path_from_value(path_value.strip(), project_root)
+    state_path = resolve_project_state_path(config, project_root, "design_spec_path")
+    if state_path is not None:
+        return state_path
+    from core.pika_config import get_pika_config
+
+    default = (
+        get_pika_config()
+        .get("default_workspace", {})
+        .get("project", {})
+        .get("state", {})
+        .get("design_spec_path")
+    )
+    if isinstance(default, str) and default.strip():
+        return _resolve_path_from_value(default.strip(), project_root)
+    return None
 
 
 def resolve_codebase_dir_path(
@@ -162,11 +340,12 @@ def resolve_codebase_dir_path(
 ) -> Path:
     """Resolve codebase directory path. Defaults to project_root when not provided.
 
-    Uses --codebase-dir or inputs.codebase_dir if set and the path exists;
+    Uses --codebase-dir or commands.<cmd>.inputs.codebase_dir if set and the path exists;
     otherwise returns project_root.
     """
     codebase_path = resolve_input_path(
-        config, project_root, "codebase_dir", overrides=ctx.input_overrides
+        config, project_root, "codebase_dir",
+        overrides=ctx.input_overrides, command=ctx.command,
     )
     if codebase_path is not None and codebase_path.exists():
         return codebase_path.resolve()
@@ -185,11 +364,12 @@ def resolve_project_context_path(
     Fallback: project_root / inputs.project_context_filename.
     """
     context_path = resolve_input_path(
-        config, project_root, "project_context_path", overrides=ctx.input_overrides
+        config, project_root, "project_context_path",
+        overrides=ctx.input_overrides, command=ctx.command,
     )
     if context_path is not None and context_path.exists() and context_path.is_file():
         return context_path
-    filename = _get_project_context_filename(config)
+    filename = _get_project_context_filename(config, ctx.command)
     fallback_path = project_root / filename
     if fallback_path.exists() and fallback_path.is_file():
         return fallback_path
@@ -217,7 +397,7 @@ def resolve_project_context_content(
     if context_path is not None:
         return context_path.read_text(encoding="utf-8")
 
-    filename = _get_project_context_filename(config)
+    filename = _get_project_context_filename(config, ctx.command)
     raise SafetyPreconditionError(
         "Project context file not found. Provide it via:\n"
         f"  1. CLI: --project-context PATH (path to your project context file)\n"
@@ -230,32 +410,111 @@ def resolve_output_path(
     config: dict[str, Any],
     project_root: Path,
     output_key: str,
+    *,
+    command: str | None = None,
 ) -> Path | None:
-    """Resolve an output path from config outputs section."""
-    outputs = config.get("outputs")
-    if not isinstance(outputs, dict):
-        return None
+    """Resolve an output path from config outputs section.
+
+    For command-specific outputs (e.g. commands.format.outputs.design_spec_path),
+    pass command. Otherwise uses top-level outputs.
+    """
+    if command == "format" and output_key == "design_spec_path":
+        return resolve_format_output_path(config, project_root)
+    outputs = _get_effective_outputs(config, command)
     spec = outputs.get(output_key)
     if not isinstance(spec, dict):
         return None
     path_value = spec.get("path")
     if not isinstance(path_value, str) or not path_value.strip():
         return None
-    candidate = Path(path_value)
-    if candidate.is_absolute():
-        return candidate.resolve()
-    return (project_root / path_value).resolve()
+    return _resolve_path_from_value(path_value.strip(), project_root)
 
 
-def resolve_intermediate_map_dir(config: dict[str, Any], project_root: Path) -> Path:
+def _agent_runs_base(
+    config: dict[str, Any], project_root: Path, command: str | None = None
+) -> Path:
+    """Return base path for agent_runs_dir (used for command-aware resolution)."""
+    base = resolve_output_path(
+        config, project_root, "agent_runs_dir", command=command
+    )
+    if base is not None:
+        return base
+    return (project_root / "out" / "agent_runs").resolve()
+
+
+def _agent_artifacts_base(
+    config: dict[str, Any], project_root: Path, command: str | None = None
+) -> Path:
+    """Return base path for agent_artifacts_dir (used for command-aware resolution)."""
+    base = resolve_output_path(
+        config, project_root, "agent_artifacts_dir", command=command
+    )
+    if base is not None:
+        return base
+    return (project_root / "out" / "agent_artifacts").resolve()
+
+
+def resolve_agent_runs_dir_for_command(
+    config: dict[str, Any],
+    project_root: Path,
+    command_name: str,
+    run_id: str | None = None,
+) -> Path:
+    """Resolve agent_runs path with command layer: out/agent_runs/{command}/{run_id}/...
+
+    Returns base/command_name when run_id is None, else base/command_name/run_id.
+    """
+    base = _agent_runs_base(config, project_root, command=command_name)
+    path = base / command_name
+    if run_id:
+        path = path / run_id
+    return path.resolve()
+
+
+def resolve_agent_artifacts_dir_for_command(
+    config: dict[str, Any],
+    project_root: Path,
+    command_name: str,
+    run_id: str,
+) -> Path:
+    """Resolve agent_artifacts path with command layer: out/agent_artifacts/{command}/{run_id}/."""
+    base = _agent_artifacts_base(config, project_root, command=command_name)
+    return (base / command_name / run_id).resolve()
+
+
+def resolve_run_summary_path_for_command(
+    config: dict[str, Any],
+    project_root: Path,
+    command_name: str,
+) -> Path:
+    """Resolve run_summary path: out/agent_runs/{command}/run_summary.jsonl."""
+    base = _agent_runs_base(config, project_root, command=command_name)
+    return (base / command_name / "run_summary.jsonl").resolve()
+
+
+def resolve_manual_resolution_path_for_command(
+    config: dict[str, Any],
+    project_root: Path,
+    command_name: str,
+) -> Path:
+    """Resolve manual_resolution path: out/agent_runs/{command}/manual_resolution.csv."""
+    base = _agent_runs_base(config, project_root, command=command_name)
+    return (base / command_name / "manual_resolution.csv").resolve()
+
+
+def resolve_intermediate_map_dir(
+    config: dict[str, Any], project_root: Path, *, command: str = "map"
+) -> Path:
     """Resolve directory for per-subunit map outputs.
 
-    Uses outputs.intermediate_map_dir if configured; otherwise falls back to
-    pika_config default_outputs.intermediate_map_dir (out/intermediate/map).
+    Uses commands.map.outputs.intermediate_map_dir or outputs.intermediate_map_dir
+    if configured; otherwise falls back to pika_config default_outputs.
     """
     from core.pika_config import get_pika_config
 
-    resolved = resolve_output_path(config, project_root, "intermediate_map_dir")
+    resolved = resolve_output_path(
+        config, project_root, "intermediate_map_dir", command=command
+    )
     if resolved is not None:
         return resolved
     default = get_pika_config().get("default_outputs", {}).get(
@@ -265,17 +524,19 @@ def resolve_intermediate_map_dir(config: dict[str, Any], project_root: Path) -> 
 
 
 def resolve_agent_input_codebase_content_dir(
-    config: dict[str, Any], project_root: Path
+    config: dict[str, Any], project_root: Path, *, command: str | None = None
 ) -> Path:
     """Resolve directory for writing codebase_content before each agent invocation.
 
-    Uses outputs.agent_input_codebase_content_dir if configured; otherwise falls
-    back to pika_config default_outputs.agent_input_codebase_content_dir
+    Uses commands.<cmd>.outputs.agent_input_codebase_content_dir if configured;
+    otherwise falls back to pika_config default_outputs.agent_input_codebase_content_dir
     (out/agent_input/codebase_content).
     """
     from core.pika_config import get_pika_config
 
-    resolved = resolve_output_path(config, project_root, "agent_input_codebase_content_dir")
+    resolved = resolve_output_path(
+        config, project_root, "agent_input_codebase_content_dir", command=command
+    )
     if resolved is not None:
         return resolved
     default = get_pika_config().get("default_outputs", {}).get(
@@ -293,7 +554,24 @@ def _filter_output_to_schema_properties(
     additionalProperties: false. Preserves all schema-defined keys.
     """
     root_props = schema.get("properties", {})
-    return {k: v for k, v in output.items() if k in root_props}
+    pattern_props = schema.get("patternProperties", {})
+    if not root_props and not pattern_props:
+        # Schemas using oneOf/anyOf at root may not define root properties.
+        return output
+    compiled_patterns = [
+        re.compile(pattern)
+        for pattern in pattern_props.keys()
+        if isinstance(pattern, str) and pattern
+    ]
+
+    def _matches_pattern(key: str) -> bool:
+        return any(pattern.search(key) is not None for pattern in compiled_patterns)
+
+    return {
+        k: v
+        for k, v in output.items()
+        if k in root_props or (isinstance(k, str) and _matches_pattern(k))
+    }
 
 
 def _backfill_missing_required_output_fields(
@@ -308,7 +586,7 @@ def _backfill_missing_required_output_fields(
     Backfills run_summary and created_at when absent. Does not overwrite
     present values. Used when agents (e.g. Kimi) omit required fields.
     When invocation_timestamp is provided, uses it for created_at backfill
-    instead of current time (e.g. for last_indexed_at = agent invocation time).
+    instead of current time (e.g. for mapped_at = agent invocation time).
     """
     required = schema.get("required", [])
     if not required:
@@ -401,6 +679,42 @@ def get_local_command(config: dict[str, Any]) -> str:
     return get_pika_config().get("local", {}).get("command", "codex")
 
 
+def get_reasoning_effort(config: dict[str, Any], prompt_name: str) -> str:
+    """Return Codex model_reasoning_effort for the given prompt.
+
+    Resolves: project agent.reasoning_effort[prompt_name] or .default,
+    then pika local.reasoning_effort, then 'medium'.
+
+    Returns:
+        One of: low, medium, high, xhigh.
+    """
+    from core.pika_config import get_pika_config
+
+    agent = config.get("agent")
+    project_effort: dict[str, str] = {}
+    if isinstance(agent, dict):
+        re_obj = agent.get("reasoning_effort")
+        if isinstance(re_obj, dict):
+            project_effort = {k: str(v) for k, v in re_obj.items() if isinstance(v, str)}
+
+    pika_effort: dict[str, str] = {}
+    pika_local = get_pika_config().get("local", {})
+    re_pika = pika_local.get("reasoning_effort")
+    if isinstance(re_pika, dict):
+        pika_effort = {k: str(v) for k, v in re_pika.items() if isinstance(v, str)}
+
+    valid = ("low", "medium", "high", "xhigh")
+    if prompt_name in project_effort and project_effort[prompt_name] in valid:
+        return project_effort[prompt_name]
+    if "default" in project_effort and project_effort["default"] in valid:
+        return project_effort["default"]
+    if prompt_name in pika_effort and pika_effort[prompt_name] in valid:
+        return pika_effort[prompt_name]
+    if "default" in pika_effort and pika_effort["default"] in valid:
+        return pika_effort["default"]
+    return "medium"
+
+
 def get_api_config(config: dict[str, Any]) -> dict[str, Any]:
     """Return API config (api_key_env, url, model) from workspace + pika config."""
     import os
@@ -455,10 +769,10 @@ def invoke_agent_local(
     if retry_instruction:
         prompt_text = prompt_text + "\n\n" + retry_instruction
 
-    artifacts_dir = resolve_output_path(config, project_root, "agent_artifacts_dir")
-    run_dir = (artifacts_dir / ctx.run_id) if (artifacts_dir and ctx.run_id) else artifacts_dir
-    if not run_dir:
-        run_dir = project_root / "out" / "agent_artifacts" / (ctx.run_id or "run")
+    run_id = ctx.run_id or "run"
+    run_dir = resolve_agent_artifacts_dir_for_command(
+        config, project_root, ctx.command, run_id
+    )
     output_path = run_dir / "local_output.json"
 
     if schema_path and schema_path.exists():
@@ -490,6 +804,7 @@ def invoke_agent_local(
     from core.pika_config import get_pika_config
 
     local_timeout = get_pika_config().get("local", {}).get("exec_timeout_sec", 600)
+    reasoning_effort = get_reasoning_effort(config, prompt_name)
     try:
         result = run_local_exec(
             prompt=prompt_text,
@@ -499,6 +814,7 @@ def invoke_agent_local(
             command=local_cmd,
             timeout=local_timeout,
             stream_output=stream_output,
+            reasoning_effort=reasoning_effort,
         )
         log_lifecycle_event(
             "agent_invoke_local_complete",
@@ -549,10 +865,10 @@ def invoke_agent_api(
     if retry_instruction:
         prompt_text = prompt_text + "\n\n" + retry_instruction
 
-    artifacts_dir = resolve_output_path(config, project_root, "agent_artifacts_dir")
-    run_dir = (artifacts_dir / ctx.run_id) if (artifacts_dir and ctx.run_id) else artifacts_dir
-    if not run_dir:
-        run_dir = project_root / "out" / "agent_artifacts" / (ctx.run_id or "run")
+    run_id = ctx.run_id or "run"
+    run_dir = resolve_agent_artifacts_dir_for_command(
+        config, project_root, ctx.command, run_id
+    )
     output_path = run_dir / "api_output.json"
 
     log_lifecycle_event(
@@ -621,7 +937,9 @@ def _write_codebase_content_before_invoke(
     if not content or not isinstance(content, str) or not content.strip():
         return
     project_root = Path(ctx.project_root)
-    out_dir = resolve_agent_input_codebase_content_dir(config, project_root)
+    out_dir = resolve_agent_input_codebase_content_dir(
+        config, project_root, command=ctx.command
+    )
     run_subdir = out_dir / (ctx.run_id or "run")
     run_subdir.mkdir(parents=True, exist_ok=True)
     out_path = run_subdir / f"codebase_content_{ctx.command}.md"
@@ -640,6 +958,7 @@ def invoke_agent_with_schema_retry(
     schema_path: Path | None,
     config: dict[str, Any],
     ctx: RuntimeContext,
+    invocation_timestamp: str | None = None,
 ) -> dict[str, Any]:
     """Invoke agent and validate output. Retry up to configurable times on schema failure.
 
@@ -821,7 +1140,6 @@ def invoke_agent_stub(
 
     Real implementation would call LLM with prompt and template vars.
     """
-    _ = prompt_name
     cmd_label = f"agent {ctx.command}"
     storage_file = template_vars.get("run_summary_file") or "-"
     if not isinstance(storage_file, str) or not storage_file.strip():
@@ -850,8 +1168,38 @@ def invoke_agent_stub(
             template_vars.get("design_spec_rows_csv") or ""
         )
     elif ctx.command == "implement":
-        base["diffs"] = []  # Each diff has path, action, diff_path, spec_ids
-        base["unclarities"] = []
+        if prompt_name == "implement_anchor_planner":
+            return {
+                "module_tag": "STUB",
+                "planned_anchors": [],
+                "provided_intents": [],
+                "required_intents": [],
+            }
+        if prompt_name == "implement_anchor_linker":
+            return {
+                "contracts": [],
+                "bindings": [],
+                "integration_actions": [],
+            }
+        spec_ids = list(_stub_map_mappings_from_csv(
+            template_vars.get("selected_specs_csv") or ""
+        ).keys())
+        if not spec_ids:
+            spec_ids = ["A1"]
+        output: dict[str, Any] = {
+            "run_summary": {
+                "status": "success",
+                "notes": "Stub implement output",
+            }
+        }
+        for spec_id in spec_ids:
+            output[spec_id] = {
+                "summary": "Stub diff output",
+                "diffs": [],
+                "mapped_classes_functions": [],
+                "mapped_test_cases": [],
+            }
+        return output
     elif ctx.command == "resolve_plan":
         base["mappings"] = {"IS01": {"spec_ids": [], "notes": "Stub"}}
     return base

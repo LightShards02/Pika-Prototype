@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import sys
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +24,7 @@ from core.errors import (
     PromptValidationError,
 )
 from core.logger import RUN_LOGGER_NAME, init_run_logger
+from core.time_utils import generate_run_id
 from core.pika_paths import get_config_schema_path
 from core.prompt_registry import PromptRegistry
 from core.pika_config import get_pika_config
@@ -256,7 +256,7 @@ def _execute_command(
         )
         validate_command_preconditions(command_name, config_data, preflight_ctx)
 
-        run_id = uuid.uuid4().hex
+        run_id = generate_run_id()
         runtime_ctx["run_id"] = run_id
         router_ctx = RuntimeContext(
             command=command_name,
@@ -346,7 +346,7 @@ def agent_plan_command(
 def agent_format_command(
     config: str | None = typer.Option(None, "--config", help="Path to config YAML."),
     project_root: str = typer.Option(..., "--project-root", help="Workspace root (required): directory containing project config and outputs."),
-    input_path: str | None = typer.Option(None, "--input", help="Path to Raw SADS or design spec (CSV/XLSX). Relative to project root or absolute."),
+    design_spec: str | None = typer.Option(None, "--design-spec", help="Path to Raw SADS or design spec (CSV/XLSX). Relative to project root or absolute."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Run without side effects."),
     verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logs."),
     command_only_validation: bool = typer.Option(
@@ -355,8 +355,8 @@ def agent_format_command(
 ) -> None:
     """SADS Formatter (Phase 0.b): normalize Raw SADS into Draft Formatted SADS (deterministic, no LLM)."""
     overrides = None
-    if input_path:
-        overrides = {"raw_sads_path": input_path, "design_spec_path": input_path}
+    if design_spec:
+        overrides = {"design_spec_path": design_spec}
     _execute_command(
         "format",
         config=config,

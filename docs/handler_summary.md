@@ -38,11 +38,11 @@ This document summarizes the input, translation, and output mechanism of each co
 
 | Aspect | Details |
 |-------|---------|
-| **Input** | CLI `--input` or `inputs.raw_sads_path` / `inputs.design_spec_path` → Raw SADS CSV/XLSX content (relative to project root or absolute) |
+| **Input** | CLI `--design-spec` or `commands.format.inputs.design_spec_path` → Raw SADS CSV/XLSX content (relative to project root or absolute). No further fallback. |
 | **Preprocessing** | 1. If SADS format (SADS ID column + D\\d+\\.\\d+ rows): flatten (forward-fill SRS ID/SRS, filter to SADS rows), derive title/requirement from SADS ID/SADS<br>2. Keyword replacement (many-to-one: replacement → [keywords], or legacy keyword → replacement)<br>3. Append missing contract columns per csv_contracts<br>4. Assign deterministic spec_ids via ID registry (SADS fingerprint or standard) |
 | **Agent output** | None (no agent) |
 | **Schema** | None |
-| **Translation** | Writes Draft Formatted SADS to `outputs.normalized_dir/formatted_{original_stem}.csv`; backs up existing file to `outputs.backups_dir/format/` if `copy_before_write`; when SADS format, writes ID mapping to `out/state/sads_id_mapping.json` (or `commands.format.sads_id_mapping_path`) |
+| **Translation** | Writes Draft Formatted SADS to `commands.format.outputs.design_spec_path`; backs up existing file to `outputs.backups_dir/format/` if `copy_before_write`; copies to `project.state.design_spec_path` after writing; when SADS format, writes ID mapping to `out/state/sads_id_mapping.json` then copies to `project.state.sads_id_mapping_path` |
 | **Output** | Draft Formatted SADS (CSV); format logs (source_path, input_rows, sads_format, keyword_replacements, columns_appended, ids_assigned, ids_preserved); SADS ID mapping (by_sads_id, by_srs_id) when SADS format |
 
 **Skipped when:** No input path via CLI or config, or file missing.
@@ -68,12 +68,14 @@ This document summarizes the input, translation, and output mechanism of each co
 
 | Aspect | Details |
 |-------|---------|
-| **Input** | CLI `--design-spec` or `inputs.design_spec_path` → Formatted SADS (relative to project root or absolute); `--codebase-dir` or `inputs.codebase_dir` → codebase path; `--project-context` → project context file (fallback: project root / `inputs.project_context_filename`); `--extra-prompt` → optional extra prompt .md file (fallback: project root / `inputs.extra_prompt_filename` when configured; when both omitted, no file looked for, extra section empty) |
+| **Input** | CLI `--design-spec` or `commands.map.inputs.design_spec_path` or `project.state.design_spec_path` → Formatted SADS; `--codebase-dir` or `inputs.codebase_dir` → codebase path; `--project-context` → project context file (fallback: project root / `inputs.project_context_filename`); `--extra-prompt` → optional extra prompt .md file (fallback: project root / `inputs.extra_prompt_filename` when configured; when both omitted, no file looked for, extra section empty) |
 | **Preprocessing** | Writes agent-view CSV to `outputs.agent_view_csv` (slim spec: spec_id, title, requirement, mapping columns only; no SRS/SADS lineage). Overwritten each run. Prompts use this slim content. |
 | **Agent output** | `mappings` (spec_id → status, code_refs, assumptions); each code_ref has path, symbol_name, symbol_type, confidence, consistency_score, problems; or `manual_resolution_items` only (blocking) |
 | **Schema** | `schemas.map_output` → `index_output.schema.json` |
-| **Translation** | Updates mapping columns in Formatted SADS: `mapped_code_symbols`, `index_status`, `assumptions` (from mapping.assumptions, nullable), `last_indexed_at` |
+| **Translation** | Updates mapping columns in Formatted SADS: `mapped_code_symbols`, `map_status`, `map_assumptions` (from mapping.assumptions, nullable), `mapped_at` |
 | **Output** | Formatted SADS with mapping columns updated |
+
+**Output paths:** `run_summary` → `out/agent_runs/map/run_summary.jsonl`; `manual_resolution` → `out/agent_runs/map/manual_resolution.csv`; per-subunit outputs → `out/intermediate/map/{run_id}/map_*.json`.
 
 **Skipped when:** No design spec path via CLI or config, or file missing.
 
@@ -83,12 +85,14 @@ This document summarizes the input, translation, and output mechanism of each co
 
 | Aspect | Details |
 |-------|---------|
-| **Input** | CLI `--design-spec` or `inputs.design_spec_path` → Formatted SADS (relative to project root or absolute); `--project-context` → project context file (fallback: project root / `inputs.project_context_filename`) |
-| **Preprocessing** | Writes agent-view CSV to `outputs.agent_view_csv` (slim spec: spec_id, title, requirement, mapping columns only; no SRS/SADS lineage). Overwritten each run. Prompts use this slim content. |
-| **Agent output** | `diffs` (unified patches), `unclarities`; or `manual_resolution_items` only (blocking) |
-| **Schema** | `schemas.implement_output` → `implement_output.schema.json` |
-| **Translation** | Applies diffs to code; updates implementation-status columns in SADS/issue tracker |
-| **Output** | Code changes; SADS/issue tracker updates |
+| **Input** | CLI `--design-spec` or `commands.implement.inputs.design_spec_path` or `project.state.design_spec_path` → Formatted SADS; `--project-context` → project context file (fallback: project root / `inputs.project_context_filename`) |
+| **Preprocessing** | Deterministic workset selection, module catalog build, per-module anchor planning, global linking, link-plan validation, batch planning, batch-plan validation, and brief generation |
+| **Agent output** | Planner/linker outputs (`anchor_planner_*`, `anchor_linker`) and per-batch spec-keyed implement outputs (`{spec_id}.diffs`, mappings); or `manual_resolution_items` only (blocking) |
+| **Schema** | `schemas/agent_outputs/implement_anchor_planner_output.schema.json`, `schemas/agent_outputs/implement_anchor_linker_output.schema.json`, `schemas/agent_outputs/implement_output.schema.json` |
+| **Translation** | Applies validated diffs to code; updates `mapped_code_symbols`/`mapped_test_cases`; writes trace and verification artifacts |
+| **Output** | Code changes; Design Spec mapping updates; test spec updates; run artifacts (`link_plan`, `batch_plan`, `batch_plan_validation`, `batch_briefs`) |
+
+**Output paths:** Run workspace → `out/agent_runs/implement/{run_id}/`; artifacts → `out/agent_artifacts/implement/{run_id}/`; test spec (optional) → `out/state/test_spec.csv`.
 
 **Skipped when:** No design spec path via CLI or config, or file missing.
 

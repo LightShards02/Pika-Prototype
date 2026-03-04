@@ -39,13 +39,57 @@ _MAP_TEST_CSV_CONTRACTS = {
                 "mapped_confidence",
                 "mapped_consistency_score",
                 "mapped_problems",
-                "index_status",
-                "assumptions",
-                "last_indexed_at",
+                "map_status",
+                "map_assumptions",
+                "mapped_at",
             ]
         }
     }
 }
+
+
+def _map_test_config(root: Path, **overrides: Any) -> dict[str, Any]:
+    """Build map test config with command-scoped inputs/outputs."""
+    base = {
+        **_MAP_TEST_CSV_CONTRACTS,
+        "project": {
+            "name": "test",
+            "root_dir": ".",
+            "state": {
+                "design_spec_path": "out/state/DESIGN-SPEC.csv",
+                "id_registry_path": "out/state/id_registry.json",
+                "sads_id_mapping_path": "out/state/sads_id_mapping.json",
+            },
+        },
+        "commands": {
+            "map": {
+                "enabled": True,
+                "prompt_name": "map_spec_to_code",
+                "inputs": {
+                    "design_spec_path": "out/state/DESIGN-SPEC.csv",
+                    "codebase_dir": ".",
+                    "project_context_filename": "PROJECT_CONTEXT.md",
+                },
+                "outputs": {
+                    "backups_dir": {"path": str(root / "out" / "backups"), "no_overwrite": False},
+                    "intermediate_map_dir": {"path": str(root / "out" / "intermediate" / "map"), "no_overwrite": False},
+                },
+            },
+        },
+    }
+    for k, v in overrides.items():
+        if k == "design_spec_path":
+            base["commands"]["map"]["inputs"]["design_spec_path"] = str(v)
+            base["project"]["state"]["design_spec_path"] = str(v)
+        elif k == "backups_dir":
+            base["commands"]["map"]["outputs"]["backups_dir"] = v
+        elif k == "outputs" and isinstance(v, dict):
+            base["commands"]["map"]["outputs"].update(v)
+        elif k == "inputs" and isinstance(v, dict):
+            base["commands"]["map"]["inputs"].update(v)
+        else:
+            base[k] = v
+    return base
 
 
 class MapOutputContractTests(unittest.TestCase):
@@ -266,12 +310,12 @@ class MapTranslateTests(unittest.TestCase):
             shutil.rmtree(_TEST_DATA_DIR, ignore_errors=True)
 
     def test_translate_map_updates_mapping_columns(self) -> None:
-        """Translate applies mapped_code_symbols, index_status, assumptions, last_indexed_at."""
+        """Translate applies mapped_code_symbols, map_status, map_assumptions, mapped_at."""
         root = _TEST_DATA_DIR / "test1"
         root.mkdir(parents=True, exist_ok=True)
         design_csv = root / "design_spec.csv"
         design_csv.write_text(
-            "spec_id,subunit,title,requirement,mapped_code_symbols,index_status,assumptions,last_indexed_at\n"
+            "spec_id,subunit,title,requirement,mapped_code_symbols,map_status,map_assumptions,mapped_at\n"
             "A1,S1,Foo,Do foo,,unmapped,,\n"
             "A2,S1,Bar,Do bar,,unmapped,,\n",
             encoding="utf-8",
@@ -279,10 +323,7 @@ class MapTranslateTests(unittest.TestCase):
         backups_dir = root / "out" / "backups"
         backups_dir.mkdir(parents=True, exist_ok=True)
 
-        config = {
-            **_MAP_TEST_CSV_CONTRACTS,
-            "outputs": {"backups_dir": {"path": str(root / "out" / "backups"), "no_overwrite": False}},
-        }
+        config = _map_test_config(root, design_spec_path=design_csv)
         ctx = RuntimeContext(
             command="map",
             dry_run=False,
@@ -318,7 +359,7 @@ class MapTranslateTests(unittest.TestCase):
         self.assertIn("Foo.DoFoo,Bar.Helper", content)
         self.assertIn("Implementation found in Foo and Bar.", content)
         self.assertIn("No code reference found.", content)
-        # last_indexed_at normalized to YYYY-MM-DDTHH:MM:SS UTC+X
+        # mapped_at normalized to YYYY-MM-DDTHH:MM:SS UTC+X
         self.assertRegex(content, r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2} UTC[+-]\d{1,2}(:\d{2})?")
         # Backup created
         map_backups = backups_dir / "map"
@@ -334,10 +375,7 @@ class MapTranslateTests(unittest.TestCase):
         original = "spec_id,title\nA1,Foo\n"
         design_csv.write_text(original, encoding="utf-8")
 
-        config = {
-            **_MAP_TEST_CSV_CONTRACTS,
-            "outputs": {"backups_dir": {"path": str(root / "out" / "backups"), "no_overwrite": False}},
-        }
+        config = _map_test_config(root, design_spec_path=design_csv)
         ctx = RuntimeContext(
             command="map",
             dry_run=True,
@@ -361,16 +399,13 @@ class MapTranslateTests(unittest.TestCase):
         design_csv = root / "design_spec.csv"
         design_csv.write_text(
             "spec_id,subunit,title,mapped_code_symbols,mapped_confidence,mapped_consistency_score,mapped_problems,"
-            "index_status,assumptions,last_indexed_at\n"
+            "map_status,map_assumptions,mapped_at\n"
             "A1,S1,Foo,,,,,,\n",
             encoding="utf-8",
         )
         (root / "out" / "backups").mkdir(parents=True, exist_ok=True)
 
-        config = {
-            **_MAP_TEST_CSV_CONTRACTS,
-            "outputs": {"backups_dir": {"path": str(root / "out" / "backups"), "no_overwrite": False}},
-        }
+        config = _map_test_config(root, design_spec_path=design_csv)
         ctx = RuntimeContext(
             command="map",
             dry_run=False,
@@ -426,10 +461,8 @@ class MapTranslateTests(unittest.TestCase):
             "spec_id,subunit,title\nA1,S1,Foo\n",
             encoding="utf-8",
         )
-        config = {
-            **_MAP_TEST_CSV_CONTRACTS,
-            "outputs": {},  # no backups_dir
-        }
+        config = _map_test_config(root, design_spec_path=design_csv)
+        del config["commands"]["map"]["outputs"]["backups_dir"]
         runtime_ctx = RuntimeContext(
             command="map",
             dry_run=False,
@@ -456,10 +489,7 @@ class MapTranslateTests(unittest.TestCase):
         )
         (root / "out" / "backups").mkdir(parents=True, exist_ok=True)
 
-        config = {
-            **_MAP_TEST_CSV_CONTRACTS,
-            "outputs": {"backups_dir": {"path": str(root / "out" / "backups"), "no_overwrite": False}},
-        }
+        config = _map_test_config(root, design_spec_path=design_csv)
         ctx = RuntimeContext(
             command="map",
             dry_run=False,
@@ -479,9 +509,9 @@ class MapTranslateTests(unittest.TestCase):
 
         content = design_csv.read_text(encoding="utf-8")
         self.assertIn("mapped_code_symbols", content)
-        self.assertIn("index_status", content)
-        self.assertIn("assumptions", content)
-        self.assertIn("last_indexed_at", content)
+        self.assertIn("map_status", content)
+        self.assertIn("map_assumptions", content)
+        self.assertIn("mapped_at", content)
         self.assertIn("Foo", content)
         self.assertIn("partial", content)
 
@@ -541,12 +571,12 @@ class MapFilterAndGroupTests(unittest.TestCase):
         _validate_subunit_column(headers, rows)  # no raise
 
     def test_filter_rows_skips_mapped_when_skip_mapped_true(self) -> None:
-        """Filter excludes rows with index_status=mapped when skip_mapped=True."""
-        headers = ["spec_id", "index_status"]
+        """Filter excludes rows with map_status=mapped when skip_mapped=True."""
+        headers = ["spec_id", "map_status"]
         rows = [
-            {"spec_id": "A1", "index_status": "unmapped"},
-            {"spec_id": "A2", "index_status": "mapped"},
-            {"spec_id": "A3", "index_status": "partial"},
+            {"spec_id": "A1", "map_status": "unmapped"},
+            {"spec_id": "A2", "map_status": "mapped"},
+            {"spec_id": "A3", "map_status": "partial"},
         ]
         filtered = _filter_rows_for_mapping(headers, rows, skip_mapped=True)
         self.assertEqual(len(filtered), 2)
@@ -555,10 +585,10 @@ class MapFilterAndGroupTests(unittest.TestCase):
 
     def test_filter_rows_includes_all_when_skip_mapped_false(self) -> None:
         """Filter includes all rows when skip_mapped=False."""
-        headers = ["spec_id", "index_status"]
+        headers = ["spec_id", "map_status"]
         rows = [
-            {"spec_id": "A1", "index_status": "mapped"},
-            {"spec_id": "A2", "index_status": "unmapped"},
+            {"spec_id": "A1", "map_status": "mapped"},
+            {"spec_id": "A2", "map_status": "unmapped"},
         ]
         filtered = _filter_rows_for_mapping(headers, rows, skip_mapped=False)
         self.assertEqual(len(filtered), 2)
@@ -715,14 +745,11 @@ class RunMapApplyExistingOutputsTests(unittest.TestCase):
             }),
             encoding="utf-8",
         )
-        config = {
-            **_MAP_TEST_CSV_CONTRACTS,
-            "inputs": {"design_spec_path": str(self.design_csv), "allowed_extensions": [".csv", ".xlsx"], "project_context_filename": "PROJECT_CONTEXT.md"},
-            "outputs": {
-                "backups_dir": {"path": str(self.root / "out" / "backups"), "no_overwrite": False},
-                "manual_resolution_file": {"path": str(self.root / "out" / "manual.csv"), "no_overwrite": False},
-            },
-        }
+        config = _map_test_config(
+            self.root,
+            design_spec_path=self.design_csv,
+            outputs={"agent_runs_dir": {"path": str(self.root / "out" / "agent_runs"), "no_overwrite": False}},
+        )
         ctx = RuntimeContext(
             command="map",
             dry_run=False,
@@ -743,11 +770,8 @@ class RunMapApplyExistingOutputsTests(unittest.TestCase):
 
     def test_apply_existing_outputs_nonexistent_dir_fails(self) -> None:
         """Non-existent directory returns failed."""
-        config = {
-            **_MAP_TEST_CSV_CONTRACTS,
-            "inputs": {"design_spec_path": str(self.design_csv), "allowed_extensions": [".csv", ".xlsx"], "project_context_filename": "PROJECT_CONTEXT.md"},
-            "outputs": {},
-        }
+        config = _map_test_config(self.root, design_spec_path=self.design_csv)
+        config["commands"]["map"]["outputs"] = {}
         ctx = RuntimeContext(
             command="map",
             dry_run=False,
@@ -799,18 +823,14 @@ class RunMapPerSubunitPersistenceTests(unittest.TestCase):
                 return outputs_by_subunit["S1"]
             return outputs_by_subunit["S2"]
 
-        config = {
-            **_MAP_TEST_CSV_CONTRACTS,
-            "inputs": {
-                "design_spec_path": str(self.design_csv),
-                "allowed_extensions": [".csv", ".xlsx"],
-                "project_context_filename": "PROJECT_CONTEXT.md",
-            },
-            "outputs": {
-                "backups_dir": {"path": str(self.root / "out" / "backups"), "no_overwrite": False},
-                "manual_resolution_file": {"path": str(self.root / "out" / "manual.csv"), "no_overwrite": False},
-                "intermediate_map_dir": {"path": str(self.intermediate_dir), "no_overwrite": False},
-            },
+        config = _map_test_config(self.root, design_spec_path=self.design_csv)
+        config["commands"]["map"]["outputs"]["intermediate_map_dir"] = {
+            "path": str(self.intermediate_dir),
+            "no_overwrite": False,
+        }
+        config["commands"]["map"]["outputs"]["agent_runs_dir"] = {
+            "path": str(self.root / "out" / "agent_runs"),
+            "no_overwrite": False,
         }
         ctx = RuntimeContext(
             command="map",
@@ -861,13 +881,8 @@ class CodebaseContentProviderTests(unittest.TestCase):
 
     def test_codebase_content_populated_when_provider_api(self) -> None:
         """When provider is api, codebase_content is non-empty (AST snapshot)."""
-        config = {
-            **_MAP_TEST_CSV_CONTRACTS,
-            "agent": {"provider": "api"},
-            "inputs": {
-                "project_context_filename": "PROJECT_CONTEXT.md",
-            },
-        }
+        config = _map_test_config(self.root)
+        config["agent"] = {"provider": "api"}
         ctx = RuntimeContext(
             command="map",
             dry_run=False,
@@ -887,11 +902,8 @@ class CodebaseContentProviderTests(unittest.TestCase):
 
     def test_codebase_content_empty_when_provider_local(self) -> None:
         """When provider is local, codebase_content is empty (agent has filesystem access)."""
-        config = {
-            **_MAP_TEST_CSV_CONTRACTS,
-            "agent": {"provider": "local"},
-            "inputs": {"project_context_filename": "PROJECT_CONTEXT.md"},
-        }
+        config = _map_test_config(self.root)
+        config["agent"] = {"provider": "local"}
         ctx = RuntimeContext(
             command="map",
             dry_run=False,
@@ -907,11 +919,8 @@ class CodebaseContentProviderTests(unittest.TestCase):
 
     def test_codebase_content_empty_when_provider_stub(self) -> None:
         """When provider is stub, codebase_content is empty."""
-        config = {
-            **_MAP_TEST_CSV_CONTRACTS,
-            "agent": {"provider": "stub"},
-            "inputs": {"project_context_filename": "PROJECT_CONTEXT.md"},
-        }
+        config = _map_test_config(self.root)
+        config["agent"] = {"provider": "stub"}
         ctx = RuntimeContext(
             command="map",
             dry_run=False,

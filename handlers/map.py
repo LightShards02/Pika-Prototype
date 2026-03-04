@@ -34,10 +34,12 @@ from core.lifecycle import (
     resolve_codebase_dir_path,
     resolve_input_path,
     resolve_intermediate_map_dir,
+    resolve_manual_resolution_path_for_command,
     resolve_output_path,
     resolve_output_schema_path,
     resolve_extra_prompt_content,
     resolve_project_context_content,
+    resolve_run_summary_path_for_command,
 )
 
 _SPEC_ID_PATTERN = re.compile(r"^[A-Za-z][0-9]+$")
@@ -161,7 +163,7 @@ def _filter_rows_for_mapping(
     Returns:
         Rows with status != 'mapped' when skip_mapped is True, or all rows otherwise.
     """
-    status_col = _find_column(headers, ["index_status"])
+    status_col = _find_column(headers, ["map_status", "index_status"])  # index_status for backward compat
     if not status_col:
         return rows
     filtered: list[dict[str, str]] = []
@@ -273,7 +275,11 @@ def run_map(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
     # 3. Load required inputs
     log_lifecycle_event("lifecycle_load_inputs", command="map", run_id=ctx.run_id)
     design_path = resolve_input_path(
-        config, project_root, "design_spec_path", overrides=ctx.input_overrides
+        config,
+        project_root,
+        "design_spec_path",
+        overrides=ctx.input_overrides,
+        command="map",
     )
     if design_path is None or not design_path.exists():
         return {"command": "map", "status": "skipped", "reason": "design_spec_path not configured or missing"}
@@ -339,12 +345,11 @@ def run_map(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
                 f"{n_blocking} blocking item(s) require human resolution before translate",
             )
             log_lifecycle_event("lifecycle_manual_resolution", command="map", run_id=ctx.run_id)
-            manual_path = resolve_output_path(config, project_root, "manual_resolution_file")
-            if manual_path:
-                append_manual_resolution_items_to_file(
-                    output["manual_resolution_items"],
-                    manual_path,
-                )
+            manual_path = resolve_manual_resolution_path_for_command(config, project_root, "map")
+            append_manual_resolution_items_to_file(
+                output["manual_resolution_items"],
+                manual_path,
+            )
             return {
                 "command": "map",
                 "status": "blocked",
@@ -399,7 +404,9 @@ def run_map(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
             "agent_view_content": csv_content,
         }
         template_vars = _build_template_vars(config, project_root, ctx, inputs)
-        schema_path = resolve_output_schema_path(config, project_root, "map_output")
+        schema_path = resolve_output_schema_path(
+            config, project_root, "map_output", command="map"
+        )
         invocation_ts = format_timestamp_local_minutes()
         try:
             out = invoke_agent_with_schema_retry(
@@ -460,12 +467,11 @@ def run_map(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
             f"{n_blocking} blocking item(s) require human resolution before translate",
         )
         log_lifecycle_event("lifecycle_manual_resolution", command="map", run_id=ctx.run_id)
-        manual_path = resolve_output_path(config, project_root, "manual_resolution_file")
-        if manual_path:
-            append_manual_resolution_items_to_file(
-                output["manual_resolution_items"],
-                manual_path,
-            )
+        manual_path = resolve_manual_resolution_path_for_command(config, project_root, "map")
+        append_manual_resolution_items_to_file(
+            output["manual_resolution_items"],
+            manual_path,
+        )
         return {
             "command": "map",
             "status": "blocked",
@@ -492,9 +498,11 @@ def _build_template_vars(
     inputs: dict[str, Any],
 ) -> dict[str, Any]:
     """Build template variables for map_spec_to_code prompt."""
-    manual_path = resolve_output_path(config, project_root, "manual_resolution_file")
-    run_summary_path = resolve_output_path(config, project_root, "run_summary_file")
-    schema_path = resolve_output_schema_path(config, project_root, "map_output")
+    manual_path = resolve_manual_resolution_path_for_command(config, project_root, "map")
+    run_summary_path = resolve_run_summary_path_for_command(config, project_root, "map")
+    schema_path = resolve_output_schema_path(
+        config, project_root, "map_output", command="map"
+    )
     schema_file = str(schema_path) if schema_path and schema_path.exists() else ""
 
     # Resolve codebase_dir: CLI/config or default to project_root
@@ -528,8 +536,8 @@ def _build_template_vars(
         "design_spec_column_definitions": get_design_spec_column_definitions(),
         "codebase_dir": codebase_dir,
         "codebase_content": codebase_content,
-        "manual_resolution_file": str(manual_path) if manual_path else "",
-        "run_summary_file": str(run_summary_path) if run_summary_path else "",
+        "manual_resolution_file": str(manual_path),
+        "run_summary_file": str(run_summary_path),
     }
 
 
@@ -565,9 +573,9 @@ def _translate_map(
     - mapped_confidence: comma-delimited confidence (0-1) per symbol, same order
     - mapped_consistency_score: comma-delimited consistency_score (0-1) per symbol, same order
     - mapped_problems: semicolon-delimited problems per symbol, same order
-    - index_status: mapping.status (mapped|partial|unmapped|blocked)
-    - assumptions: mapping.assumptions (nullable)
-    - last_indexed_at: YYYY-MM-DDTHH:MM:SS UTC+X (agent created_at when provided, else invocation time)
+    - map_status: mapping.status (mapped|partial|unmapped|blocked)
+    - map_assumptions: mapping.assumptions (nullable)
+    - mapped_at: YYYY-MM-DDTHH:MM:SS UTC+X (agent created_at when provided, else invocation time)
 
     Preserves all original columns. Backs up design spec before overwrite.
     """
@@ -585,12 +593,12 @@ def _translate_map(
     if not mappings:
         return
 
-    # Timestamp for last_indexed_at (YYYY-MM-DDTHH:MM:SS UTC+X)
+    # Timestamp for mapped_at (YYYY-MM-DDTHH:MM:SS UTC+X)
     created_at = output.get("created_at", "")
     if isinstance(created_at, str) and created_at.strip():
-        last_indexed_at = normalize_timestamp_for_display(created_at)
+        mapped_at_val = normalize_timestamp_for_display(created_at)
     else:
-        last_indexed_at = format_timestamp_local_minutes()
+        mapped_at_val = format_timestamp_local_minutes()
 
     # Load design spec
     headers, rows = load_sads_csv_or_xlsx(design_path)
@@ -606,9 +614,9 @@ def _translate_map(
     confidence_col = _find_column(headers, ["mapped_confidence"])
     consistency_col = _find_column(headers, ["mapped_consistency_score"])
     problems_col = _find_column(headers, ["mapped_problems"])
-    status_col = _find_column(headers, ["index_status"])
-    assumptions_col = _find_column(headers, ["assumptions", "index_notes"])  # index_notes for backward compat
-    timestamp_col = _find_column(headers, ["last_indexed_at"])
+    status_col = _find_column(headers, ["map_status", "index_status"])  # index_status for backward compat
+    assumptions_col = _find_column(headers, ["map_assumptions", "assumptions", "index_notes"])  # backward compat
+    timestamp_col = _find_column(headers, ["mapped_at", "last_indexed_at"])  # backward compat
 
     if not spec_id_col:
         return  # No spec_id column; cannot match rows
@@ -657,27 +665,29 @@ def _translate_map(
         if problems_col:
             row[problems_col] = ";".join(problems_list)
 
-        # index_status
+        # map_status
         status = mapping.get("status", "unmapped")
         if isinstance(status, str) and status.strip():
             if status_col:
                 row[status_col] = status.strip()
 
-        # assumptions (nullable)
+        # map_assumptions (nullable)
         assumptions = mapping.get("assumptions", mapping.get("notes"))  # backward compat
         if assumptions_col:
             row[assumptions_col] = "" if assumptions is None else str(assumptions).strip()
 
-        # last_indexed_at
+        # mapped_at
         if timestamp_col:
-            row[timestamp_col] = last_indexed_at
+            row[timestamp_col] = mapped_at_val
 
     # Backup before overwrite (per csv_contracts). backups_dir is required for map.
-    backups_base = resolve_output_path(config, project_root, "backups_dir")
+        backups_base = resolve_output_path(
+            config, project_root, "backups_dir", command="map"
+        )
     if backups_base is None:
         raise ValueError(
             "backups_dir is required for map command. "
-            "Configure outputs.backups_dir in your project config."
+            "Configure commands.map.outputs.backups_dir in your project config."
         )
     backups_dir = backups_base / "map"
     backups_dir.mkdir(parents=True, exist_ok=True)

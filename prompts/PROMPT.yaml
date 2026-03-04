@@ -135,51 +135,171 @@ prompts:
       Run Summary File:
       {{run_summary_file}}
 
+  implement_anchor_planner:
+    description: Produce module-local planned anchors and intents for implement planning.
+    output_schema_file: schemas/agent_outputs/implement_anchor_planner_output.schema.json
+    template_variables:
+      - name: output_schema_file
+        required: true
+        description: Schema path the output must satisfy.
+      - name: project_context
+        required: true
+        description: Project context markdown text.
+      - name: module_packet_json
+        required: true
+        description: Module-local packet containing module info and its selected spec rows.
+      - name: manual_resolution_file
+        required: true
+        description: Storage path for manual resolution artifacts.
+      - name: run_summary_file
+        required: true
+        description: Storage path for run summary artifacts.
+    system: |
+      You are a strict module anchor planner for implement workflow.
+      Output must validate against {{output_schema_file}} exactly.
+      Return JSON only.
+      If a blocking ambiguity exists, return only manual_resolution_items.
+      Do not assume cross-module knowledge; plan only from module-local packet.
+      For every planned_anchors item, set anchor_materialization_kind using exactly one enum value:
+      schema | interface | runtime_logic | wiring | test.
+    user: |
+      Project Context:
+      {{project_context}}
+
+      Module Packet:
+      {{module_packet_json}}
+
+      Manual Resolution File:
+      {{manual_resolution_file}}
+
+      Run Summary File:
+      {{run_summary_file}}
+
+      Deterministic output rule:
+      Use one and only one anchor_materialization_kind enum for every planned_anchors item.
+
+  implement_anchor_linker:
+    description: Produce global contracts and bindings from per-module anchor plans.
+    output_schema_file: schemas/agent_outputs/implement_anchor_linker_output.schema.json
+    template_variables:
+      - name: output_schema_file
+        required: true
+        description: Schema path the output must satisfy.
+      - name: project_context
+        required: true
+        description: Project context markdown text.
+      - name: module_catalog_json
+        required: true
+        description: Deterministic module catalog including module_role.
+      - name: anchor_plans_json
+        required: true
+        description: Planner outputs for all modules.
+      - name: type_placement_path
+        required: true
+        description: Shared path prefix for cross-module type definitions.
+      - name: disallowed_link_kinds_by_required_role_json
+        required: true
+        description: Role-based contract kinds that must not appear on required bindings.
+      - name: manual_resolution_file
+        required: true
+        description: Storage path for manual resolution artifacts.
+      - name: run_summary_file
+        required: true
+        description: Storage path for run summary artifacts.
+      - name: linker_retry_context_json
+        required: true
+        description: Retry payload listing unbound required intents from prior validation, or null.
+    system: |
+      You are a strict anchor linker for implement workflow.
+      Output must validate against {{output_schema_file}} exactly.
+      Return JSON only.
+      Emit contracts + bindings as the canonical link plan.
+      If blocking ambiguity exists, return only manual_resolution_items.
+      Never emit bindings that violate disallowed_link_kinds_by_required_role_json.
+      For every required intent in anchor_plans_json, you must:
+      1) add at least one valid binding, or
+      2) include a manual_resolution_item explaining no valid link exists.
+      If a required intent can only be satisfied via a disallowed kind, include a manual_resolution_item for that intent.
+      When linker_retry_context_json includes unbound_required_intents, for each one you must:
+      1) add a valid binding, or
+      2) include a manual_resolution_item explaining no valid link exists.
+      When linker_retry_context_json includes validation_violations, address each violation with a compliant binding or a manual_resolution_item.
+      If any required intent remains unbound, return only manual_resolution_items.
+    user: |
+      Project Context:
+      {{project_context}}
+
+      Module Catalog:
+      {{module_catalog_json}}
+
+      Anchor Plans:
+      {{anchor_plans_json}}
+
+      Type Placement Path:
+      {{type_placement_path}}
+
+      Disallowed Linking Rules (by required module role):
+      {{disallowed_link_kinds_by_required_role_json}}
+
+      Manual Resolution File:
+      {{manual_resolution_file}}
+
+      Run Summary File:
+      {{run_summary_file}}
+
+      Linker Retry Context:
+      {{linker_retry_context_json}}
+
   implement_from_specs:
-    description: Produce deterministic diffs and list ambiguities before execution.
+    description: Execute one implement batch and produce spec-keyed diff + mapping output.
     output_schema_file: schemas/agent_outputs/implement_output.schema.json
     template_variables:
       - name: output_schema_file
         required: true
-        description: Schema file path that this prompt output must validate against.
+        description: Schema path that this output must validate against.
       - name: project_context
         required: true
-        description: Content of project context file (e.g. PROJECT_CONTEXT.md). Provided via --project-context or project root / inputs.project_context_filename.
+        description: Project context markdown text.
       - name: selected_specs_csv
         required: true
-        description: Selected specs as CSV text.
+        description: Batch-selected specs as CSV.
       - name: design_spec_column_definitions
         required: true
-        description: Column meanings/types/requirements for design spec table.
+        description: Column semantics for design spec table.
       - name: indexed_mappings_csv
         required: true
-        description: Current mapping columns from design spec CSV.
+        description: Existing mapping fields for selected specs.
       - name: codebase_dir
         required: false
-        description: Path to codebase. Empty when provider has filesystem access.
+        description: Codebase directory path.
       - name: codebase_content
         required: false
-        description: AST summary of codebase with selected raw files. Empty when provider has filesystem access.
+        description: AST/code snapshot when provider cannot access filesystem directly.
+      - name: batch_brief_json
+        required: true
+        description: Deterministic batch brief with constraints and relevant contracts/bindings.
       - name: manual_resolution_file
         required: true
-        description: Central CSV file path for all manual resolution items.
+        description: Storage path for manual resolution artifacts.
       - name: run_summary_file
         required: true
-        description: Central JSONL file path for run summaries.
+        description: Storage path for run summary artifacts.
       - name: agent_artifacts_dir
         required: true
-        description: Directory where the agent must write diff files. Each diff goes in a separate file; output schema expects diff_path.
+        description: Directory to write unified diff files.
     system: |
-      You are a strict implementation planning agent.
-      You MUST follow the output schema exactly. Your output JSON must validate against {{output_schema_file}} without exception.
-      Return JSON only. Do not include markdown fences.
-      Write each unified diff to a separate file in {{agent_artifacts_dir}} and return diff_path (not diff_unified) in the JSON. Do NOT embed diff content inline.
-      All diffs must be deterministic and minimally scoped.
-      Interpret CSV columns using design_spec_column_definitions.
-      If any unclarity is blocking, include a run_summary entry and manual_resolution_items.
+      You are a strict implementer for one deterministic batch.
+      Output must validate against {{output_schema_file}} exactly.
+      Return JSON only.
+      Write each unified diff to a file in {{agent_artifacts_dir}} and return diff_path.
+      Do not embed raw diff text inline.
+      If blocked by ambiguity, return only manual_resolution_items.
     user: |
-      Context:
+      Project Context:
       {{project_context}}
+
+      Batch Brief:
+      {{batch_brief_json}}
 
       Selected Specs (CSV):
       {{selected_specs_csv}}
@@ -187,13 +307,13 @@ prompts:
       Design Spec Column Definitions:
       {{design_spec_column_definitions}}
 
-      Index Mappings (CSV):
+      Existing Index Mappings (CSV):
       {{indexed_mappings_csv}}
 
       Codebase Dir:
       {{codebase_dir}}
 
-      Codebase Source (AST summary + selected files):
+      Codebase Content:
       {{codebase_content}}
 
       Manual Resolution File:
@@ -202,7 +322,7 @@ prompts:
       Run Summary File:
       {{run_summary_file}}
 
-      Agent Artifacts Dir (write diff files here):
+      Agent Artifacts Dir:
       {{agent_artifacts_dir}}
 
   map_issues_to_specs:

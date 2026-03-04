@@ -12,7 +12,7 @@ from core.lifecycle import (
     invoke_agent_with_schema_retry,
     log_lifecycle_event,
     resolve_input_path,
-    resolve_output_path,
+    resolve_manual_resolution_path_for_command,
     resolve_output_schema_path,
 )
 
@@ -28,10 +28,18 @@ def run_review(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
     # 3. Load required inputs
     log_lifecycle_event("lifecycle_load_inputs", command="review", run_id=ctx.run_id)
     srs_path = resolve_input_path(
-        config, project_root, "srs_path", overrides=ctx.input_overrides
+        config,
+        project_root,
+        "srs_path",
+        overrides=ctx.input_overrides,
+        command="review",
     )
     design_path = resolve_input_path(
-        config, project_root, "design_spec_path", overrides=ctx.input_overrides
+        config,
+        project_root,
+        "design_spec_path",
+        overrides=ctx.input_overrides,
+        command="review",
     )
     if design_path is None or not design_path.exists():
         return {"command": "review", "status": "skipped", "reason": "design_spec_path not configured or missing"}
@@ -44,7 +52,9 @@ def run_review(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
 
     # 4. No deterministic preprocessing
     # 5. Invoke agent (stub) with schema validation and retry
-    schema_path = _get_schema_path(config, project_root)
+    schema_path = resolve_output_schema_path(
+        config, project_root, "review_output", command="review"
+    )
     output = invoke_agent_with_schema_retry(
         prompt_name=_get_prompt_name(config),
         template_vars={
@@ -59,12 +69,11 @@ def run_review(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
     # 7. Manual-resolution: append items to file and return blocked
     if has_blocking_manual_resolution(output):
         log_lifecycle_event("lifecycle_manual_resolution", command="review", run_id=ctx.run_id)
-        manual_path = resolve_output_path(config, project_root, "manual_resolution_file")
-        if manual_path:
-            append_manual_resolution_items_to_file(
-                output["manual_resolution_items"],
-                manual_path,
-            )
+        manual_path = resolve_manual_resolution_path_for_command(config, project_root, "review")
+        append_manual_resolution_items_to_file(
+            output["manual_resolution_items"],
+            manual_path,
+        )
         return {
             "command": "review",
             "status": "blocked",

@@ -38,12 +38,14 @@ It adopts the agreed improvements:
   "planned_anchors": [
     {
       "anchor_kind": "new_symbol",
+      "anchor_materialization_kind": "runtime_logic",
       "planned_file_path": "ui-web/components/NutritionForm.tsx",
       "planned_symbol": "NutritionForm",
       "spec_ids": ["SPEC-UI-001"]
     },
     {
       "anchor_kind": "new_symbol",
+      "anchor_materialization_kind": "runtime_logic",
       "planned_file_path": "ui-web/lib/api.ts",
       "planned_symbol": "postNutritionCalc",
       "spec_ids": ["SPEC-UI-001", "SPEC-UI-002"]
@@ -79,12 +81,14 @@ It adopts the agreed improvements:
   "planned_anchors": [
     {
       "anchor_kind": "new_symbol",
+      "anchor_materialization_kind": "runtime_logic",
       "planned_file_path": "api-server/app/routes/nutrition.py",
       "planned_symbol": "post_calc_nutrition",
       "spec_ids": ["SPEC-API-001", "SPEC-SEC-001"]
     },
     {
       "anchor_kind": "new_symbol",
+      "anchor_materialization_kind": "runtime_logic",
       "planned_file_path": "api-server/app/services/nutrition_service.py",
       "planned_symbol": "NutritionService.calc",
       "spec_ids": ["SPEC-API-001"]
@@ -138,10 +142,11 @@ It adopts the agreed improvements:
   "planned_anchors": [
     {
       "anchor_kind": "new_symbol",
+      "anchor_materialization_kind": "runtime_logic",
       "planned_file_path": "nutrition-core/nutrition/calculator.py",
       "planned_symbol": "compute_nutrition",
       "spec_ids": ["SPEC-CORE-001", "SPEC-CORE-002"]
-    },
+    }
   ],
   "provided_intents": [
     {
@@ -175,6 +180,7 @@ It adopts the agreed improvements:
   "planned_anchors": [
     {
       "anchor_kind": "new_symbol",
+      "anchor_materialization_kind": "runtime_logic",
       "planned_file_path": "food-data/foods/provider.py",
       "planned_symbol": "search_foods",
       "spec_ids": ["SPEC-DATA-001"]
@@ -221,6 +227,7 @@ It adopts the agreed improvements:
   "planned_anchors": [
     {
       "anchor_kind": "new_symbol",
+      "anchor_materialization_kind": "runtime_logic",
       "planned_file_path": "obs/metrics.py",
       "planned_symbol": "record_request_metric",
       "spec_ids": ["SPEC-OBS-001"]
@@ -344,11 +351,11 @@ It adopts the agreed improvements:
       "type": "create_shared_contracts",
       "details": {
         "target_path": "shared-contracts/",
-        "files_to_create": [
-          "shared-contracts/nutrition_http.py",
-          "shared-contracts/nutrition_domain.py",
-          "shared-contracts/food_domain.py",
-          "shared-contracts/obs.py"
+        "files": [
+          "nutrition_http.py",
+          "nutrition_domain.py",
+          "food_domain.py",
+          "obs.py"
         ],
         "rationale": "Cross-module DTOs must be canonical and shared."
       }
@@ -394,7 +401,7 @@ If ambiguity exists, linker must output **only** these items:
 This plan derives ordering from:
 - Integration actions (Batch 0)
 - Provider-first ordering implied by bindings
-- Spec `depends_on` fields (if any)
+- Deterministic graph-aware batching (SCC-aware; topological in acyclic cases)
 
 ```json
 {
@@ -497,8 +504,14 @@ This is the concise packet given to the implement executor (agent or Codex workf
     }
   ],
   "planned_anchors": [
-    {"planned_file_path": "nutrition-core/nutrition/calculator.py", "planned_symbol": "compute_nutrition"},
-    {"planned_file_path": "nutrition-core/tests/test_calculator.py", "planned_symbol": "TestComputeNutrition"}
+    { "anchor_kind": "existing_symbol",
+      "anchor_materialization_kind": "runtime_logic",
+      "planned_file_path": "nutrition-core/nutrition/calculator.py", "planned_symbol": "compute_nutrition",
+      "spec_ids": ["SPEC-CORE-001", "SPEC-CORE-002"] },
+    { "anchor_kind": "new_symbol",
+      "anchor_materialization_kind": "test",
+      "planned_file_path": "nutrition-core/tests/test_calculator.py", "planned_symbol": "TestComputeNutrition",
+      "spec_ids": ["SPEC-CORE-001"] }
   ],
   "constraints": {
     "forbidden_paths": ["docs/", "specs/"],
@@ -668,4 +681,6 @@ Rule:
 You can compute:
 - a unique set of module edges for visualization, and/or
 - a topological ordering constraint for batching.
+
+
 

@@ -36,7 +36,7 @@ class WriteAgentViewCsvTests(unittest.TestCase):
         root.mkdir(parents=True, exist_ok=True)
         design_csv = root / "design.csv"
         design_csv.write_text(
-            "KEY,SRS ID,SRS,SADS ID,UNIT,SADS,title,requirement,spec_id,subunit,index_status\n"
+            "KEY,SRS ID,SRS,SADS ID,UNIT,SADS,title,requirement,spec_id,subunit,map_status\n"
             "1,R001,foo,D001.01,SRV,bar,T1,R1,A1,S1,unmapped\n",
             encoding="utf-8",
         )
@@ -122,12 +122,12 @@ class GetDesignSpecAddIfMissingTests(unittest.TestCase):
         config = {
             "csv_contracts": {
                 "design_spec": {
-                    "add_if_missing": ["spec_id", "mapped_code_symbols", "index_status"]
+                    "add_if_missing": ["spec_id", "mapped_code_symbols", "map_status"]
                 }
             }
         }
         result = get_design_spec_add_if_missing(config)
-        self.assertEqual(result, ["spec_id", "mapped_code_symbols", "index_status"])
+        self.assertEqual(result, ["spec_id", "mapped_code_symbols", "map_status"])
 
     def test_raises_when_add_if_missing_missing(self) -> None:
         """Raises when csv_contracts.design_spec.add_if_missing is missing."""
@@ -406,24 +406,24 @@ class AppendMissingColumnsTests(unittest.TestCase):
         """Missing contract columns are appended."""
         headers = ["title", "requirement"]
         rows = [{"title": "R1", "requirement": "Do X"}]
-        add_if_missing = ["spec_id", "index_status"]
+        add_if_missing = ["spec_id", "map_status"]
         new_headers, new_rows = append_missing_columns(headers, rows, add_if_missing)
         self.assertEqual(
             new_headers,
-            ["title", "requirement", "spec_id", "index_status"],
+            ["title", "requirement", "spec_id", "map_status"],
         )
         self.assertEqual(new_rows[0]["spec_id"], "")
-        self.assertEqual(new_rows[0]["index_status"], "unmapped")
+        self.assertEqual(new_rows[0]["map_status"], "unmapped")
 
     def test_preserves_existing_columns(self) -> None:
         """Existing columns are not duplicated."""
         headers = ["title", "requirement", "spec_id"]
         rows = [{"title": "R1", "requirement": "Do X", "spec_id": "A1"}]
-        add_if_missing = ["spec_id", "index_status"]
+        add_if_missing = ["spec_id", "map_status"]
         new_headers, new_rows = append_missing_columns(headers, rows, add_if_missing)
         self.assertEqual(
             new_headers,
-            ["title", "requirement", "spec_id", "index_status"],
+            ["title", "requirement", "spec_id", "map_status"],
         )
         self.assertEqual(new_rows[0]["spec_id"], "A1")
 
@@ -494,9 +494,9 @@ class NormalizeRawSadsTests(unittest.TestCase):
                         "add_if_missing": [
                             "spec_id",
                             "mapped_code_symbols",
-                            "index_status",
-                            "assumptions",
-                            "last_indexed_at",
+                            "map_status",
+                            "map_assumptions",
+                            "mapped_at",
                         ]
                     }
                 },
@@ -504,7 +504,7 @@ class NormalizeRawSadsTests(unittest.TestCase):
             }
             content, log = normalize_raw_sads(csv_path, config, root, dry_run=True)
             self.assertIn("spec_id", content)
-            self.assertIn("index_status", content)
+            self.assertIn("map_status", content)
             self.assertEqual(log["input_rows"], 2)
             self.assertEqual(log["output_rows"], 2)
             self.assertIn("spec_id", log["output_columns"])
@@ -533,7 +533,7 @@ class NormalizeRawSadsTests(unittest.TestCase):
                     }
                 },
                 "csv_contracts": {
-                    "design_spec": {"add_if_missing": ["spec_id", "index_status"]}
+                    "design_spec": {"add_if_missing": ["spec_id", "map_status"]}
                 },
                 "id_generation": {"registry_path": "out/state/id_registry.json"},
             }
@@ -566,7 +566,7 @@ class NormalizeRawSadsTests(unittest.TestCase):
                     }
                 },
                 "csv_contracts": {
-                    "design_spec": {"add_if_missing": ["spec_id", "index_status"]}
+                    "design_spec": {"add_if_missing": ["spec_id", "map_status"]}
                 },
                 "id_generation": {"registry_path": "out/state/id_registry.json"},
             }
@@ -719,9 +719,9 @@ class NormalizeSadsFormatTests(unittest.TestCase):
                         "add_if_missing": [
                             "spec_id",
                             "mapped_code_symbols",
-                            "index_status",
-                            "assumptions",
-                            "last_indexed_at",
+                            "map_status",
+                            "map_assumptions",
+                            "mapped_at",
                         ]
                     }
                 },

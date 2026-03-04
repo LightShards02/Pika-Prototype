@@ -24,6 +24,51 @@ _SUBPROCESS_TEXT_ENCODING = "utf-8"
 _SUBPROCESS_TEXT_ERRORS = "replace"
 
 
+def _normalize_for_codex_response_format(schema_node: Any) -> Any:
+    """Return schema transformed for Codex response_format compatibility.
+
+    Codex local response_format requires object schemas to declare all property keys
+    in `required`. We preserve field types and constraints, but upgrade any object
+    node with `properties` to include a complete `required` list.
+    """
+    if isinstance(schema_node, list):
+        return [_normalize_for_codex_response_format(item) for item in schema_node]
+    if not isinstance(schema_node, dict):
+        return schema_node
+
+    normalized: dict[str, Any] = {
+        key: _normalize_for_codex_response_format(value)
+        for key, value in schema_node.items()
+    }
+
+    props = normalized.get("properties")
+    has_props = isinstance(props, dict)
+    has_composition = any(key in normalized for key in ("oneOf", "anyOf", "allOf"))
+    node_type = normalized.get("type")
+
+    if has_props:
+        if node_type in (None, "object"):
+            normalized["type"] = "object"
+        normalized["required"] = list(props.keys())
+        normalized["additionalProperties"] = False
+    elif node_type == "object" and not has_composition:
+        normalized["additionalProperties"] = False
+
+    return normalized
+
+
+def _prepare_codex_output_schema(output_schema_path: Path, output_path: Path) -> Path:
+    """Write a Codex-compatible schema copy and return the path.
+
+    Keeps the original schema untouched for internal jsonschema validation.
+    """
+    schema = json.loads(output_schema_path.read_text(encoding="utf-8"))
+    normalized = _normalize_for_codex_response_format(schema)
+    codex_schema_path = output_path.with_name(f"{output_schema_path.stem}.codex.schema.json")
+    codex_schema_path.write_text(json.dumps(normalized, indent=2), encoding="utf-8")
+    return codex_schema_path
+
+
 def _get_local_ps1_path() -> Path:
     """Return local CLI .ps1 path from pika config (Windows)."""
     from core.pika_config import get_pika_config
@@ -335,11 +380,18 @@ def run_api_invoke(
     return extract_json_from_text(raw_content)
 
 
-def _stream_output(pipe: Any, dest: Any, prefix: str = "") -> None:
+def _stream_output(
+    pipe: Any,
+    dest: Any,
+    prefix: str = "",
+    capture: list[str] | None = None,
+) -> None:
     """Read lines from pipe and write to dest. Used for streaming subprocess output."""
     try:
         for line in iter(pipe.readline, ""):
             if line:
+                if capture is not None:
+                    capture.append(prefix + line)
                 dest.write(prefix + line)
                 dest.flush()
     except (ValueError, OSError):
@@ -368,6 +420,16 @@ def _heartbeat_thread(proc: subprocess.Popen[Any], stop: threading.Event) -> Non
             break
 
 
+def _is_codex_output_schema_error(stderr_text: str) -> bool:
+    """Return True when stderr indicates Codex rejected response_format schema."""
+    haystack = (stderr_text or "").lower()
+    return (
+        "invalid schema for response_format" in haystack
+        or "codex_output_schema" in haystack
+        or "invalid_json_schema" in haystack
+    )
+
+
 def run_local_exec(
     prompt: str,
     output_schema_path: Path,
@@ -377,10 +439,15 @@ def run_local_exec(
     command: str = "codex",
     timeout: int | None = 300,
     stream_output: bool = True,
+    reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
     """Run local CLI (e.g. Codex exec) non-interactively and return parsed JSON output.
 
     Uses `codex exec` with --output-schema and --output-last-message.
+    The schema passed to Codex is a compatibility-normalized copy; the original
+    schema remains authoritative for internal jsonschema validation/retries.
+    If Codex rejects the provided schema as invalid_json_schema, retries once
+    without --output-schema and relies on local post-validation.
     Requires --yolo or similar for non-interactive runs (no approval prompts).
 
     When stream_output is True, Codex stdout/stderr are printed to the terminal
@@ -395,6 +462,7 @@ def run_local_exec(
         command: Codex executable name.
         timeout: Max seconds to wait (default 300). None = no limit.
         stream_output: If True, stream Codex output to terminal and show heartbeat.
+        reasoning_effort: Codex model_reasoning_effort (low, medium, high, xhigh). Passed as --config.
 
     Returns:
         Parsed JSON from Codex output.
@@ -407,22 +475,33 @@ def run_local_exec(
     output_path = Path(output_path).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    schema_str = str(output_schema_path.resolve()) if output_schema_path.exists() else ""
+    schema_str = ""
+    if output_schema_path.exists():
+        codex_schema_path = _prepare_codex_output_schema(output_schema_path, output_path)
+        schema_str = str(codex_schema_path.resolve())
     workspace_str = str(workspace.resolve())
 
-    exec_args = [
+    exec_args_base = [
         "exec",
         "--cd", workspace_str,
         "--dangerously-bypass-approvals-and-sandbox",
         "--skip-git-repo-check",
         "--output-last-message", str(output_path),
     ]
+    if reasoning_effort and reasoning_effort in ("low", "medium", "high", "xhigh"):
+        # Codex expects value as JSON string, e.g. model_reasoning_effort='"high"'
+        exec_args_base = exec_args_base + [
+            "--config", f'model_reasoning_effort=\'"{reasoning_effort}"\''
+        ]
+    exec_args = list(exec_args_base)
     if schema_str:
         exec_args.extend(["--output-schema", schema_str])
 
     cmd = _build_local_cmd(command, exec_args)
 
     if stream_output:
+        stdout_lines: list[str] = []
+        stderr_lines: list[str] = []
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -436,12 +515,12 @@ def run_local_exec(
         stop_heartbeat = threading.Event()
         t_stdout = threading.Thread(
             target=_stream_output,
-            args=(proc.stdout, sys.stdout),
+            args=(proc.stdout, sys.stdout, "", stdout_lines),
             daemon=True,
         )
         t_stderr = threading.Thread(
             target=_stream_output,
-            args=(proc.stderr, sys.stderr),
+            args=(proc.stderr, sys.stderr, "", stderr_lines),
             daemon=True,
         )
         t_heartbeat = threading.Thread(
@@ -469,7 +548,7 @@ def run_local_exec(
         t_stderr.join(timeout=1)
         t_heartbeat.join(timeout=1)
         returncode = proc.returncode
-        stderr_captured = ""
+        stderr_captured = "".join(stderr_lines)
     else:
         proc = subprocess.run(
             cmd,
@@ -483,6 +562,26 @@ def run_local_exec(
         )
         returncode = proc.returncode
         stderr_captured = proc.stderr or ""
+
+    if (
+        returncode != 0
+        and schema_str
+        and _is_codex_output_schema_error(stderr_captured)
+    ):
+        retry_cmd = _build_local_cmd(command, exec_args_base)
+        proc = subprocess.run(
+            retry_cmd,
+            input=prompt,
+            capture_output=True,
+            text=True,
+            encoding=_SUBPROCESS_TEXT_ENCODING,
+            errors=_SUBPROCESS_TEXT_ERRORS,
+            timeout=timeout,
+            cwd=workspace_str,
+        )
+        returncode = proc.returncode
+        stderr_captured = proc.stderr or stderr_captured
+        cmd = retry_cmd
 
     if returncode != 0:
         raise subprocess.CalledProcessError(

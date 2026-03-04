@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 from core.agent_invoker import (
     _api_params_for_command,
+    _normalize_for_codex_response_format,
     _parse_combined_prompt,
     check_codex_available,
     extract_json_from_text,
@@ -185,6 +187,39 @@ class ApiParamsForCommandTests(unittest.TestCase):
         self.assertEqual(params["temperature"], 0.7)
 
 
+class CodexSchemaNormalizationTests(unittest.TestCase):
+    """Tests for Codex response-format schema normalization."""
+
+    def test_object_with_properties_requires_all_property_keys(self) -> None:
+        """Normalizer expands required to include every property key."""
+        source = {
+            "type": "object",
+            "properties": {
+                "item": {
+                    "type": "object",
+                    "properties": {
+                        "required_field": {"type": "string"},
+                        "optional_field": {"type": "string"},
+                    },
+                    "required": ["required_field"],
+                }
+            },
+            "required": ["item"],
+            "additionalProperties": False,
+        }
+
+        normalized = _normalize_for_codex_response_format(source)
+        item_schema = normalized["properties"]["item"]
+        self.assertEqual(item_schema["required"], ["required_field", "optional_field"])
+        self.assertEqual(item_schema["additionalProperties"], False)
+
+    def test_plain_object_without_composition_forces_additional_properties_false(self) -> None:
+        """Object schemas without composition must set additionalProperties=false."""
+        source = {"type": "object"}
+        normalized = _normalize_for_codex_response_format(source)
+        self.assertEqual(normalized["additionalProperties"], False)
+
+
 class RunApiInvokeTests(unittest.TestCase):
     """Tests for run_api_invoke (mocked)."""
 
@@ -264,3 +299,103 @@ class RunLocalExecSubprocessDecodeTests(unittest.TestCase):
             self.assertTrue(kwargs.get("text"))
             self.assertEqual(kwargs.get("encoding"), "utf-8")
             self.assertEqual(kwargs.get("errors"), "replace")
+
+    def test_non_stream_writes_codex_compatible_schema_copy(self) -> None:
+        """run_local_exec passes a normalized schema copy to --output-schema."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            schema_path = root / "schema.json"
+            source_schema = {
+                "type": "object",
+                "properties": {
+                    "item": {
+                        "type": "object",
+                        "properties": {
+                            "required_field": {"type": "string"},
+                            "optional_field": {"type": "string"},
+                        },
+                        "required": ["required_field"],
+                        "additionalProperties": False,
+                    }
+                },
+                "required": ["item"],
+                "additionalProperties": False,
+            }
+            schema_path.write_text(json.dumps(source_schema), encoding="utf-8")
+
+            output_path = root / "out" / "local_output.txt"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text('{"handshake":"ok"}', encoding="utf-8")
+
+            proc = MagicMock()
+            proc.returncode = 0
+            proc.stderr = ""
+            proc.stdout = ""
+
+            with patch("core.agent_invoker.subprocess.run", return_value=proc) as mock_run:
+                run_local_exec(
+                    prompt="Return JSON",
+                    output_schema_path=schema_path,
+                    workspace=root,
+                    output_path=output_path,
+                    stream_output=False,
+                    timeout=10,
+                )
+
+            cmd = mock_run.call_args[0][0]
+            schema_idx = cmd.index("--output-schema") + 1
+            codex_schema_path = Path(cmd[schema_idx])
+            self.assertTrue(codex_schema_path.exists())
+            normalized = json.loads(codex_schema_path.read_text(encoding="utf-8"))
+            item_required = normalized["properties"]["item"]["required"]
+            self.assertEqual(item_required, ["required_field", "optional_field"])
+
+            original = json.loads(schema_path.read_text(encoding="utf-8"))
+            self.assertEqual(original["properties"]["item"]["required"], ["required_field"])
+
+    def test_non_stream_retries_without_schema_on_invalid_json_schema(self) -> None:
+        """When Codex rejects response_format schema, run_local_exec retries once without it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            schema_path = root / "schema.json"
+            schema_path.write_text(
+                '{"type":"object","required":["handshake"],'
+                '"properties":{"handshake":{"type":"string"}},"additionalProperties":false}',
+                encoding="utf-8",
+            )
+            output_path = root / "out" / "local_output.txt"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text('{"handshake":"ok"}', encoding="utf-8")
+
+            proc_fail = MagicMock()
+            proc_fail.returncode = 1
+            proc_fail.stderr = (
+                "Invalid schema for response_format 'codex_output_schema': "
+                "code=invalid_json_schema"
+            )
+            proc_fail.stdout = ""
+
+            proc_ok = MagicMock()
+            proc_ok.returncode = 0
+            proc_ok.stderr = ""
+            proc_ok.stdout = ""
+
+            with patch(
+                "core.agent_invoker.subprocess.run",
+                side_effect=[proc_fail, proc_ok],
+            ) as mock_run:
+                out = run_local_exec(
+                    prompt="Return JSON",
+                    output_schema_path=schema_path,
+                    workspace=root,
+                    output_path=output_path,
+                    stream_output=False,
+                    timeout=10,
+                )
+
+            self.assertEqual(out, {"handshake": "ok"})
+            self.assertEqual(mock_run.call_count, 2)
+            first_cmd = mock_run.call_args_list[0][0][0]
+            second_cmd = mock_run.call_args_list[1][0][0]
+            self.assertIn("--output-schema", first_cmd)
+            self.assertNotIn("--output-schema", second_cmd)

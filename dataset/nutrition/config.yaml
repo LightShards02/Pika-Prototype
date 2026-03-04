@@ -1,41 +1,22 @@
-# Workspace config (project-specific). Validated against config.schema.json.
-# PIKA-level defaults live in config/pika.yaml (paths, codex, kimi, timeouts, etc.).
-#
-# Attributes that typically do NOT vary per project (have PIKA defaults):
-#   - inputs.allowed_extensions (.csv, .xlsx)
-#   - inputs.project_context_filename (PROJECT_CONTEXT.md)
-#   - prompts.prompt_file, schemas.* (resolved from PIKA root)
-#   - id_generation.pattern, collision_scope
-#   - csv_contracts.add_if_missing (contract-defined columns)
-#   - outputs.* path structure (out/, out/logs, etc.)
-# Workspace config overrides PIKA defaults when specified.
-
 version: 1
 
 project:
-  name: pika
+  name: NUTRITION
   root_dir: .
   state:
-    design_spec_path: out/state/DESIGN-SPEC.csv
-    id_registry_path: out/state/id_registry.json
-    sads_id_mapping_path: out/state/sads_id_mapping.json
+    design_spec_path: state/DESIGN-SPEC.csv
+    id_registry_path: state/id_registry.json
+    sads_id_mapping_path: state/sads_id_mapping.json
 
 agent:
-  provider: stub  # stub | api | local
+  provider: local  # stub | api | local
   schema_validation_retries: 3
-  stream_output: true  # Stream output + heartbeat when agent runs (api, local).
-  # When provider is local (e.g. Codex CLI):
-  # local_command: codex
-  # reasoning_effort: per-prompt Codex model_reasoning_effort (low|medium|high|xhigh)
-  #   Keys: prompt_name (map_spec_to_code, implement_anchor_planner, implement_anchor_linker, implement_from_specs) or default
-  #   Pika defaults: map + anchor agents = medium, implementer = high
-  # reasoning_effort:
-  #   default: medium
-  #   implement_from_specs: high
-  # When provider is api (remote HTTP chat completions):
-  # api_key_env: NVIDIA_API_KEY
-  # api_url: https://integrate.api.nvidia.com/v1/chat/completions
-  # api_model: moonshotai/kimi-k2.5
+  stream_output: false
+  # Codex model_reasoning_effort: map + anchor = medium, implementer = high (pika defaults)
+  # Override per prompt: reasoning_effort: { map_spec_to_code: medium, implement_from_specs: high }
+  api_key_env: NVIDIA_API_KEY
+  api_url: https://integrate.api.nvidia.com/v1/chat/completions
+  api_model: moonshotai/kimi-k2.5
 
 prompts:
   prompt_file: prompts/PROMPT.yaml
@@ -68,16 +49,9 @@ commands:
       design_spec_path: raw-design-spec.csv
     outputs:
       design_spec_path:
-        path: out/state/DESIGN-SPEC.csv
+        path: out/state/design-spec.csv
         no_overwrite: false
       backups_dir: { path: out/backups, no_overwrite: false }
-    # Optional: replace sensitive terms. keywords required; case_sensitive optional.
-    sensitive_keywords:
-      "[SOFTWARE]":
-        keywords: [KGAS, SAGK]
-      "[PARTNER]":
-        keywords: [QX MGR]
-        case_sensitive: true
   review:
     enabled: false
     prompt_name: design_reviewer
@@ -94,13 +68,12 @@ commands:
   map:
     enabled: true
     prompt_name: map_spec_to_code
-    skip_mapped: true           # Skip map_status=mapped on re-runs
-    max_acceptance_chars: 0     # Truncate acceptance_criteria at invocation (0 = unlimited)
+    skip_mapped: true
+    max_acceptance_chars: 0
     inputs:
-      design_spec_path: out/state/DESIGN-SPEC.csv
+      design_spec_path: state/DESIGN-SPEC.csv
       codebase_dir: .
       project_context_filename: PROJECT_CONTEXT.md
-      # extra_prompt_filename: EXTRA-PROMPT.md
     outputs:
       root_dir: { path: out, no_overwrite: false }
       backups_dir: { path: out/backups, no_overwrite: false }
@@ -113,7 +86,7 @@ commands:
     enabled: true
     prompt_name: implement_from_specs
     inputs:
-      design_spec_path: out/state/DESIGN-SPEC.csv
+      design_spec_path: state/DESIGN-SPEC.csv
       codebase_dir: .
       project_context_filename: PROJECT_CONTEXT.md
     outputs:
@@ -122,25 +95,30 @@ commands:
       agent_runs_dir: { path: out/agent_runs, no_overwrite: false }
       agent_artifacts_dir: { path: out/agent_artifacts, no_overwrite: false }
       logs_dir: { path: out/logs, no_overwrite: false }
-    # anchor_planner_prompt_name: implement_anchor_planner
-    # anchor_linker_prompt_name: implement_anchor_linker
-    # linker_max_attempts: 2
-    # type_placement_path: workspace/shared-contracts/
-    # allowed_module_roles: [frontend, api, domain, infra, shared, cli, worker]
-    # disallowed_link_kinds_by_required_role:
-    #   frontend: [service_interface, event_topic, db_table, file_format, external_api, test_suite]
-    #   domain: [external_api]
-    # test_spec_path: out/state/test_spec.csv
-    # issue_tracker_path: out/issue_tracking.csv
-    # repair_max_attempts: 0
-    # forbidden_paths: [docs/, specs/]
-    # verification_commands: [pytest -q]
-    # budgets:
-    #   max_specs_per_batch: 15
-    #   max_files: 10
-    #   max_lines_changed: 600
-    #   max_context_tokens: 12000
-    # min_confidence_threshold: 0.85  # Overrides pika default 0.7. Items below block until resolved. 0 = disabled.
+    anchor_planner_prompt_name: implement_anchor_planner
+    anchor_linker_prompt_name: implement_anchor_linker
+    type_placement_path: workspace/shared-contracts/
+    allowed_module_roles: [frontend, api, domain, infra, shared, cli, worker]
+    disallowed_link_kinds_by_required_role:
+      frontend:
+        - service_interface
+        - event_topic
+        - db_table
+        - file_format
+        - external_api
+        - test_suite
+      domain:
+        - external_api
+    test_spec_path: out/state/test_spec.csv
+    issue_tracker_path: out/issue_tracking.csv
+    repair_max_attempts: 0
+    forbidden_paths: [docs/, specs/]
+    verification_commands: []
+    budgets:
+      max_specs_per_batch: 15
+      max_files: 10
+      max_lines_changed: 600
+      max_context_tokens: 12000
   resolve_plan:
     enabled: true
     map_prompt_name: map_issues_to_specs

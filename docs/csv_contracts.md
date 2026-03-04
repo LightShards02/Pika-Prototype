@@ -36,9 +36,9 @@
 | mapped_confidence | No | Yes | Comma-delimited confidence scores (0-1) per symbol, same order as mapped_code_symbols. |
 | mapped_consistency_score | No | Yes | Comma-delimited consistency scores (0-1) per symbol, same order as mapped_code_symbols. |
 | mapped_problems | No | Yes | Semicolon-delimited problem notes per symbol (reason for low confidence/inconsistency); same order as mapped_code_symbols. |
-| index_status | Yes | Yes | Index result state (`mapped`, `partial`, `unmapped`, `blocked`). |
-| assumptions | No | Yes | Assumptions made to produce the mapping. Nullable. |
-| last_indexed_at | No | Yes | Timestamp of latest indexing run: agent `created_at` when provided, else invocation time. Format: `YYYY-MM-DDTHH:MM:SS UTC+X`. |
+| map_status | Yes | Yes | Index result state (`mapped`, `partial`, `unmapped`, `blocked`). |
+| map_assumptions | No | Yes | Assumptions made to produce the mapping. Nullable. |
+| mapped_at | No | Yes | Timestamp of latest indexing run: agent `created_at` when provided, else invocation time. Format: `YYYY-MM-DDTHH:MM:SS UTC+X`. |
 
 ## Implementation Issue Tracking Table Contract
 

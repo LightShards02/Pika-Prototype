@@ -514,7 +514,15 @@ class ContractValidator:
         )
 
     def _check_agent_schema_invariants(self, schema: dict, rel_path: Path) -> None:
-        """Check created_at, manual_resolution_items, run_summary invariants. Handles oneOf."""
+        """Check Codex compatibility and output invariants. Handles oneOf."""
+        if schema.get("type") != "object":
+            self._record_error(
+                "agent_schema_contract",
+                rel_path,
+                "/type",
+                'Top-level schema type must be "object" for Codex response_format compatibility',
+            )
+
         variants: list[dict] = []
         if "oneOf" in schema:
             one_of = schema.get("oneOf")

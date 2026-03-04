@@ -69,6 +69,13 @@ def load_pika_config() -> dict[str, Any]:
             "ps1_path_windows": str(Path.home() / "AppData" / "Roaming" / "npm" / "codex.ps1"),
             "heartbeat_interval_sec": 30,
             "exec_timeout_sec": 600,
+            "reasoning_effort": {
+                "default": "medium",
+                "map_spec_to_code": "medium",
+                "implement_anchor_planner": "medium",
+                "implement_anchor_linker": "medium",
+                "implement_from_specs": "high",
+            },
         },
         "default_outputs": {
             "log_dir": "out/logs",
@@ -78,7 +85,21 @@ def load_pika_config() -> dict[str, Any]:
             "intermediate_map_dir": "out/intermediate/map",
             "agent_input_codebase_content_dir": "out/agent_input/codebase_content",
         },
-        "stub": {"plan_proposed_sads": "out/agent_artifacts/stub/plan_proposed_sads.csv"},
+        "default_workspace": {
+            "project": {
+                "state": {
+                    "design_spec_path": "out/state/DESIGN-SPEC.csv",
+                    "id_registry_path": "out/state/id_registry.json",
+                    "sads_id_mapping_path": "out/state/sads_id_mapping.json",
+                }
+            },
+            "inputs": {
+                "allowed_extensions": [".csv", ".xlsx"],
+                "project_context_filename": "PROJECT_CONTEXT.md",
+            },
+        },
+        "stub": {"plan_proposed_sads": "out/agent_artifacts/plan/stub/plan_proposed_sads.csv"},
+        "implement": {"min_confidence_threshold": 0.7},
         "codebase_transmission": {
             "max_summary_chars": 200_000,
             "max_raw_files": 10,

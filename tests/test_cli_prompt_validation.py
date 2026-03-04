@@ -33,20 +33,18 @@ class CliPromptValidationTests(unittest.TestCase):
         issue_tracking.write_text("title\nexample\n", encoding="utf-8")
 
         config_text = EXAMPLE_CONFIG_PATH.read_text(encoding="utf-8")
-        if "design_spec_path:" not in config_text:
-            config_text = config_text.replace(
-                "  allowed_extensions:\n    - .csv\n    - .xlsx",
-                f"  allowed_extensions:\n    - .csv\n    - .xlsx\n  design_spec_path: {design_spec.as_posix()}\n  issue_tracking_path: {issue_tracking.as_posix()}",
-            )
-        else:
-            config_text = config_text.replace(
-                "  design_spec_path: data/design_spec.csv",
-                f"  design_spec_path: {design_spec.as_posix()}",
-            )
-            config_text = config_text.replace(
-                "  issue_tracking_path: data/issue_tracking.csv",
-                f"  issue_tracking_path: {issue_tracking.as_posix()}",
-            )
+        config_text = config_text.replace(
+            "design_spec_path: out/state/DESIGN-SPEC.csv",
+            f"design_spec_path: {design_spec.as_posix()}",
+        )
+        config_text = config_text.replace(
+            "design_spec_path: raw-design-spec.csv",
+            "design_spec_path: design_spec.csv",
+        )
+        config_text = config_text.replace(
+            "issue_tracking_path: out/issue_tracking.csv",
+            f"issue_tracking_path: {issue_tracking.as_posix()}",
+        )
 
         config_path = temp_dir / "config.yaml"
         config_path.write_text(config_text, encoding="utf-8")

@@ -16,6 +16,7 @@ import hashlib
 import io
 import json
 import re
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -34,8 +35,8 @@ _LATEX_ENCODER = UnicodeToLatexEncoder(
 )
 
 
-# Default for index_status when adding column
-INDEX_STATUS_DEFAULT = "unmapped"
+# Default for map_status when adding column
+MAP_STATUS_DEFAULT = "unmapped"
 
 
 def get_design_spec_add_if_missing(config: dict[str, Any]) -> list[str]:
@@ -406,7 +407,7 @@ def append_missing_columns(
     rows: list[dict[str, str]],
     add_if_missing: list[str],
     *,
-    index_status_default: str = INDEX_STATUS_DEFAULT,
+    map_status_default: str = MAP_STATUS_DEFAULT,
 ) -> tuple[list[str], list[dict[str, str]]]:
     """Append contract columns that are missing. Preserve original column order.
 
@@ -414,7 +415,7 @@ def append_missing_columns(
         headers: Current column names.
         rows: Row dicts.
         add_if_missing: Contract columns to add if absent (in order).
-        index_status_default: Default value for index_status column.
+        map_status_default: Default value for map_status column.
 
     Returns:
         Tuple of (new headers, new rows). Original columns unchanged; new columns appended.
@@ -430,8 +431,8 @@ def append_missing_columns(
 
     defaults: dict[str, str] = {}
     for col in to_add:
-        if col == "index_status":
-            defaults[col] = index_status_default
+        if col == "map_status":
+            defaults[col] = map_status_default
         else:
             defaults[col] = ""
 
@@ -919,18 +920,32 @@ def normalize_raw_sads(
         log["ids_assigned"] = len(rows)
         log["ids_preserved"] = 0
 
-        # 6. Persist registry and ID mapping
+        # 6. Persist registry and ID mapping: write to out/state first, then copy to project.state
         if not dry_run:
+            from core.lifecycle import resolve_project_state_path
+
+            # Write registry to out/state (id_generation.registry_path)
             resolved_registry = registry_path if registry_path.is_absolute() else (project_root / registry_path)
             resolved_registry.parent.mkdir(parents=True, exist_ok=True)
             resolved_registry.write_text(json.dumps(registry, indent=2), encoding="utf-8")
+            state_registry = resolve_project_state_path(config, project_root, "id_registry_path")
+            if state_registry is not None and state_registry != resolved_registry:
+                state_registry.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(resolved_registry, state_registry)
 
-            mapping_path_str = default_outputs.get(
+            # Write mapping to out/state first
+            mapping_out_state = default_outputs.get(
                 "sads_id_mapping", "out/state/sads_id_mapping.json"
             )
-            if isinstance(cmd_format, dict) and cmd_format.get("sads_id_mapping_path"):
-                mapping_path_str = str(cmd_format["sads_id_mapping_path"])
-            write_id_mapping(id_mapping, Path(mapping_path_str), project_root, dry_run=dry_run)
+            mapping_out_path = Path(mapping_out_state) if isinstance(mapping_out_state, str) else Path("out/state/sads_id_mapping.json")
+            write_id_mapping(id_mapping, mapping_out_path, project_root, dry_run=dry_run)
+            # Copy to project.state.sads_id_mapping_path
+            state_mapping = resolve_project_state_path(config, project_root, "sads_id_mapping_path")
+            if state_mapping is not None:
+                resolved_mapping = mapping_out_path if mapping_out_path.is_absolute() else (project_root / mapping_out_path)
+                if state_mapping != resolved_mapping and resolved_mapping.exists():
+                    state_mapping.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(resolved_mapping, state_mapping)
     else:
         rows_before = sum(
             1
@@ -943,9 +958,15 @@ def normalize_raw_sads(
         log["ids_preserved"] = rows_before
 
         if not dry_run:
+            from core.lifecycle import resolve_project_state_path
+
             resolved_registry = registry_path if registry_path.is_absolute() else (project_root / registry_path)
             resolved_registry.parent.mkdir(parents=True, exist_ok=True)
             resolved_registry.write_text(json.dumps(registry, indent=2), encoding="utf-8")
+            state_registry = resolve_project_state_path(config, project_root, "id_registry_path")
+            if state_registry is not None and state_registry != resolved_registry:
+                state_registry.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(resolved_registry, state_registry)
 
     # Normalize newlines in cells so each row is a single CSV line
     rows = normalize_newlines_in_cells(headers, rows)
