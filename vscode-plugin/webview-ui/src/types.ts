@@ -42,6 +42,7 @@ export interface ExtensionStatePayload {
   rows: DesignSpecRow[];
   specToCodeMappings: SpecCodeMapping[];
   codexRuntime: CodexRuntimePayload;
+  mappingRuntime: MappingRuntimePayload;
 }
 
 export interface CodexRuntimePayload {
@@ -50,6 +51,12 @@ export interface CodexRuntimePayload {
   configuredPath?: string;
   effectivePath?: string;
   message: string;
+}
+
+export interface MappingRuntimePayload {
+  isRunning: boolean;
+  message: string;
+  lastStartedAt?: number;
 }
 
 export interface WebviewIncomingMessage {

@@ -973,7 +973,7 @@
 - [x] Add manual configure action from webview (button -> file picker -> save path -> re-validate).
 - [x] Render panel readiness indicator (`ready` vs `not configured`) and conditional configure button.
 - [x] Add targeted unit tests for executable detection helper and run plugin checks.
-- [ ] Commit and push the feature branch changes.
+- [x] Commit and push the feature branch changes.
 
 ## Current Task Review: Plugin Codex Executable Detection + Readiness UI
 
@@ -986,3 +986,24 @@
   - `npm run typecheck` -> pass
   - `npm test` -> `16 passed`
   - Manual GUI walkthrough recorded: `plugin_codex_detection_ready_transition.mp4` (Not ready + configure button -> Ready after selecting `/tmp/codex-demo/codex`).
+
+## Current Task: Plugin Mapping In-Progress Indicator + Mock Async Delay
+
+- [x] Add extension/webview state fields representing mapping run-in-progress status.
+- [x] Add fixed async delay in extension mapping execution path to simulate running state.
+- [x] Render UI indicator while mapping is running and disable conflicting actions.
+- [x] Add/adjust tests for mapping-running state helpers where feasible.
+- [x] Run plugin compile/typecheck/tests and manual GUI walkthrough with recording.
+- [ ] Commit and push branch updates.
+
+## Current Task Review: Plugin Mapping In-Progress Indicator + Mock Async Delay
+
+- Added `mappingRuntime` state contract and store support so extension host can publish mapping progress (`isRunning`, message, lastStartedAt) to webview.
+- Added deterministic mock mapping delay (`MOCK_MAPPING_EXEC_DELAY_MS=5000`) and wrapped import/refresh execution in `runMappingWithRuntime` so panel status transitions `Idle -> Running... -> Idle`.
+- Added panel mapping status badge/details and disabled import/refresh buttons while mapping is running.
+- Added unit tests for runtime delay helper behavior using fake timers.
+- Verification:
+  - `npm run compile` -> pass
+  - `npm run typecheck` -> pass
+  - `npm test` -> `17 passed`
+  - Manual GUI walkthrough recorded: `plugin_mapping_running_status_refresh.mp4` (refresh shows `Running...` then returns to `Idle`).

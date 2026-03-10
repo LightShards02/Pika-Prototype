@@ -8,6 +8,10 @@ const INITIAL_STATE: ExtensionState = {
     source: "none",
     message: "Codex executable status is still being resolved.",
   },
+  mappingRuntime: {
+    isRunning: false,
+    message: "Idle",
+  },
 };
 
 /**
@@ -26,6 +30,7 @@ export class StateStore {
       rows: [...this.state.rows],
       specToCodeMappings: [...this.state.specToCodeMappings],
       codexRuntime: { ...this.state.codexRuntime },
+      mappingRuntime: { ...this.state.mappingRuntime },
     };
   }
 
@@ -45,6 +50,7 @@ export class StateStore {
       rows: [...update.rows],
       specToCodeMappings: [...update.specToCodeMappings],
       codexRuntime: { ...this.state.codexRuntime },
+      mappingRuntime: { ...this.state.mappingRuntime },
     };
   }
 
@@ -78,6 +84,17 @@ export class StateStore {
     this.state = {
       ...this.state,
       codexRuntime: { ...codexRuntime },
+    };
+  }
+
+  /**
+   * Updates mapping execution runtime state for webview progress rendering.
+   * @param mappingRuntime Mapping runtime payload.
+   */
+  public setMappingRuntime(mappingRuntime: ExtensionState["mappingRuntime"]): void {
+    this.state = {
+      ...this.state,
+      mappingRuntime: { ...mappingRuntime },
     };
   }
 }

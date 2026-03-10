@@ -3,6 +3,7 @@ import { readFile as readFileFromFs } from "fs/promises";
 import * as vscode from "vscode";
 import { detectCodexRuntimeState } from "./core/codexExecutable";
 import { parseDesignSpecCsv } from "./core/csvParser";
+import { waitForMockMappingDelay } from "./core/mappingRuntime";
 import { mapCursorContextToSpecs, mapDesignSpecsToCode } from "./core/mappingService";
 import { buildPreviewOutputPath, buildSpecPreviewMarkdown } from "./core/specPreviewDocument";
 import { StateStore } from "./core/stateStore";
@@ -162,31 +163,33 @@ class DesignSpecPreviewProvider implements vscode.WebviewViewProvider {
     }
 
     try {
-      const fileUri = selected[0];
-      const workspaceFolder = this.resolveWorkspaceFolder(fileUri);
-      const mappingRootPath = this.resolveMappingRootPath(fileUri);
-      const csvBuffer = await vscode.workspace.fs.readFile(fileUri);
-      const csvText = Buffer.from(csvBuffer).toString("utf-8");
-      const rows = parseDesignSpecCsv(csvText);
-      const rawMappings = mapDesignSpecsToCode(rows);
-      const mappings = await this.hydrateMappingsWithSymbolLocations(rawMappings, mappingRootPath);
-      const previewPath = await this.writePreviewFileAndOpenTab(rows, mappings, workspaceFolder, mappingRootPath);
+      await this.runMappingWithRuntime("Importing and mapping design specs...", async () => {
+        const fileUri = selected[0];
+        const workspaceFolder = this.resolveWorkspaceFolder(fileUri);
+        const mappingRootPath = this.resolveMappingRootPath(fileUri);
+        const csvBuffer = await vscode.workspace.fs.readFile(fileUri);
+        const csvText = Buffer.from(csvBuffer).toString("utf-8");
+        const rows = parseDesignSpecCsv(csvText);
+        const rawMappings = mapDesignSpecsToCode(rows);
+        const mappings = await this.hydrateMappingsWithSymbolLocations(rawMappings, mappingRootPath);
+        const previewPath = await this.writePreviewFileAndOpenTab(rows, mappings, workspaceFolder, mappingRootPath);
 
-      this.stateStore.setImportedData({
-        importedFilePath: fileUri.fsPath,
-        importedPreviewPath: previewPath,
-        rows,
-        specToCodeMappings: mappings,
+        this.stateStore.setImportedData({
+          importedFilePath: fileUri.fsPath,
+          importedPreviewPath: previewPath,
+          rows,
+          specToCodeMappings: mappings,
+        });
+
+        for (const currentWebview of this.webviews) {
+          this.postState(currentWebview);
+          await this.postCursorContextMapping(currentWebview);
+        }
+
+        void vscode.window.showInformationMessage(
+          `Imported ${rows.length} design spec rows from ${fileUri.fsPath}.`,
+        );
       });
-
-      for (const currentWebview of this.webviews) {
-        this.postState(currentWebview);
-        await this.postCursorContextMapping(currentWebview);
-      }
-
-      void vscode.window.showInformationMessage(
-        `Imported ${rows.length} design spec rows from ${fileUri.fsPath}.`,
-      );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown import error";
       webview.postMessage({ type: "error", message });
@@ -205,27 +208,29 @@ class DesignSpecPreviewProvider implements vscode.WebviewViewProvider {
     }
 
     try {
-      const importedUri = state.importedFilePath ? vscode.Uri.file(state.importedFilePath) : undefined;
-      const workspaceFolder = this.resolveWorkspaceFolder(importedUri);
-      const mappingRootPath = this.resolveMappingRootPath(importedUri);
-      const rawMappings = mapDesignSpecsToCode(state.rows);
-      const mappings = await this.hydrateMappingsWithSymbolLocations(rawMappings, mappingRootPath);
-      this.stateStore.setMappings(mappings);
+      await this.runMappingWithRuntime("Running spec-to-code mappings...", async () => {
+        const importedUri = state.importedFilePath ? vscode.Uri.file(state.importedFilePath) : undefined;
+        const workspaceFolder = this.resolveWorkspaceFolder(importedUri);
+        const mappingRootPath = this.resolveMappingRootPath(importedUri);
+        const rawMappings = mapDesignSpecsToCode(state.rows);
+        const mappings = await this.hydrateMappingsWithSymbolLocations(rawMappings, mappingRootPath);
+        this.stateStore.setMappings(mappings);
 
-      const previewPath = await this.writePreviewFileAndOpenTab(
-        state.rows,
-        mappings,
-        workspaceFolder,
-        mappingRootPath,
-      );
-      this.stateStore.setImportedPreviewPath(previewPath);
+        const previewPath = await this.writePreviewFileAndOpenTab(
+          state.rows,
+          mappings,
+          workspaceFolder,
+          mappingRootPath,
+        );
+        this.stateStore.setImportedPreviewPath(previewPath);
 
-      for (const currentWebview of this.webviews) {
-        this.postState(currentWebview);
-        await this.postCursorContextMapping(currentWebview);
-      }
+        for (const currentWebview of this.webviews) {
+          this.postState(currentWebview);
+          await this.postCursorContextMapping(currentWebview);
+        }
 
-      void vscode.window.showInformationMessage("Refreshed placeholder spec mappings.");
+        void vscode.window.showInformationMessage("Refreshed placeholder spec mappings.");
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown mapping refresh error";
       webview.postMessage({ type: "error", message });
@@ -367,6 +372,41 @@ class DesignSpecPreviewProvider implements vscode.WebviewViewProvider {
       type: "stateUpdated",
       payload: this.stateStore.getState(),
     });
+  }
+
+  /**
+   * Executes mapping work with runtime progress updates and fixed async delay.
+   * @param runningMessage Panel message while mapping executes.
+   * @param action Mapping action.
+   */
+  private async runMappingWithRuntime<T>(runningMessage: string, action: () => Promise<T>): Promise<T> {
+    this.setMappingRuntime({
+      isRunning: true,
+      message: runningMessage,
+      lastStartedAt: Date.now(),
+    });
+    try {
+      await waitForMockMappingDelay();
+      return await action();
+    } finally {
+      this.setMappingRuntime({
+        isRunning: false,
+        message: "Idle",
+      });
+    }
+  }
+
+  /**
+   * Updates mapping runtime status and broadcasts state to all open webviews.
+   * @param mappingRuntime Mapping runtime payload.
+   */
+  private setMappingRuntime(
+    mappingRuntime: ReturnType<StateStore["getState"]>["mappingRuntime"],
+  ): void {
+    this.stateStore.setMappingRuntime(mappingRuntime);
+    for (const currentWebview of this.webviews) {
+      this.postState(currentWebview);
+    }
   }
 
   /**

@@ -77,6 +77,15 @@ export interface CodexRuntimeState {
 }
 
 /**
+ * Represents mapping execution progress for panel feedback.
+ */
+export interface MappingRuntimeState {
+  isRunning: boolean;
+  message: string;
+  lastStartedAt?: number;
+}
+
+/**
  * Represents extension-managed in-memory state for imported data and mappings.
  */
 export interface ExtensionState {
@@ -85,4 +94,5 @@ export interface ExtensionState {
   rows: DesignSpecRow[];
   specToCodeMappings: SpecCodeMapping[];
   codexRuntime: CodexRuntimeState;
+  mappingRuntime: MappingRuntimeState;
 }

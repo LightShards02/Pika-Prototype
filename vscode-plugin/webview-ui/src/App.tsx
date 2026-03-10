@@ -4,6 +4,7 @@ import {
   CodeReference,
   CursorContextMapping,
   ExtensionStatePayload,
+  MappingRuntimePayload,
   SpecCodeMapping,
   WebviewIncomingMessage,
 } from "./types";
@@ -26,6 +27,11 @@ const DEFAULT_CODEX_RUNTIME: CodexRuntimePayload = {
   message: "Codex executable status is still being resolved.",
 };
 
+const DEFAULT_MAPPING_RUNTIME: MappingRuntimePayload = {
+  isRunning: false,
+  message: "Idle",
+};
+
 /**
  * Renders the design-spec import, preview, and bidirectional mapping UI.
  */
@@ -34,6 +40,7 @@ export function App({ postMessage }: AppProps): React.ReactElement {
     rows: [],
     specToCodeMappings: [],
     codexRuntime: DEFAULT_CODEX_RUNTIME,
+    mappingRuntime: DEFAULT_MAPPING_RUNTIME,
   });
   const [cursorContext, setCursorContext] = useState<CursorContextMapping>({
     filePath: "",
@@ -53,6 +60,7 @@ export function App({ postMessage }: AppProps): React.ReactElement {
         setStatePayload({
           ...payload,
           codexRuntime: payload.codexRuntime ?? DEFAULT_CODEX_RUNTIME,
+          mappingRuntime: payload.mappingRuntime ?? DEFAULT_MAPPING_RUNTIME,
         });
         setError("");
       } else if (message.type === "cursorContextUpdated" && message.payload) {
@@ -77,6 +85,7 @@ export function App({ postMessage }: AppProps): React.ReactElement {
     return map;
   }, [statePayload.specToCodeMappings]);
   const codexReady = statePayload.codexRuntime.status === "ready";
+  const mappingRunning = statePayload.mappingRuntime.isRunning;
 
   return (
     <div className="app">
@@ -88,6 +97,7 @@ export function App({ postMessage }: AppProps): React.ReactElement {
             className="icon-button"
             title="Import design spec CSV"
             aria-label="Import design spec CSV"
+            disabled={mappingRunning}
             onClick={() => postMessage({ type: "chooseDesignSpec" })}
           >
             ⭱
@@ -97,6 +107,7 @@ export function App({ postMessage }: AppProps): React.ReactElement {
             className="icon-button"
             title="Refresh mappings and preview file"
             aria-label="Refresh mappings"
+            disabled={mappingRunning}
             onClick={() => postMessage({ type: "refreshMappings" })}
           >
             ↻
@@ -105,6 +116,15 @@ export function App({ postMessage }: AppProps): React.ReactElement {
       </header>
 
       <section className="status">
+        <div className="mapping-status-row">
+          <strong>Mapping status:</strong>
+          <span className={`mapping-badge ${mappingRunning ? "running" : "idle"}`}>
+            {mappingRunning ? "Running..." : "Idle"}
+          </span>
+        </div>
+        <div>
+          <strong>Mapping details:</strong> {statePayload.mappingRuntime.message}
+        </div>
         <div className="codex-status-row">
           <strong>Agent readiness:</strong>
           <span className={`codex-badge ${codexReady ? "ready" : "missing"}`}>
