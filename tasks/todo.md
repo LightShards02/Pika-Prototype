@@ -1007,3 +1007,26 @@
   - `npm run typecheck` -> pass
   - `npm test` -> `17 passed`
   - Manual GUI walkthrough recorded: `plugin_mapping_running_status_refresh.mp4` (refresh shows `Running...` then returns to `Idle`).
+
+## Current Task: Codex Validation Status + Readiness-Gated Refresh
+
+- [x] Add codex validation runtime state contract (`isValidating`, progress message) in extension/webview.
+- [x] Add stubbed handshake validation flow with real-time progress updates and stale-run protection.
+- [x] Gate readiness so `ready` is set only after validation pass; hide validation status when idle.
+- [x] Disable refresh button when agent is not ready and enforce host-side guard.
+- [x] Add/adjust targeted tests and run compile/typecheck/tests.
+- [x] Run manual GUI walkthrough recording proving validation progress + refresh disable behavior.
+- [ ] Commit and push changes.
+
+## Current Task Review: Codex Validation Status + Readiness-Gated Refresh
+
+- Added `codexValidationRuntime` state contract and propagation in extension/webview payloads to represent active handshake progress.
+- Implemented stubbed validation module with deterministic progress steps and stale-run protection in `refreshCodexRuntimeStatus`.
+- Updated readiness flow so runtime remains not-ready during validation and transitions to ready only on validation pass; validation row is rendered only while validating.
+- Disabled refresh button when agent is not ready and added host-side guard in `refreshMappings` to reject non-ready runs.
+- Added unit tests for validation step progress helper and re-ran plugin checks.
+- Verification:
+  - `npm run compile` -> pass
+  - `npm run typecheck` -> pass
+  - `npm test` -> `18 passed`
+  - Manual GUI walkthrough recorded: `plugin_codex_validation_and_readiness_gating.mp4` (not-ready refresh disabled -> validation progress shown -> ready after pass).

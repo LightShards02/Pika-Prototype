@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
+  CodexValidationRuntimePayload,
   CodexRuntimePayload,
   CodeReference,
   CursorContextMapping,
@@ -32,6 +33,11 @@ const DEFAULT_MAPPING_RUNTIME: MappingRuntimePayload = {
   message: "Idle",
 };
 
+const DEFAULT_CODEX_VALIDATION_RUNTIME: CodexValidationRuntimePayload = {
+  isValidating: false,
+  message: "",
+};
+
 /**
  * Renders the design-spec import, preview, and bidirectional mapping UI.
  */
@@ -40,6 +46,7 @@ export function App({ postMessage }: AppProps): React.ReactElement {
     rows: [],
     specToCodeMappings: [],
     codexRuntime: DEFAULT_CODEX_RUNTIME,
+    codexValidationRuntime: DEFAULT_CODEX_VALIDATION_RUNTIME,
     mappingRuntime: DEFAULT_MAPPING_RUNTIME,
   });
   const [cursorContext, setCursorContext] = useState<CursorContextMapping>({
@@ -60,6 +67,8 @@ export function App({ postMessage }: AppProps): React.ReactElement {
         setStatePayload({
           ...payload,
           codexRuntime: payload.codexRuntime ?? DEFAULT_CODEX_RUNTIME,
+          codexValidationRuntime:
+            payload.codexValidationRuntime ?? DEFAULT_CODEX_VALIDATION_RUNTIME,
           mappingRuntime: payload.mappingRuntime ?? DEFAULT_MAPPING_RUNTIME,
         });
         setError("");
@@ -107,7 +116,7 @@ export function App({ postMessage }: AppProps): React.ReactElement {
             className="icon-button"
             title="Refresh mappings and preview file"
             aria-label="Refresh mappings"
-            disabled={mappingRunning}
+            disabled={mappingRunning || !codexReady}
             onClick={() => postMessage({ type: "refreshMappings" })}
           >
             ↻
@@ -125,6 +134,11 @@ export function App({ postMessage }: AppProps): React.ReactElement {
         <div>
           <strong>Mapping details:</strong> {statePayload.mappingRuntime.message}
         </div>
+        {statePayload.codexValidationRuntime.isValidating ? (
+          <div className="validation-status">
+            <strong>Validation:</strong> {statePayload.codexValidationRuntime.message}
+          </div>
+        ) : null}
         <div className="codex-status-row">
           <strong>Agent readiness:</strong>
           <span className={`codex-badge ${codexReady ? "ready" : "missing"}`}>

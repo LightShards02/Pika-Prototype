@@ -86,6 +86,14 @@ export interface MappingRuntimeState {
 }
 
 /**
+ * Represents Codex executable validation runtime progress.
+ */
+export interface CodexValidationRuntimeState {
+  isValidating: boolean;
+  message: string;
+}
+
+/**
  * Represents extension-managed in-memory state for imported data and mappings.
  */
 export interface ExtensionState {
@@ -94,5 +102,6 @@ export interface ExtensionState {
   rows: DesignSpecRow[];
   specToCodeMappings: SpecCodeMapping[];
   codexRuntime: CodexRuntimeState;
+  codexValidationRuntime: CodexValidationRuntimeState;
   mappingRuntime: MappingRuntimeState;
 }

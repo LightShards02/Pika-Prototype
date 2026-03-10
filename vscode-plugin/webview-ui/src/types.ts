@@ -42,6 +42,7 @@ export interface ExtensionStatePayload {
   rows: DesignSpecRow[];
   specToCodeMappings: SpecCodeMapping[];
   codexRuntime: CodexRuntimePayload;
+  codexValidationRuntime: CodexValidationRuntimePayload;
   mappingRuntime: MappingRuntimePayload;
 }
 
@@ -57,6 +58,11 @@ export interface MappingRuntimePayload {
   isRunning: boolean;
   message: string;
   lastStartedAt?: number;
+}
+
+export interface CodexValidationRuntimePayload {
+  isValidating: boolean;
+  message: string;
 }
 
 export interface WebviewIncomingMessage {

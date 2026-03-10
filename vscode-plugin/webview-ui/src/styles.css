@@ -82,6 +82,10 @@ button:hover {
   color: var(--vscode-editor-background);
 }
 
+.validation-status {
+  color: var(--vscode-descriptionForeground);
+}
+
 .codex-status-row {
   display: flex;
   align-items: center;

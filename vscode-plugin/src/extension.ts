@@ -2,6 +2,7 @@ import * as path from "path";
 import { readFile as readFileFromFs } from "fs/promises";
 import * as vscode from "vscode";
 import { detectCodexRuntimeState } from "./core/codexExecutable";
+import { validateCodexExecutableHandshake } from "./core/codexValidation";
 import { parseDesignSpecCsv } from "./core/csvParser";
 import { waitForMockMappingDelay } from "./core/mappingRuntime";
 import { mapCursorContextToSpecs, mapDesignSpecsToCode } from "./core/mappingService";
@@ -63,6 +64,7 @@ function escapeRegex(value: string): string {
  */
 class DesignSpecPreviewProvider implements vscode.WebviewViewProvider {
   private readonly webviews = new Set<vscode.Webview>();
+  private codexValidationVersion = 0;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -137,12 +139,70 @@ class DesignSpecPreviewProvider implements vscode.WebviewViewProvider {
    * Refreshes Codex runtime readiness and pushes state to all active webviews.
    */
   public async refreshCodexRuntimeStatus(): Promise<void> {
+    const validationVersion = ++this.codexValidationVersion;
+    this.setCodexValidationRuntime({
+      isValidating: false,
+      message: "",
+    });
+
     const configuredPath = this.getConfiguredCodexPath();
-    const codexRuntime = await detectCodexRuntimeState(configuredPath);
-    this.stateStore.setCodexRuntime(codexRuntime);
-    for (const currentWebview of this.webviews) {
-      this.postState(currentWebview);
+    const detectedRuntime = await detectCodexRuntimeState(configuredPath);
+
+    if (validationVersion !== this.codexValidationVersion) {
+      return;
     }
+
+    if (!detectedRuntime.effectivePath) {
+      this.setCodexRuntime(detectedRuntime);
+      return;
+    }
+
+    this.setCodexRuntime({
+      ...detectedRuntime,
+      status: "missing",
+      message: "Validating Codex executable...",
+    });
+    this.setCodexValidationRuntime({
+      isValidating: true,
+      message: "Starting Codex validation...",
+    });
+
+    const validationResult = await validateCodexExecutableHandshake(
+      detectedRuntime.effectivePath,
+      (message) => {
+        if (validationVersion !== this.codexValidationVersion) {
+          return;
+        }
+        this.setCodexValidationRuntime({
+          isValidating: true,
+          message,
+        });
+      },
+    );
+
+    if (validationVersion !== this.codexValidationVersion) {
+      return;
+    }
+
+    this.setCodexValidationRuntime({
+      isValidating: false,
+      message: "",
+    });
+
+    if (!validationResult.passed) {
+      this.setCodexRuntime({
+        ...detectedRuntime,
+        status: "missing",
+        message: validationResult.message,
+      });
+      return;
+    }
+
+    this.setCodexRuntime({
+      ...detectedRuntime,
+      status: "ready",
+      message: validationResult.message,
+    });
   }
 
   /**
@@ -202,6 +262,11 @@ class DesignSpecPreviewProvider implements vscode.WebviewViewProvider {
    */
   private async refreshMappings(webview: vscode.Webview): Promise<void> {
     const state = this.stateStore.getState();
+    if (state.codexRuntime.status !== "ready") {
+      void vscode.window.showWarningMessage("Agent is not ready. Configure and validate Codex first.");
+      return;
+    }
+
     if (state.rows.length === 0) {
       void vscode.window.showWarningMessage("Import a design spec CSV before refreshing mappings.");
       return;
@@ -372,6 +437,32 @@ class DesignSpecPreviewProvider implements vscode.WebviewViewProvider {
       type: "stateUpdated",
       payload: this.stateStore.getState(),
     });
+  }
+
+  /**
+   * Updates Codex runtime state and broadcasts to all open webviews.
+   * @param codexRuntime Runtime readiness payload.
+   */
+  private setCodexRuntime(
+    codexRuntime: ReturnType<StateStore["getState"]>["codexRuntime"],
+  ): void {
+    this.stateStore.setCodexRuntime(codexRuntime);
+    for (const currentWebview of this.webviews) {
+      this.postState(currentWebview);
+    }
+  }
+
+  /**
+   * Updates Codex validation runtime progress and broadcasts panel updates.
+   * @param codexValidationRuntime Validation progress payload.
+   */
+  private setCodexValidationRuntime(
+    codexValidationRuntime: ReturnType<StateStore["getState"]>["codexValidationRuntime"],
+  ): void {
+    this.stateStore.setCodexValidationRuntime(codexValidationRuntime);
+    for (const currentWebview of this.webviews) {
+      this.postState(currentWebview);
+    }
   }
 
   /**
