@@ -207,6 +207,7 @@ def _execute_command(
     verbose: bool,
     command_only_validation: bool,
     input_overrides: dict[str, str] | None = None,
+    resume_run_id: str | None = None,
 ) -> None:
     """Execute command with config load, validation, and dispatch."""
     resolved_workspace_root = _resolve_workspace_root(project_root)
@@ -244,19 +245,90 @@ def _execute_command(
             return
 
         overrides = input_overrides or {}
+        run_id = resume_run_id or generate_run_id()
+        resolved_decisions: str | None = None
+        if resume_run_id:
+            from core.lifecycle import resolve_agent_runs_dir_for_command
+            from core.resolution import build_resolved_decisions_context, load_resolution_file, validate_resolutions
+            if command_name in ("implement", "plan", "map", "resolve_plan"):
+                run_dir = resolve_agent_runs_dir_for_command(
+                    config_data, Path(resolved_workspace_root), command_name, resume_run_id
+                )
+                if not run_dir.exists():
+                    raise ValueError(
+                        f"Cannot resume: run_id '{resume_run_id}' not found for command '{command_name}' "
+                        f"at {run_dir}"
+                    )
+
+                run_meta_path = run_dir / "run_meta.json"
+                if not run_meta_path.exists():
+                    raise ValueError(
+                        f"Cannot resume: missing run_meta.json for run_id '{resume_run_id}' at {run_meta_path}"
+                    )
+                try:
+                    run_meta = json.loads(run_meta_path.read_text(encoding="utf-8"))
+                except Exception as exc:
+                    raise ValueError(
+                        f"Cannot resume: invalid run_meta.json for run_id '{resume_run_id}' ({exc})"
+                    ) from exc
+                blocked_stage = str(run_meta.get("blocked_at_stage", "")).strip()
+                if not blocked_stage:
+                    raise ValueError(
+                        f"Cannot resume: run_id '{resume_run_id}' is not marked as blocked "
+                        "(missing blocked_at_stage in run_meta.json)."
+                    )
+
+                data = load_resolution_file(run_dir)
+                if not data:
+                    raise ValueError(
+                        f"Cannot resume: missing or unreadable manual_resolution/resolutions.yaml for "
+                        f"run_id '{resume_run_id}'."
+                    )
+                valid, errors = validate_resolutions(data)
+                if not valid:
+                    preview = "; ".join(errors[:3]) if errors else "unresolved items"
+                    raise ValueError(
+                        f"Cannot resume: resolutions.yaml is not fully resolved for run_id '{resume_run_id}': {preview}"
+                    )
+                done_count = 0
+                for item in data.get("items", []):
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("source") != "validation":
+                        continue
+                    if not bool(item.get("acknowledged")):
+                        continue
+                    done_count += 1
+                if done_count > 0:
+                    typer.secho(
+                        "WARNING: "
+                        f"{done_count} item(s) were marked DONE (spec edits acknowledged). "
+                        "Resume will re-validate and may block again if the spec edits were not applied.",
+                        fg=typer.colors.YELLOW,
+                        err=True,
+                    )
+                raw = build_resolved_decisions_context(data)
+                resolved_decisions = (
+                    "## Resolved Decisions\n\n"
+                    "The following ambiguities were previously flagged and resolved by the user. "
+                    "Honor these as hard constraints. Do NOT re-emit them as manual_resolution_items.\n\n"
+                    f"{raw}"
+                ) if raw else ""
+
         preflight_ctx = RuntimeContext(
             command=command_name,
             dry_run=dry_run,
             verbose=verbose,
             command_only_validation=command_only_validation,
-            run_id="",
+            run_id=run_id,
             project_root=str(resolved_workspace_root),  # workspace root = project being built
             config_path=str(config_path),
             input_overrides=overrides,
+            resume_run_id=resume_run_id,
+            resolved_decisions=resolved_decisions,
         )
         validate_command_preconditions(command_name, config_data, preflight_ctx)
 
-        run_id = generate_run_id()
         runtime_ctx["run_id"] = run_id
         router_ctx = RuntimeContext(
             command=command_name,
@@ -267,6 +339,8 @@ def _execute_command(
             project_root=str(resolved_workspace_root),  # workspace root = project being built
             config_path=str(config_path),
             input_overrides=overrides,
+            resume_run_id=resume_run_id,
+            resolved_decisions=resolved_decisions,
         )
         _ = init_run_logger(
             project_root=resolved_workspace_root, config=config_data, ctx=router_ctx
@@ -317,6 +391,7 @@ def agent_plan_command(
     srs: str | None = typer.Option(None, "--srs", help="Path to SRS file. Relative to project root or absolute."),
     codebase_dir: str | None = typer.Option(None, "--codebase-dir", help="Path to codebase/source directory. Absolute or relative to project root."),
     project_context: str | None = typer.Option(None, "--project-context", help="Path to project context file (e.g. PROJECT_CONTEXT.md). Absolute or relative to project root."),
+    resume: str | None = typer.Option(None, "--resume", help="Resume a blocked run by run ID (after resolving manual items)."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Run without side effects."),
     verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logs."),
     command_only_validation: bool = typer.Option(
@@ -339,6 +414,7 @@ def agent_plan_command(
         verbose=verbose,
         command_only_validation=command_only_validation,
         input_overrides=overrides if overrides else None,
+        resume_run_id=resume,
     )
 
 
@@ -415,6 +491,7 @@ def agent_map_command(
         None, "--apply-existing-outputs",
         help="Path to directory of map output JSON files. Skips agent invocation; merges and applies downstream processing.",
     ),
+    resume: str | None = typer.Option(None, "--resume", help="Resume a blocked run by run ID (after resolving manual items)."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Run without side effects."),
     verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logs."),
     command_only_validation: bool = typer.Option(
@@ -445,6 +522,7 @@ def agent_map_command(
         verbose=verbose,
         command_only_validation=command_only_validation,
         input_overrides=overrides if overrides else None,
+        resume_run_id=resume,
     )
 
 
@@ -455,6 +533,7 @@ def agent_implement_command(
     design_spec: str | None = typer.Option(None, "--design-spec", help="Path to Formatted SADS. Relative to project root or absolute."),
     codebase_dir: str | None = typer.Option(None, "--codebase-dir", help="Path to codebase/source directory. Absolute or relative to project root."),
     project_context: str | None = typer.Option(None, "--project-context", help="Path to project context file (e.g. PROJECT_CONTEXT.md). Absolute or relative to project root."),
+    resume: str | None = typer.Option(None, "--resume", help="Resume a blocked run by run ID (after resolving manual items)."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Run without side effects."),
     verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logs."),
     command_only_validation: bool = typer.Option(
@@ -477,6 +556,26 @@ def agent_implement_command(
         verbose=verbose,
         command_only_validation=command_only_validation,
         input_overrides=overrides if overrides else None,
+        resume_run_id=resume,
+    )
+
+
+@agent_app.command("resolve")
+def agent_resolve_command(
+    run: str = typer.Option(..., "--run", help="Run ID to resolve (blocked run)."),
+    config: str | None = typer.Option(None, "--config", help="Path to config YAML."),
+    project_root: str = typer.Option(..., "--project-root", help="Workspace root (required)."),
+    verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logs."),
+) -> None:
+    """Interactive manual resolution for blocked runs. Presents items one by one until all are resolved."""
+    _execute_command(
+        "resolve",
+        config=config,
+        project_root=project_root,
+        dry_run=False,
+        verbose=verbose,
+        command_only_validation=False,
+        input_overrides={"run_id": run},
     )
 
 
@@ -486,6 +585,7 @@ def agent_resolve_plan_command(
     project_root: str = typer.Option(..., "--project-root", help="Workspace root (required): directory containing project config and outputs."),
     issue_tracking: str | None = typer.Option(None, "--issue-tracking", help="Path to Implementation Issue Tracker. Relative to project root or absolute."),
     design_spec: str | None = typer.Option(None, "--design-spec", help="Path to Formatted SADS. Relative to project root or absolute."),
+    resume: str | None = typer.Option(None, "--resume", help="Resume a blocked run by run ID (after resolving manual items)."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Run without side effects."),
     verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logs."),
     command_only_validation: bool = typer.Option(
@@ -506,6 +606,7 @@ def agent_resolve_plan_command(
         verbose=verbose,
         command_only_validation=command_only_validation,
         input_overrides=overrides if overrides else None,
+        resume_run_id=resume,
     )
 
 

@@ -43,6 +43,9 @@ _EVENT_KEYS: dict[str, tuple[str, ...]] = {
     "agent_invoke_local_failed": (
         "prompt_name", "output_path", "exit_code", "error",
     ),
+    "agent_token_usage": (
+        "prompt_name", "input_tokens", "cached_input_tokens", "output_tokens",
+    ),
     "agent_invoke_api": (
         "prompt_name", "prompt_preview", "output_path", "provider",
     ),
@@ -193,12 +196,14 @@ class _RunLogFileHandler(logging.FileHandler):
         *,
         ctx: RuntimeContext,
         json_mode: bool,
+        mode: str = "x",
+        write_header: bool = True,
         **kwargs: Any,
     ) -> None:
-        super().__init__(filename, mode="x", encoding="utf-8", **kwargs)
+        super().__init__(filename, mode=mode, encoding="utf-8", **kwargs)
         self._ctx = ctx
         self._json_mode = json_mode
-        self._header_written = False
+        self._header_written = not write_header
 
     def emit(self, record: logging.LogRecord) -> None:
         """Write header on first emit, then format and write record."""
@@ -233,6 +238,11 @@ def init_run_logger(*, project_root: Path, config: dict, ctx: RuntimeContext) ->
         ) from exc
 
     log_file = (log_dir / f"{ctx.command}_{ctx.run_id}.log").resolve()
+    resume_existing_log = bool(
+        ctx.resume_run_id and ctx.resume_run_id == ctx.run_id and log_file.exists()
+    )
+    file_mode = "a" if resume_existing_log else "x"
+    write_header = not (resume_existing_log and log_file.stat().st_size > 0)
     level = _resolve_log_level(config, verbose=ctx.verbose)
     json_mode = _resolve_json_mode(config)
 
@@ -249,6 +259,8 @@ def init_run_logger(*, project_root: Path, config: dict, ctx: RuntimeContext) ->
             log_file,
             ctx=ctx,
             json_mode=json_mode,
+            mode=file_mode,
+            write_header=write_header,
         )
     except OSError as exc:
         raise RuntimeError(f"Failed to create log file '{log_file}': {exc}") from exc

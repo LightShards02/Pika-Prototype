@@ -22,6 +22,11 @@
       "properties": {
         "name": { "type": "string", "minLength": 1 },
         "root_dir": { "type": "string", "minLength": 1 },
+        "control_vocab_path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Path to per-project controlled vocabulary YAML (relative to project root). Injected into all LLM prompts. Optional."
+        },
         "state": {
           "type": "object",
           "additionalProperties": false,
@@ -95,6 +100,11 @@
           "type": "string",
           "minLength": 1,
           "description": "Executable name or path when provider is local. Default: codex."
+        },
+        "local_exec_timeout_sec": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Timeout (seconds) for local provider subprocess executions. Overrides pika local.exec_timeout_sec for this workspace."
         },
         "api_key_env": {
           "type": "string",
@@ -336,21 +346,6 @@
               "additionalProperties": false,
               "properties": { "implement_output": { "type": "string", "minLength": 1 } }
             },
-            "anchor_planner_prompt_name": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Prompt name for per-module anchor planner."
-            },
-            "anchor_linker_prompt_name": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Prompt name for global anchor linker."
-            },
-            "linker_max_attempts": {
-              "type": "integer",
-              "minimum": 1,
-              "description": "Maximum linker re-attempts when link-plan validation reports unbound required intents."
-            },
             "type_placement_path": {
               "type": "string",
               "minLength": 1,
@@ -396,6 +391,107 @@
                 }
               }
             },
+            "leaf_dependency_roles": {
+              "type": "array",
+              "items": { "type": "string", "enum": ["frontend", "api", "domain", "infra", "shared", "cli", "worker"] },
+              "description": "Module roles treated as leaf dependencies. For these roles, required_intents are auto-dropped during normalization."
+            },
+            "leaf_dependency_policy": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Deterministic policy for leaf dependency enforcement.",
+              "properties": {
+                "mode": {
+                  "type": "string",
+                  "enum": ["auto_drop"],
+                  "description": "Leaf dependency handling mode. Currently only auto_drop is supported."
+                },
+                "track_external_dependencies": {
+                  "type": "boolean",
+                  "description": "When true, dropped leaf required_intents are preserved as declared_external_dependencies."
+                }
+              }
+            },
+            "contract_kind_definitions": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Canonical semantic definitions for contract kinds, injected into planner/linker prompts.",
+              "properties": {
+                "api_endpoint": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["definition"],
+                  "properties": { "definition": { "type": "string", "minLength": 1 } }
+                },
+                "service_interface": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["definition"],
+                  "properties": { "definition": { "type": "string", "minLength": 1 } }
+                },
+                "event_topic": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["definition"],
+                  "properties": { "definition": { "type": "string", "minLength": 1 } }
+                },
+                "db_table": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["definition"],
+                  "properties": { "definition": { "type": "string", "minLength": 1 } }
+                },
+                "file_format": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["definition"],
+                  "properties": { "definition": { "type": "string", "minLength": 1 } }
+                },
+                "external_api": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["definition"],
+                  "properties": { "definition": { "type": "string", "minLength": 1 } }
+                },
+                "test_suite": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["definition"],
+                  "properties": { "definition": { "type": "string", "minLength": 1 } }
+                }
+              }
+            },
+            "type_shape_match": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Deterministic thresholds for normalized required->provided candidate scoring.",
+              "properties": {
+                "min_auto_bind_score": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "Minimum top candidate score to mark auto_bind_candidate in normalized intent catalog."
+                },
+                "tie_margin": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "Required score margin between top-1 and top-2 candidate for auto_bind_candidate."
+                }
+              }
+            },
+            "field_match_score_threshold": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Minimum normalized Damerau-Levenshtein similarity score (0..1) used by implement contract-field validation. Only pairs at or above this threshold are treated as high matches and emitted as manual resolution items."
+            },
+            "field_match_distance_threshold": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Deprecated alias of field_match_score_threshold. Kept for backward compatibility."
+            },
             "issue_tracker_path": {
               "type": "string",
               "minLength": 1,
@@ -406,15 +502,15 @@
               "minLength": 1,
               "description": "Path to test_spec CSV generated/updated by implement."
             },
-            "repair_max_attempts": {
-              "type": "integer",
-              "minimum": 0,
-              "description": "Maximum repair retries when verification fails."
-            },
             "verification_commands": {
               "type": "array",
               "items": { "type": "string", "minLength": 1 },
               "description": "Commands run after patch application for batch verification."
+            },
+            "semantic_validation_retries": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Additional retries when semantic contract validation fails after schema validation (0 = disabled)."
             },
             "forbidden_paths": {
               "type": "array",

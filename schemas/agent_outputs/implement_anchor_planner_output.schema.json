@@ -59,6 +59,10 @@
         },
         "provided_intents": { "type": "array", "items": { "$ref": "#/$defs/intent" } },
         "required_intents": { "type": "array", "items": { "$ref": "#/$defs/intent" } },
+        "declared_external_dependencies": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/external_dependency" }
+        },
         "intra_module_dependencies": {
           "type": "array",
           "items": {
@@ -118,6 +122,34 @@
         "planned_anchor": { "type": "object" },
         "call_site_plan": { "type": "object" },
         "provider_constraints": { "type": "object" },
+        "spec_ids": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Za-z][0-9]+$" }
+        },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "external_dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dependency_id",
+        "source_intent_local_id",
+        "kind",
+        "capability_name",
+        "description",
+        "spec_ids",
+        "confidence"
+      ],
+      "properties": {
+        "dependency_id": { "type": "string", "minLength": 1 },
+        "source_intent_local_id": { "type": "string", "minLength": 1 },
+        "kind": {
+          "type": "string",
+          "enum": ["api_endpoint", "service_interface", "event_topic", "db_table", "file_format", "external_api", "test_suite"]
+        },
+        "capability_name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 },
         "spec_ids": {
           "type": "array",
           "items": { "type": "string", "pattern": "^[A-Za-z][0-9]+$" }

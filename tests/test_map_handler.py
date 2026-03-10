@@ -12,17 +12,17 @@ from unittest.mock import patch
 from core.context import RuntimeContext
 
 from handlers.map import (
-    _build_template_vars,
-    _filter_rows_for_mapping,
-    _group_by_subunit,
-    _load_outputs_from_directory,
-    _merge_subunit_results,
-    _sanitize_subunit_for_filename,
-    _translate_map,
-    _validate_map_output_contract,
-    _validate_spec_id_unique,
-    _validate_subunit_column,
+    build_template_vars,
+    filter_rows_for_mapping,
+    group_by_subunit,
+    load_outputs_from_directory,
+    merge_subunit_results,
     run_map,
+    sanitize_subunit_for_filename,
+    translate_map,
+    validate_map_output_contract,
+    validate_spec_id_unique,
+    validate_subunit_column,
 )
 
 _TEST_DATA_DIR = Path(__file__).parent / "test_data_map_translate"
@@ -95,13 +95,13 @@ def _map_test_config(root: Path, **overrides: Any) -> dict[str, Any]:
 class MapOutputContractTests(unittest.TestCase):
     """Test map-output contract checks that complement JSON schema validation."""
 
-    def test_validate_map_output_contract_allows_missing_mappings(self) -> None:
+    def testvalidate_map_output_contract_allows_missing_mappings(self) -> None:
         """Outputs without mappings are accepted (e.g., blocking manual-resolution path)."""
-        _validate_map_output_contract({"manual_resolution_items": [{}]})
+        validate_map_output_contract({"manual_resolution_items": [{}]})
 
-    def test_validate_map_output_contract_accepts_valid_spec_id_keys(self) -> None:
+    def testvalidate_map_output_contract_accepts_valid_spec_id_keys(self) -> None:
         """Mappings with keys matching ^[A-Za-z][0-9]+$ are accepted."""
-        _validate_map_output_contract(
+        validate_map_output_contract(
             {
                 "mappings": {
                     "A1": {"status": "mapped", "code_refs": [], "assumptions": ""},
@@ -110,18 +110,18 @@ class MapOutputContractTests(unittest.TestCase):
             }
         )
 
-    def test_validate_map_output_contract_accepts_dict_shape(self) -> None:
+    def testvalidate_map_output_contract_accepts_dict_shape(self) -> None:
         """Dict mappings with spec_id keys are accepted and normalized."""
         output = {
             "mappings": {
                 "A1": {"status": "mapped", "code_refs": [], "assumptions": ""},
             }
         }
-        _validate_map_output_contract(output)
+        validate_map_output_contract(output)
         self.assertIsInstance(output["mappings"], dict)
         self.assertIn("A1", output["mappings"])
 
-    def test_validate_map_output_contract_accepts_list_shape(self) -> None:
+    def testvalidate_map_output_contract_accepts_list_shape(self) -> None:
         """List mappings with spec_id are accepted and normalized to dict."""
         output = {
             "mappings": [
@@ -129,15 +129,15 @@ class MapOutputContractTests(unittest.TestCase):
                 {"spec_id": "B2", "status": "unmapped", "code_refs": [], "assumptions": ""},
             ]
         }
-        _validate_map_output_contract(output)
+        validate_map_output_contract(output)
         self.assertIsInstance(output["mappings"], dict)
         self.assertIn("A1", output["mappings"])
         self.assertIn("B2", output["mappings"])
 
-    def test_validate_map_output_contract_rejects_list_missing_spec_id(self) -> None:
+    def testvalidate_map_output_contract_rejects_list_missing_spec_id(self) -> None:
         """List mappings must include spec_id on each item."""
         with self.assertRaises(ValueError) as ctx:
-            _validate_map_output_contract(
+            validate_map_output_contract(
                 {
                     "mappings": [
                         {"status": "mapped", "code_refs": [], "assumptions": ""},
@@ -146,21 +146,21 @@ class MapOutputContractTests(unittest.TestCase):
             )
         self.assertIn("must include non-empty 'spec_id'", str(ctx.exception))
 
-    def test_validate_map_output_contract_allows_blocking_with_empty_mappings(self) -> None:
+    def testvalidate_map_output_contract_allows_blocking_with_empty_mappings(self) -> None:
         """Blocking outputs are accepted when mappings is an empty object."""
-        _validate_map_output_contract(
+        validate_map_output_contract(
             {
                 "manual_resolution_items": [{"id": "x"}],
                 "mappings": {},
             }
         )
 
-    def test_validate_map_output_contract_rejects_blocking_when_mapping_overlaps_entity_id(
+    def testvalidate_map_output_contract_rejects_blocking_when_mapping_overlaps_entity_id(
         self,
     ) -> None:
         """When manual_resolution_items references a spec_id, that spec_id must not appear in mappings."""
         with self.assertRaises(ValueError) as ctx:
-            _validate_map_output_contract(
+            validate_map_output_contract(
                 {
                     "manual_resolution_items": [
                         {
@@ -177,11 +177,11 @@ class MapOutputContractTests(unittest.TestCase):
             )
         self.assertIn("Overlapping", str(ctx.exception))
 
-    def test_validate_map_output_contract_allows_blocking_with_non_overlapping_mappings(
+    def testvalidate_map_output_contract_allows_blocking_with_non_overlapping_mappings(
         self,
     ) -> None:
         """When manual_resolution_items references spec_ids, only those spec_ids must be absent from mappings."""
-        _validate_map_output_contract(
+        validate_map_output_contract(
             {
                 "manual_resolution_items": [
                     {
@@ -200,12 +200,12 @@ class MapOutputContractTests(unittest.TestCase):
             }
         )
 
-    def test_validate_map_output_contract_rejects_blocking_when_range_overlaps_mappings(
+    def testvalidate_map_output_contract_rejects_blocking_when_range_overlaps_mappings(
         self,
     ) -> None:
         """When manual_resolution_items entity_id is a range, mappings must not contain any spec_id in that range."""
         with self.assertRaises(ValueError) as ctx:
-            _validate_map_output_contract(
+            validate_map_output_contract(
                 {
                     "manual_resolution_items": [
                         {
@@ -225,16 +225,16 @@ class MapOutputContractTests(unittest.TestCase):
             )
         self.assertIn("A200", str(ctx.exception))
 
-    def test_validate_map_output_contract_rejects_invalid_mappings_type(self) -> None:
+    def testvalidate_map_output_contract_rejects_invalid_mappings_type(self) -> None:
         """Mappings must be an object with spec_id keys."""
         with self.assertRaises(ValueError) as ctx:
-            _validate_map_output_contract({"mappings": "bad"})
+            validate_map_output_contract({"mappings": "bad"})
         self.assertIn("'mappings' must be an object", str(ctx.exception))
 
-    def test_validate_map_output_contract_rejects_invalid_mapping_keys(self) -> None:
+    def testvalidate_map_output_contract_rejects_invalid_mapping_keys(self) -> None:
         """Mapping keys that do not match ^[A-Za-z][0-9]+$ are rejected."""
         with self.assertRaises(ValueError) as ctx:
-            _validate_map_output_contract(
+            validate_map_output_contract(
                 {
                     "mappings": {
                         "AA_1": {"status": "mapped", "code_refs": [], "assumptions": ""},
@@ -244,7 +244,7 @@ class MapOutputContractTests(unittest.TestCase):
             )
         self.assertIn("mappings keys must match ^[A-Za-z][0-9]+$", str(ctx.exception))
 
-    def test_validate_map_output_contract_normalizes_code_refs_with_consistency_and_problems(
+    def testvalidate_map_output_contract_normalizes_code_refs_with_consistency_and_problems(
         self,
     ) -> None:
         """Code_refs are normalized to include consistency_score and problems."""
@@ -266,14 +266,14 @@ class MapOutputContractTests(unittest.TestCase):
                 }
             }
         }
-        _validate_map_output_contract(output)
+        validate_map_output_contract(output)
         refs = output["mappings"]["A1"]["code_refs"]
         self.assertEqual(len(refs), 1)
         self.assertEqual(refs[0]["consistency_score"], 0.6)
         self.assertEqual(refs[0]["problems"], "Semantics differ from spec.")
         self.assertEqual(output["mappings"]["A1"]["assumptions"], "Partial match.")
 
-    def test_validate_map_output_contract_accepts_legacy_notes_as_problems(self) -> None:
+    def testvalidate_map_output_contract_accepts_legacy_notes_as_problems(self) -> None:
         """Legacy code_ref.notes is normalized to problems for backward compatibility."""
         output = {
             "mappings": {
@@ -293,12 +293,12 @@ class MapOutputContractTests(unittest.TestCase):
                 }
             }
         }
-        _validate_map_output_contract(output)
+        validate_map_output_contract(output)
         self.assertEqual(output["mappings"]["A1"]["code_refs"][0]["problems"], "Legacy field.")
 
 
 class MapTranslateTests(unittest.TestCase):
-    """Test _translate_map: codex output → CSV mapping column updates."""
+    """Test translate_map: codex output → CSV mapping column updates."""
 
     def setUp(self) -> None:
         """Create test data directory."""
@@ -309,7 +309,7 @@ class MapTranslateTests(unittest.TestCase):
         if _TEST_DATA_DIR.exists():
             shutil.rmtree(_TEST_DATA_DIR, ignore_errors=True)
 
-    def test_translate_map_updates_mapping_columns(self) -> None:
+    def testtranslate_map_updates_mapping_columns(self) -> None:
         """Translate applies mapped_code_symbols, map_status, map_assumptions, mapped_at."""
         root = _TEST_DATA_DIR / "test1"
         root.mkdir(parents=True, exist_ok=True)
@@ -353,7 +353,7 @@ class MapTranslateTests(unittest.TestCase):
         }
         inputs = {"design_spec_path": design_csv}
 
-        _translate_map(config, ctx, output, inputs)
+        translate_map(config, ctx, output, inputs)
 
         content = design_csv.read_text(encoding="utf-8")
         self.assertIn("Foo.DoFoo,Bar.Helper", content)
@@ -367,7 +367,7 @@ class MapTranslateTests(unittest.TestCase):
         backups_list = list(map_backups.glob("design_spec_*.csv"))
         self.assertGreater(len(backups_list), 0)
 
-    def test_translate_map_skips_dry_run(self) -> None:
+    def testtranslate_map_skips_dry_run(self) -> None:
         """Dry-run does not modify the design spec."""
         root = _TEST_DATA_DIR / "test2"
         root.mkdir(parents=True, exist_ok=True)
@@ -388,11 +388,11 @@ class MapTranslateTests(unittest.TestCase):
         output = {"mappings": {"A1": {"status": "mapped", "code_refs": [], "assumptions": "x"}}}
         inputs = {"design_spec_path": design_csv}
 
-        _translate_map(config, ctx, output, inputs)
+        translate_map(config, ctx, output, inputs)
 
         self.assertEqual(design_csv.read_text(encoding="utf-8"), original)
 
-    def test_translate_map_writes_confidence_consistency_problems(self) -> None:
+    def testtranslate_map_writes_confidence_consistency_problems(self) -> None:
         """Translate populates mapped_confidence, mapped_consistency_score, mapped_problems."""
         root = _TEST_DATA_DIR / "test_confidence"
         root.mkdir(parents=True, exist_ok=True)
@@ -444,7 +444,7 @@ class MapTranslateTests(unittest.TestCase):
         }
         inputs = {"design_spec_path": design_csv}
 
-        _translate_map(config, ctx, output, inputs)
+        translate_map(config, ctx, output, inputs)
 
         content = design_csv.read_text(encoding="utf-8")
         self.assertIn("Foo.Bar,Baz.Quux", content)
@@ -452,7 +452,7 @@ class MapTranslateTests(unittest.TestCase):
         self.assertIn("0.70,0.95", content)
         self.assertIn("Semantics differ from spec.", content)
 
-    def test_translate_map_raises_when_backups_dir_missing(self) -> None:
+    def testtranslate_map_raises_when_backups_dir_missing(self) -> None:
         """Translate raises when backups_dir is not configured."""
         root = _TEST_DATA_DIR / "test_no_backup"
         root.mkdir(parents=True, exist_ok=True)
@@ -475,10 +475,10 @@ class MapTranslateTests(unittest.TestCase):
         output = {"mappings": {"A1": {"status": "unmapped", "code_refs": [], "assumptions": ""}}}
         inputs = {"design_spec_path": design_csv}
         with self.assertRaises(ValueError) as exc_ctx:
-            _translate_map(config, runtime_ctx, output, inputs)
+            translate_map(config, runtime_ctx, output, inputs)
         self.assertIn("backups_dir is required", str(exc_ctx.exception))
 
-    def test_translate_map_appends_missing_columns(self) -> None:
+    def testtranslate_map_appends_missing_columns(self) -> None:
         """Missing mapping columns are appended before update."""
         root = _TEST_DATA_DIR / "test3"
         root.mkdir(parents=True, exist_ok=True)
@@ -505,7 +505,7 @@ class MapTranslateTests(unittest.TestCase):
         }
         inputs = {"design_spec_path": design_csv}
 
-        _translate_map(config, ctx, output, inputs)
+        translate_map(config, ctx, output, inputs)
 
         content = design_csv.read_text(encoding="utf-8")
         self.assertIn("mapped_code_symbols", content)
@@ -517,26 +517,26 @@ class MapTranslateTests(unittest.TestCase):
 
 
 class MapFilterAndGroupTests(unittest.TestCase):
-    """Tests for _filter_rows_for_mapping, _group_by_subunit, _validate_subunit_column."""
+    """Tests for filter_rows_for_mapping, group_by_subunit, validate_subunit_column."""
 
-    def test_validate_subunit_column_raises_when_missing(self) -> None:
+    def testvalidate_subunit_column_raises_when_missing(self) -> None:
         """Raises when subunit column is absent."""
         headers = ["spec_id", "title"]
         rows = [{"spec_id": "A1", "title": "Foo"}]
         with self.assertRaises(ValueError) as ctx:
-            _validate_subunit_column(headers, rows)
+            validate_subunit_column(headers, rows)
         self.assertIn("subunit", str(ctx.exception))
 
-    def test_validate_spec_id_unique_passes_when_unique(self) -> None:
+    def testvalidate_spec_id_unique_passes_when_unique(self) -> None:
         """Unique spec_ids pass validation."""
         headers = ["spec_id", "subunit"]
         rows = [
             {"spec_id": "A1", "subunit": "S1"},
             {"spec_id": "A2", "subunit": "S1"},
         ]
-        _validate_spec_id_unique(headers, rows)  # no raise
+        validate_spec_id_unique(headers, rows)  # no raise
 
-    def test_validate_spec_id_unique_raises_when_duplicate(self) -> None:
+    def testvalidate_spec_id_unique_raises_when_duplicate(self) -> None:
         """Duplicate spec_ids raise ValueError."""
         headers = ["spec_id", "subunit"]
         rows = [
@@ -545,11 +545,11 @@ class MapFilterAndGroupTests(unittest.TestCase):
             {"spec_id": "A1", "subunit": "S2"},
         ]
         with self.assertRaises(ValueError) as ctx:
-            _validate_spec_id_unique(headers, rows)
+            validate_spec_id_unique(headers, rows)
         self.assertIn("Duplicate spec_id", str(ctx.exception))
         self.assertIn("A1", str(ctx.exception))
 
-    def test_validate_subunit_column_raises_when_empty(self) -> None:
+    def testvalidate_subunit_column_raises_when_empty(self) -> None:
         """Raises when any row has empty subunit."""
         headers = ["spec_id", "subunit", "title"]
         rows = [
@@ -557,18 +557,18 @@ class MapFilterAndGroupTests(unittest.TestCase):
             {"spec_id": "A2", "subunit": "", "title": "Bar"},
         ]
         with self.assertRaises(ValueError) as ctx:
-            _validate_subunit_column(headers, rows)
+            validate_subunit_column(headers, rows)
         self.assertIn("Row 2", str(ctx.exception))
         self.assertIn("empty subunit", str(ctx.exception))
 
-    def test_validate_subunit_column_passes_when_all_filled(self) -> None:
+    def testvalidate_subunit_column_passes_when_all_filled(self) -> None:
         """Passes when all rows have non-empty subunit."""
         headers = ["spec_id", "subunit", "title"]
         rows = [
             {"spec_id": "A1", "subunit": "S1", "title": "Foo"},
             {"spec_id": "A2", "subunit": "S1", "title": "Bar"},
         ]
-        _validate_subunit_column(headers, rows)  # no raise
+        validate_subunit_column(headers, rows)  # no raise
 
     def test_filter_rows_skips_mapped_when_skip_mapped_true(self) -> None:
         """Filter excludes rows with map_status=mapped when skip_mapped=True."""
@@ -578,7 +578,7 @@ class MapFilterAndGroupTests(unittest.TestCase):
             {"spec_id": "A2", "map_status": "mapped"},
             {"spec_id": "A3", "map_status": "partial"},
         ]
-        filtered = _filter_rows_for_mapping(headers, rows, skip_mapped=True)
+        filtered = filter_rows_for_mapping(headers, rows, skip_mapped=True)
         self.assertEqual(len(filtered), 2)
         self.assertEqual(filtered[0]["spec_id"], "A1")
         self.assertEqual(filtered[1]["spec_id"], "A3")
@@ -590,10 +590,10 @@ class MapFilterAndGroupTests(unittest.TestCase):
             {"spec_id": "A1", "map_status": "mapped"},
             {"spec_id": "A2", "map_status": "unmapped"},
         ]
-        filtered = _filter_rows_for_mapping(headers, rows, skip_mapped=False)
+        filtered = filter_rows_for_mapping(headers, rows, skip_mapped=False)
         self.assertEqual(len(filtered), 2)
 
-    def test_group_by_subunit_groups_correctly(self) -> None:
+    def testgroup_by_subunit_groups_correctly(self) -> None:
         """Rows are grouped by subunit value."""
         headers = ["spec_id", "subunit"]
         rows = [
@@ -601,14 +601,14 @@ class MapFilterAndGroupTests(unittest.TestCase):
             {"spec_id": "A2", "subunit": "S1"},
             {"spec_id": "A3", "subunit": "S2"},
         ]
-        groups = _group_by_subunit(headers, rows)
+        groups = group_by_subunit(headers, rows)
         self.assertEqual(len(groups), 2)
         self.assertEqual(len(groups["S1"]), 2)
         self.assertEqual(len(groups["S2"]), 1)
         self.assertEqual(groups["S1"][0]["spec_id"], "A1")
         self.assertEqual(groups["S2"][0]["spec_id"], "A3")
 
-    def test_merge_subunit_results_combines_mappings(self) -> None:
+    def testmerge_subunit_results_combines_mappings(self) -> None:
         """Merge combines mappings from multiple subunit outputs."""
         batch_outputs = [
             {
@@ -624,26 +624,26 @@ class MapFilterAndGroupTests(unittest.TestCase):
                 "created_at": "2026-02-21T12:00:00Z",
             },
         ]
-        merged = _merge_subunit_results(batch_outputs)
+        merged = merge_subunit_results(batch_outputs)
         self.assertIn("A1", merged["mappings"])
         self.assertIn("A2", merged["mappings"])
         self.assertEqual(merged["mappings"]["A1"]["status"], "mapped")
         self.assertEqual(merged["mappings"]["A2"]["status"], "unmapped")
 
-    def test_merge_subunit_results_rejects_duplicate_spec_id(self) -> None:
+    def testmerge_subunit_results_rejects_duplicate_spec_id(self) -> None:
         """Merge raises when same spec_id appears in multiple subunits."""
         batch_outputs = [
             {"mappings": {"A1": {"status": "mapped", "code_refs": [], "assumptions": ""}}, "manual_resolution_items": [], "run_summary": {}, "created_at": ""},
             {"mappings": {"A1": {"status": "unmapped", "code_refs": [], "assumptions": ""}}, "manual_resolution_items": [], "run_summary": {}, "created_at": ""},
         ]
         with self.assertRaises(ValueError) as ctx:
-            _merge_subunit_results(batch_outputs)
+            merge_subunit_results(batch_outputs)
         self.assertIn("Duplicate spec_id", str(ctx.exception))
         self.assertIn("A1", str(ctx.exception))
 
 
 class LoadOutputsFromDirectoryTests(unittest.TestCase):
-    """Tests for _load_outputs_from_directory."""
+    """Tests for load_outputs_from_directory."""
 
     def setUp(self) -> None:
         self.tmp = _TEST_DATA_DIR / "load_outputs"
@@ -663,7 +663,7 @@ class LoadOutputsFromDirectoryTests(unittest.TestCase):
             json.dumps({"mappings": {"A2": {"status": "unmapped", "code_refs": [], "assumptions": ""}}}),
             encoding="utf-8",
         )
-        outputs = _load_outputs_from_directory(self.tmp)
+        outputs = load_outputs_from_directory(self.tmp)
         self.assertEqual(len(outputs), 2)
         self.assertIn("A1", outputs[0]["mappings"])
         self.assertIn("A2", outputs[1]["mappings"])
@@ -671,43 +671,43 @@ class LoadOutputsFromDirectoryTests(unittest.TestCase):
     def test_load_outputs_empty_dir_raises(self) -> None:
         """Empty directory raises ValueError."""
         with self.assertRaises(ValueError) as ctx:
-            _load_outputs_from_directory(self.tmp)
+            load_outputs_from_directory(self.tmp)
         self.assertIn("No *.json files", str(ctx.exception))
 
     def test_load_outputs_missing_dir_raises(self) -> None:
         """Missing directory raises ValueError."""
         missing = self.tmp / "nonexistent"
         with self.assertRaises(ValueError) as ctx:
-            _load_outputs_from_directory(missing)
+            load_outputs_from_directory(missing)
         self.assertIn("does not exist", str(ctx.exception))
 
     def test_load_outputs_invalid_json_raises(self) -> None:
         """Invalid JSON in file raises ValueError."""
         (self.tmp / "bad.json").write_text("not json", encoding="utf-8")
         with self.assertRaises(ValueError) as ctx:
-            _load_outputs_from_directory(self.tmp)
+            load_outputs_from_directory(self.tmp)
         self.assertIn("Invalid or unreadable", str(ctx.exception))
 
     def test_load_outputs_missing_mappings_raises(self) -> None:
         """File without mappings raises ValueError."""
         (self.tmp / "no_mappings.json").write_text(json.dumps({"foo": "bar"}), encoding="utf-8")
         with self.assertRaises(ValueError) as ctx:
-            _load_outputs_from_directory(self.tmp)
+            load_outputs_from_directory(self.tmp)
         self.assertIn("Missing 'mappings'", str(ctx.exception))
 
 
 class SanitizeSubunitForFilenameTests(unittest.TestCase):
-    """Tests for _sanitize_subunit_for_filename."""
+    """Tests for sanitize_subunit_for_filename."""
 
     def test_sanitize_subunit_special_chars(self) -> None:
         """Special chars are replaced with underscore."""
-        self.assertEqual(_sanitize_subunit_for_filename("SRV:CM"), "SRV_CM")
-        self.assertEqual(_sanitize_subunit_for_filename("a/b\\c"), "a_b_c")
+        self.assertEqual(sanitize_subunit_for_filename("SRV:CM"), "SRV_CM")
+        self.assertEqual(sanitize_subunit_for_filename("a/b\\c"), "a_b_c")
 
     def test_sanitize_subunit_alphanumeric(self) -> None:
         """Alphanumeric and hyphen are preserved."""
-        self.assertEqual(_sanitize_subunit_for_filename("SRV-CM"), "SRV-CM")
-        self.assertEqual(_sanitize_subunit_for_filename("Subunit1"), "Subunit1")
+        self.assertEqual(sanitize_subunit_for_filename("SRV-CM"), "SRV-CM")
+        self.assertEqual(sanitize_subunit_for_filename("Subunit1"), "Subunit1")
 
 
 class RunMapApplyExistingOutputsTests(unittest.TestCase):
@@ -860,6 +860,75 @@ class RunMapPerSubunitPersistenceTests(unittest.TestCase):
         self.assertIn("A2", all_mappings)
 
 
+class RunMapManualResolutionPersistenceTests(unittest.TestCase):
+    """Tests for run-scoped manual resolution persistence in map."""
+
+    def setUp(self) -> None:
+        self.root = _TEST_DATA_DIR / "manual_resolution_block"
+        self.root.mkdir(parents=True, exist_ok=True)
+        (self.root / "PROJECT_CONTEXT.md").write_text("# Test\n", encoding="utf-8")
+        self.design_csv = self.root / "design_spec.csv"
+        self.design_csv.write_text(
+            "spec_id,subunit,title,mapped_code_symbols,index_status,assumptions,last_indexed_at\n"
+            "A1,S1,Foo,,unmapped,,\n",
+            encoding="utf-8",
+        )
+        (self.root / "out" / "backups" / "map").mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self) -> None:
+        if self.root.exists():
+            shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_blocked_run_writes_run_scoped_resolution_artifacts(self) -> None:
+        """When blocked, map writes stage JSON + resolutions.yaml under run-scoped manual_resolution/."""
+        blocked_output = {
+            "manual_resolution_items": [
+                {
+                    "item_id": "MR-MAP-1",
+                    "title": "Ambiguous symbol mapping",
+                    "question": "Which service should handle this spec?",
+                    "options": [
+                        {"option_id": "opt_a", "label": "ServiceA", "effect": "Map to ServiceA"},
+                        {"option_id": "opt_b", "label": "ServiceB", "effect": "Map to ServiceB"},
+                    ],
+                    "required": True,
+                    "blocking_reason": "Multiple candidates",
+                }
+            ],
+            "mappings": {},
+            "run_summary": {},
+            "created_at": "2026-03-06T12:00:00Z",
+        }
+        config = _map_test_config(
+            self.root,
+            design_spec_path=self.design_csv,
+            outputs={"agent_runs_dir": {"path": str(self.root / "out" / "agent_runs"), "no_overwrite": False}},
+        )
+        ctx = RuntimeContext(
+            command="map",
+            dry_run=False,
+            verbose=False,
+            command_only_validation=False,
+            run_id="run-map-block-1",
+            project_root=str(self.root),
+            config_path=str(self.root / "config.yaml"),
+            input_overrides={"design_spec_path": str(self.design_csv)},
+        )
+
+        with patch("handlers.map.invoke_agent_with_schema_retry", return_value=blocked_output):
+            result = run_map(config, ctx)
+
+        self.assertEqual(result["status"], "blocked")
+        run_dir = self.root / "out" / "agent_runs" / "map" / "run-map-block-1"
+        self.assertTrue((run_dir / "manual_resolution" / "map.json").exists())
+        self.assertTrue((run_dir / "manual_resolution" / "resolutions.yaml").exists())
+        run_meta_path = run_dir / "run_meta.json"
+        self.assertTrue(run_meta_path.exists())
+        run_meta = json.loads(run_meta_path.read_text(encoding="utf-8"))
+        self.assertEqual(run_meta.get("blocked_at_stage"), "map")
+        self.assertEqual(run_meta.get("resolution_status"), "pending")
+
+
 class CodebaseContentProviderTests(unittest.TestCase):
     """Tests for codebase_content in map template vars by provider."""
 
@@ -893,15 +962,15 @@ class CodebaseContentProviderTests(unittest.TestCase):
             config_path=str(self.root / "config.yaml"),
         )
         inputs = {"agent_view_content": "spec_id,title\nA1,Foo\n"}
-        vars_ = _build_template_vars(config, self.root, ctx, inputs)
+        vars_ = build_template_vars(config, self.root, ctx, inputs)
         self.assertIn("codebase_content", vars_)
         content = vars_["codebase_content"]
         self.assertNotEqual(content, "")
         self.assertIn("# Codebase Snapshot", content)
         self.assertIn("main.py", content)
 
-    def test_codebase_content_empty_when_provider_local(self) -> None:
-        """When provider is local, codebase_content is empty (agent has filesystem access)."""
+    def test_codebase_content_populated_when_provider_local(self) -> None:
+        """When provider is local, codebase_content is non-empty (isolated temp workspace)."""
         config = _map_test_config(self.root)
         config["agent"] = {"provider": "local"}
         ctx = RuntimeContext(
@@ -914,8 +983,12 @@ class CodebaseContentProviderTests(unittest.TestCase):
             config_path=str(self.root / "config.yaml"),
         )
         inputs = {"agent_view_content": "spec_id,title\nA1,Foo\n"}
-        vars_ = _build_template_vars(config, self.root, ctx, inputs)
-        self.assertEqual(vars_.get("codebase_content", "MISSING"), "")
+        vars_ = build_template_vars(config, self.root, ctx, inputs)
+        self.assertIn("codebase_content", vars_)
+        content = vars_["codebase_content"]
+        self.assertNotEqual(content, "")
+        self.assertIn("# Codebase Snapshot", content)
+        self.assertIn("main.py", content)
 
     def test_codebase_content_empty_when_provider_stub(self) -> None:
         """When provider is stub, codebase_content is empty."""
@@ -931,8 +1004,33 @@ class CodebaseContentProviderTests(unittest.TestCase):
             config_path=str(self.root / "config.yaml"),
         )
         inputs = {"agent_view_content": "spec_id,title\nA1,Foo\n"}
-        vars_ = _build_template_vars(config, self.root, ctx, inputs)
+        vars_ = build_template_vars(config, self.root, ctx, inputs)
         self.assertEqual(vars_.get("codebase_content", "MISSING"), "")
+
+    def test_template_vars_include_run_scoped_resolution_path_and_decisions(self) -> None:
+        """Template vars include run-scoped resolutions.yaml path and resume decisions text."""
+        config = _map_test_config(self.root)
+        config["commands"]["map"]["outputs"]["agent_runs_dir"] = {
+            "path": str(self.root / "out" / "agent_runs"),
+            "no_overwrite": False,
+        }
+        ctx = RuntimeContext(
+            command="map",
+            dry_run=False,
+            verbose=False,
+            command_only_validation=False,
+            run_id="run-template-1",
+            project_root=str(self.root),
+            config_path=str(self.root / "config.yaml"),
+            resolved_decisions="## Resolved Decisions\n\n- [MR-1] Use API",
+        )
+        inputs = {"agent_view_content": "spec_id,title\nA1,Foo\n"}
+        vars_ = build_template_vars(config, self.root, ctx, inputs)
+        manual_path = Path(vars_["manual_resolution_file"])
+        self.assertEqual(manual_path.name, "resolutions.yaml")
+        self.assertIn("run-template-1", manual_path.parts)
+        self.assertIn("manual_resolution", manual_path.parts)
+        self.assertEqual(vars_["resolved_decisions"], "## Resolved Decisions\n\n- [MR-1] Use API")
 
 
 if __name__ == "__main__":

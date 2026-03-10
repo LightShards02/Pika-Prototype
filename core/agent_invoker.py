@@ -231,6 +231,23 @@ def _get_api_config() -> dict[str, Any]:
     return get_pika_config().get("api", {})
 
 
+def _extract_api_usage(usage_obj: Any) -> dict[str, int] | None:
+    """Extract input_tokens and output_tokens from API usage object.
+
+    Handles prompt_tokens/completion_tokens (OpenAI) and input_tokens/output_tokens.
+    """
+    if not isinstance(usage_obj, dict):
+        return None
+    inp = usage_obj.get("input_tokens") or usage_obj.get("prompt_tokens")
+    out = usage_obj.get("output_tokens") or usage_obj.get("completion_tokens")
+    if inp is not None and out is not None:
+        return {
+            "input_tokens": int(inp),
+            "output_tokens": int(out),
+        }
+    return None
+
+
 def _api_params_for_command(command: str | None) -> dict[str, Any]:
     """Return generation params tuned for the given command.
 
@@ -266,7 +283,7 @@ def run_api_invoke(
     stream: bool = False,
     stream_output: bool = False,
     output_path: Path | None = None,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], dict[str, int] | None]:
     """Invoke Kimi K2.5 via NVIDIA API and return parsed JSON output.
 
     Sends system and user prompts as chat messages. Uses chat_template_kwargs
@@ -289,7 +306,8 @@ def run_api_invoke(
         output_path: Optional path to write raw response for debugging.
 
     Returns:
-        Parsed JSON object extracted from model response.
+        Tuple of (parsed JSON object, usage dict or None). Usage has input_tokens and
+        output_tokens when present in the API response (prompt_tokens/completion_tokens).
 
     Raises:
         RuntimeError: If requests is not installed or API call fails.
@@ -338,6 +356,7 @@ def run_api_invoke(
             f"API request failed ({response.status_code}): {response.text[:500]}"
         )
 
+    usage: dict[str, int] | None = None
     if stream:
         content_parts: list[str] = []
         for line in response.iter_lines():
@@ -361,6 +380,7 @@ def run_api_invoke(
                             part = delta.get("content") or delta.get("text", "")
                             if part:
                                 content_parts.append(part)
+                        usage = _extract_api_usage(chunk.get("usage")) or usage
                     except json.JSONDecodeError:
                         pass
         raw_content = "".join(content_parts)
@@ -371,13 +391,14 @@ def run_api_invoke(
             raise ValueError("API returned no choices")
         msg = choices[0].get("message", {})
         raw_content = msg.get("content") or msg.get("text", "") or ""
+        usage = _extract_api_usage(data.get("usage"))
 
     if output_path:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(raw_content, encoding="utf-8")
 
-    return extract_json_from_text(raw_content)
+    return extract_json_from_text(raw_content), usage
 
 
 def _stream_output(
@@ -385,15 +406,20 @@ def _stream_output(
     dest: Any,
     prefix: str = "",
     capture: list[str] | None = None,
+    stream_to_dest: bool = True,
 ) -> None:
-    """Read lines from pipe and write to dest. Used for streaming subprocess output."""
+    """Read lines from pipe and optionally write to dest. Used for streaming subprocess output.
+
+    When stream_to_dest is False or dest is None, only captures to the list (no terminal output).
+    """
     try:
         for line in iter(pipe.readline, ""):
             if line:
                 if capture is not None:
                     capture.append(prefix + line)
-                dest.write(prefix + line)
-                dest.flush()
+                if stream_to_dest and dest is not None:
+                    dest.write(prefix + line)
+                    dest.flush()
     except (ValueError, OSError):
         pass
     finally:
@@ -401,6 +427,30 @@ def _stream_output(
             pipe.close()
         except OSError:
             pass
+
+
+def _parse_codex_token_usage(jsonl_stdout: str) -> dict[str, int] | None:
+    """Parse Codex --json stdout for turn.completed usage.
+
+    Returns the last turn's usage dict (input_tokens, cached_input_tokens, output_tokens)
+    or None if no turn.completed event found.
+    """
+    usage: dict[str, int] | None = None
+    for line in jsonl_stdout.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+            if obj.get("type") == "turn.completed" and isinstance(obj.get("usage"), dict):
+                usage = {
+                    "input_tokens": int(obj["usage"].get("input_tokens", 0)),
+                    "cached_input_tokens": int(obj["usage"].get("cached_input_tokens", 0)),
+                    "output_tokens": int(obj["usage"].get("output_tokens", 0)),
+                }
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+    return usage
 
 
 def _heartbeat_thread(proc: subprocess.Popen[Any], stop: threading.Event) -> None:
@@ -440,10 +490,10 @@ def run_local_exec(
     timeout: int | None = 300,
     stream_output: bool = True,
     reasoning_effort: str | None = None,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], dict[str, int] | None]:
     """Run local CLI (e.g. Codex exec) non-interactively and return parsed JSON output.
 
-    Uses `codex exec` with --output-schema and --output-last-message.
+    Uses `codex exec` with --json (for token usage), --output-schema and --output-last-message.
     The schema passed to Codex is a compatibility-normalized copy; the original
     schema remains authoritative for internal jsonschema validation/retries.
     If Codex rejects the provided schema as invalid_json_schema, retries once
@@ -465,7 +515,8 @@ def run_local_exec(
         reasoning_effort: Codex model_reasoning_effort (low, medium, high, xhigh). Passed as --config.
 
     Returns:
-        Parsed JSON from Codex output.
+        Tuple of (parsed JSON from Codex output, token_usage or None).
+        token_usage has input_tokens, cached_input_tokens, output_tokens when available.
 
     Raises:
         FileNotFoundError: If codex command not found.
@@ -483,6 +534,7 @@ def run_local_exec(
 
     exec_args_base = [
         "exec",
+        "--json",
         "--cd", workspace_str,
         "--dangerously-bypass-approvals-and-sandbox",
         "--skip-git-repo-check",
@@ -513,9 +565,11 @@ def run_local_exec(
             cwd=workspace_str,
         )
         stop_heartbeat = threading.Event()
+        # With --json, stdout is JSONL; capture only (no terminal dump). Stderr streams progress.
         t_stdout = threading.Thread(
             target=_stream_output,
-            args=(proc.stdout, sys.stdout, "", stdout_lines),
+            args=(proc.stdout, None, "", stdout_lines),
+            kwargs={"stream_to_dest": False},
             daemon=True,
         )
         t_stderr = threading.Thread(
@@ -591,12 +645,16 @@ def run_local_exec(
             stderr=stderr_captured or "See terminal output above",
         )
 
+    # Parse token usage from Codex --json stdout (JSONL stream)
+    stdout_text = "".join(stdout_lines) if stream_output else (proc.stdout or "")
+    token_usage = _parse_codex_token_usage(stdout_text)
+
     if not output_path.exists():
         if not stream_output and hasattr(proc, "stdout") and proc.stdout:
             raw = proc.stdout.strip()
             if raw:
-                return extract_json_from_text(raw)
+                return extract_json_from_text(raw), token_usage
         raise ValueError("Codex produced no output and did not write output file")
 
     raw = output_path.read_text(encoding="utf-8")
-    return extract_json_from_text(raw)
+    return extract_json_from_text(raw), token_usage

@@ -34,6 +34,9 @@ prompts:
       - name: agent_artifacts_dir
         required: true
         description: Directory where the agent must write large artifacts (e.g. design spec draft CSV). Paths in output schema reference files written here.
+      - name: control_vocab_section
+        required: false
+        description: Per-project controlled vocabulary (categorized terms + definitions). Injected by lifecycle when project.control_vocab_path is configured.
     system: |
       You are a strict project design agent.
       You MUST follow the output schema exactly. Your output JSON must validate against {{output_schema_file}} without exception.
@@ -51,6 +54,7 @@ prompts:
 
       Project Context:
       {{project_context}}
+      {{control_vocab_section}}
 
       Design Spec Column Definitions (SADS):
       {{design_spec_column_definitions}}
@@ -95,6 +99,9 @@ prompts:
       - name: run_summary_file
         required: true
         description: Central JSONL file path for run summaries.
+      - name: control_vocab_section
+        required: false
+        description: Per-project controlled vocabulary (categorized terms + definitions). Injected by lifecycle when project.control_vocab_path is configured.
     system: |
       You are a strict software indexing agent.
       You MUST follow the output schema exactly. Your output JSON must validate against {{output_schema_file}} without exception.
@@ -115,6 +122,7 @@ prompts:
     user: |
       Context:
       {{project_context}}
+      {{control_vocab_section}}
       {{extra_prompt_section}}
 
       Design Specs (CSV):
@@ -135,8 +143,114 @@ prompts:
       Run Summary File:
       {{run_summary_file}}
 
+  implement_unified_planner:
+    description: Produce per-module file plans, cross-module spec dependencies, and shared contract declarations from the full design spec in a single pass.
+    output_schema_file: schemas/agent_outputs/implement_unified_planner_output.schema.json
+    template_variables:
+      - name: output_schema_file
+        required: true
+        description: Schema path the output must satisfy.
+      - name: project_context
+        required: true
+        description: Project context markdown text.
+      - name: design_spec_csv
+        required: true
+        description: Full design spec as CSV text (all selected specs across all modules).
+      - name: module_catalog_json
+        required: true
+        description: Deterministic module catalog with module_tag, module_role, root_dirs.
+      - name: type_placement_path
+        required: true
+        description: Shared path prefix for cross-module type/contract files.
+      - name: manual_resolution_file
+        required: true
+        description: Storage path for manual resolution artifacts.
+      - name: run_summary_file
+        required: true
+        description: Storage path for run summary artifacts.
+      - name: allowed_paths_json
+        required: true
+        description: Deterministic allowed path contract (module root prefixes, shared contract prefix, forbidden prefixes).
+      - name: directory_tree_snapshot
+        required: true
+        description: Current codebase directory tree snapshot.
+      - name: forbidden_path_patterns_json
+        required: true
+        description: Forbidden path prefixes for planner output paths.
+      - name: semantic_retry_context
+        required: false
+        description: Semantic validation feedback from previous failed attempt.
+      - name: control_vocab_section
+        required: false
+        description: Per-project controlled vocabulary (categorized terms + definitions). Injected by lifecycle when project.control_vocab_path is configured.
+    system: |
+      You are a strict unified implementation planner.
+      Output must validate against {{output_schema_file}} exactly.
+      Return JSON only. Do not include markdown fences.
+      If a blocking ambiguity exists, return only manual_resolution_items.
+
+      You receive the FULL design spec and module catalog. Your job is to produce three things:
+
+      1. **module_plans** — For each module, plan the files and symbols that will be created
+         or modified. Each planned_anchor has anchor_kind, anchor_materialization_kind,
+         planned_file_path, and the spec_ids it implements. Use exactly one
+         anchor_materialization_kind enum value per anchor: schema | interface | runtime_logic | wiring | test.
+
+      2. **spec_dependencies** — Cross-module spec-to-spec dependencies. For each consumer
+         spec that depends on functionality from another module's spec, emit one entry with
+         consumer_spec_id and provider_spec_ids. Read the requirement text carefully — it
+         encodes which specs depend on which. Only include cross-module dependencies (where
+         consumer and provider have different module_tag values). Include a rationale.
+
+      3. **shared_contracts** — Canonical DTOs, interfaces, or type definitions shared across
+         modules. Each shared_contract has a contract_id, owning_module (typically SHARED),
+         planned_file_path under {{type_placement_path}}, consumed_by_specs, and optional
+         field definitions. If the design spec has explicit shared contract specs, use them.
+
+      Rules:
+      - Every spec_id in the design spec must appear in at least one planned_anchor's spec_ids.
+      - spec_dependencies must form a DAG (no cycles).
+      - Do not invent abstract capabilities or intents — work directly from spec requirements.
+      - Intra-module dependencies (within the same module) go in module_plans[].intra_module_dependencies.
+      - Cross-module dependencies go in spec_dependencies.
+      - shared_contracts should cover DTOs and types referenced by multiple modules.
+      - planned_file_path for module_plans must stay under module_root_prefixes_by_tag in allowed_paths_json.
+      - shared_contracts[].planned_file_path must stay under shared_contract_prefix in allowed_paths_json.
+      - Do not emit planned_file_path under forbidden_path_patterns_json.
+    user: |
+      Project Context:
+      {{project_context}}
+      {{control_vocab_section}}
+
+      Design Spec (CSV):
+      {{design_spec_csv}}
+
+      Module Catalog:
+      {{module_catalog_json}}
+
+      Type Placement Path (shared contracts go here):
+      {{type_placement_path}}
+
+      Allowed Paths Contract (JSON):
+      {{allowed_paths_json}}
+
+      Forbidden Path Prefixes (JSON):
+      {{forbidden_path_patterns_json}}
+
+      Directory Tree Snapshot:
+      {{directory_tree_snapshot}}
+
+      Semantic Retry Context:
+      {{semantic_retry_context}}
+
+      Manual Resolution File:
+      {{manual_resolution_file}}
+
+      Run Summary File:
+      {{run_summary_file}}
+
   implement_anchor_planner:
-    description: Produce module-local planned anchors and intents for implement planning.
+    description: "[DEPRECATED - replaced by implement_unified_planner] Produce module-local planned anchors and intents for implement planning."
     output_schema_file: schemas/agent_outputs/implement_anchor_planner_output.schema.json
     template_variables:
       - name: output_schema_file
@@ -148,12 +262,24 @@ prompts:
       - name: module_packet_json
         required: true
         description: Module-local packet containing module info and its selected spec rows.
+      - name: contract_kind_definitions_json
+        required: true
+        description: Canonical definitions for each contract kind. Use these semantics strictly.
+      - name: leaf_dependency_roles_json
+        required: true
+        description: Module roles treated as leaf dependencies in this project.
+      - name: leaf_dependency_policy_json
+        required: true
+        description: Deterministic policy for leaf dependency role handling.
       - name: manual_resolution_file
         required: true
         description: Storage path for manual resolution artifacts.
       - name: run_summary_file
         required: true
         description: Storage path for run summary artifacts.
+      - name: control_vocab_section
+        required: false
+        description: Per-project controlled vocabulary (categorized terms + definitions). Injected by lifecycle when project.control_vocab_path is configured.
     system: |
       You are a strict module anchor planner for implement workflow.
       Output must validate against {{output_schema_file}} exactly.
@@ -162,12 +288,28 @@ prompts:
       Do not assume cross-module knowledge; plan only from module-local packet.
       For every planned_anchors item, set anchor_materialization_kind using exactly one enum value:
       schema | interface | runtime_logic | wiring | test.
+      Use contract_kind_definitions_json to assign intent kinds.
+      If module role is in leaf_dependency_roles_json and leaf_dependency_policy_json.mode is auto_drop,
+      keep required_intents empty and place external/platform dependencies in declared_external_dependencies.
+      Kind semantics are strict:
+      - api_endpoint: internal project API boundary
+      - external_api: third-party/out-of-project boundary only
     user: |
       Project Context:
       {{project_context}}
+      {{control_vocab_section}}
 
       Module Packet:
       {{module_packet_json}}
+
+      Contract Kind Definitions:
+      {{contract_kind_definitions_json}}
+
+      Leaf Dependency Roles:
+      {{leaf_dependency_roles_json}}
+
+      Leaf Dependency Policy:
+      {{leaf_dependency_policy_json}}
 
       Manual Resolution File:
       {{manual_resolution_file}}
@@ -179,7 +321,7 @@ prompts:
       Use one and only one anchor_materialization_kind enum for every planned_anchors item.
 
   implement_anchor_linker:
-    description: Produce global contracts and bindings from per-module anchor plans.
+    description: "[DEPRECATED - replaced by implement_unified_planner] Produce global contracts and bindings from per-module anchor plans."
     output_schema_file: schemas/agent_outputs/implement_anchor_linker_output.schema.json
     template_variables:
       - name: output_schema_file
@@ -200,6 +342,12 @@ prompts:
       - name: disallowed_link_kinds_by_required_role_json
         required: true
         description: Role-based contract kinds that must not appear on required bindings.
+      - name: contract_kind_definitions_json
+        required: true
+        description: Canonical definitions for each contract kind. Use these semantics strictly.
+      - name: normalized_intent_catalog_json
+        required: true
+        description: Deterministic required->provided candidate rankings and adapter hints.
       - name: manual_resolution_file
         required: true
         description: Storage path for manual resolution artifacts.
@@ -216,6 +364,10 @@ prompts:
       Emit contracts + bindings as the canonical link plan.
       If blocking ambiguity exists, return only manual_resolution_items.
       Never emit bindings that violate disallowed_link_kinds_by_required_role_json.
+      Use contract_kind_definitions_json as authoritative kind semantics.
+      Treat external_api as out-of-project only; do not use it for internal module providers.
+      Prefer normalized_intent_catalog_json top-ranked candidates when they do not violate policy.
+      When a top-ranked candidate indicates adapter_needed, emit adapter_needed=true with adapter_plan.
       For every required intent in anchor_plans_json, you must:
       1) add at least one valid binding, or
       2) include a manual_resolution_item explaining no valid link exists.
@@ -228,6 +380,7 @@ prompts:
     user: |
       Project Context:
       {{project_context}}
+      {{control_vocab_section}}
 
       Module Catalog:
       {{module_catalog_json}}
@@ -240,6 +393,12 @@ prompts:
 
       Disallowed Linking Rules (by required module role):
       {{disallowed_link_kinds_by_required_role_json}}
+
+      Contract Kind Definitions:
+      {{contract_kind_definitions_json}}
+
+      Normalized Intent Catalog:
+      {{normalized_intent_catalog_json}}
 
       Manual Resolution File:
       {{manual_resolution_file}}
@@ -275,9 +434,24 @@ prompts:
       - name: codebase_content
         required: false
         description: AST/code snapshot when provider cannot access filesystem directly.
+      - name: runtime_file_facts_json
+        required: true
+        description: Deterministic current file-state facts for batch-relevant paths (exists/is_file/sha256).
       - name: batch_brief_json
         required: true
         description: Deterministic batch brief with constraints and relevant contracts/bindings.
+      - name: allowed_paths_json
+        required: true
+        description: Deterministic allowed path contract for touched files and mapped file references.
+      - name: directory_tree_snapshot
+        required: true
+        description: Current codebase directory tree snapshot.
+      - name: forbidden_path_patterns_json
+        required: true
+        description: Forbidden path prefixes for touched files and mappings.
+      - name: semantic_retry_context
+        required: false
+        description: Semantic validation feedback from previous failed attempt.
       - name: manual_resolution_file
         required: true
         description: Storage path for manual resolution artifacts.
@@ -287,12 +461,55 @@ prompts:
       - name: agent_artifacts_dir
         required: true
         description: Directory to write unified diff files.
+      - name: control_vocab_section
+        required: false
+        description: Per-project controlled vocabulary (categorized terms + definitions). Injected by lifecycle when project.control_vocab_path is configured.
     system: |
       You are a strict implementer for one deterministic batch.
       Output must validate against {{output_schema_file}} exactly.
       Return JSON only.
       Write each unified diff to a file in {{agent_artifacts_dir}} and return diff_path.
       Do not embed raw diff text inline.
+      Grounding rule (mandatory):
+      - Before writing each diff, read the CURRENT target file content from filesystem and build hunks against exact current lines.
+      - Never reuse stale hunk context from prior attempts.
+      - If semantic_retry_context reports patch-apply failures, regenerate ALL failing diffs from current files.
+      Preferred hybrid output mode:
+      - Emit top-level diff_plan[] as the canonical patch plan for this batch.
+      - In each spec result, emit diff_refs[] pointing to diff_plan[].diff_id.
+      - If multiple specs share one file change, emit ONE diff_plan item for that file and reference it from all related specs.
+      - Set owner_spec_id to one canonical owner; include all affected specs in related_spec_ids.
+      Required output mode:
+      - Do NOT emit spec-local diffs[].
+      - Every spec result must use diff_refs[] only.
+      For paths listed in runtime_file_facts_json:
+      - if exists=true, do NOT emit "new file mode" for that path; emit a modify patch.
+      - if exists=false, create-file patch mode is allowed.
+      Path rules:
+      - touched_files must stay under allowed_paths_json.allowed_prefixes (or exact path entries).
+      - touched_files and patch file headers must be codebase-relative paths (example: CORE/tests/test_domain_logic.py), not workspace-prefixed paths (forbidden examples: src/CORE/..., dataset/nutrition/src/CORE/...).
+      - mapped_classes_functions[].file_path and mapped_test_cases[].test_file must be touched in this batch or already exist.
+      - Do not emit paths under forbidden_path_patterns_json.
+      Unified diff format rules (mandatory):
+      - Every patch must include file headers (`--- ...`, `+++ ...`) and valid hunk headers (`@@ -a,b +c,d @@`).
+      - Bare `@@` is invalid.
+      - Hunk line counts must match actual lines in the hunk body.
+      Short examples:
+      - VALID modify diff:
+        --- a/CORE/domain/password_policy.py
+        +++ b/CORE/domain/password_policy.py
+        @@ -10,2 +10,3 @@
+         def verify_password(...):
+        -    return {"verification_result": "failed"}
+        +    reason = "password_mismatch"
+        +    return {"verification_result": "failed", "failure_reason": reason}
+      - INVALID (bad hunk header):
+        --- a/CORE/tests/test_domain_logic.py
+        +++ b/CORE/tests/test_domain_logic.py
+        @@
+        +def test_new_case(): ...
+      - INVALID (wrong path scope):
+        touched_files: ["dataset/nutrition/src/CORE/tests/test_domain_logic.py"]
       If blocked by ambiguity, return only manual_resolution_items.
     user: |
       Project Context:
@@ -315,6 +532,21 @@ prompts:
 
       Codebase Content:
       {{codebase_content}}
+
+      Runtime File Facts (JSON):
+      {{runtime_file_facts_json}}
+
+      Allowed Paths Contract (JSON):
+      {{allowed_paths_json}}
+
+      Forbidden Path Prefixes (JSON):
+      {{forbidden_path_patterns_json}}
+
+      Directory Tree Snapshot:
+      {{directory_tree_snapshot}}
+
+      Semantic Retry Context:
+      {{semantic_retry_context}}
 
       Manual Resolution File:
       {{manual_resolution_file}}
@@ -350,6 +582,9 @@ prompts:
       - name: run_summary_file
         required: true
         description: Central JSONL file path for run summaries.
+      - name: control_vocab_section
+        required: false
+        description: Per-project controlled vocabulary (categorized terms + definitions). Injected by lifecycle when project.control_vocab_path is configured.
     system: |
       You are a strict issue mapping agent.
       You MUST follow the output schema exactly. Your output JSON must validate against {{output_schema_file}} without exception.
@@ -357,6 +592,8 @@ prompts:
       Mapping output must be suitable for the mapped_spec_ids CSV column.
       Interpret CSV columns using provided column definitions.
     user: |
+      {{control_vocab_section}}
+
       Issues (CSV):
       {{issue_rows_csv}}
 
@@ -403,6 +640,9 @@ prompts:
       - name: agent_artifacts_dir
         required: true
         description: Directory where the agent must write diff files. Each diff goes in a separate file; output schema expects diff_path.
+      - name: control_vocab_section
+        required: false
+        description: Per-project controlled vocabulary (categorized terms + definitions). Injected by lifecycle when project.control_vocab_path is configured.
     system: |
       You are a strict issue resolution agent.
       You MUST follow the output schema exactly. Your output JSON must validate against {{output_schema_file}} without exception.
@@ -413,6 +653,8 @@ prompts:
       If there are no uncertainties, explicitly say "No follow_up_uncertainties".
       Interpret issue tracking CSV strictly via issue_tracking_column_definitions.
     user: |
+      {{control_vocab_section}}
+
       Selected Issues (CSV):
       {{selected_issues_csv}}
 

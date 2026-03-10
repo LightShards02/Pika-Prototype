@@ -18,8 +18,11 @@ import io
 import json
 import logging
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
+import time
 from core.time_utils import format_timestamp_local_minutes
 from pathlib import Path
 from typing import Any, Callable
@@ -29,8 +32,30 @@ from core.context import RuntimeContext
 from core.errors import SafetyPreconditionError
 from core.pika_paths import resolve_schema_path
 from core.prompt_registry import PromptRegistry
+from core.vocab_loader import resolve_control_vocab_content
 
 RUN_LOGGER_NAME = "agent_cli.run"
+_LOCAL_AGENT_TEMP_PREFIX = "pika-local-agent-"
+
+
+def _emit_agent_conclusion(
+    prompt_name: str,
+    elapsed_sec: float,
+    token_usage: dict[str, int] | None = None,
+) -> None:
+    """Emit agent call conclusion to stderr: elapsed time and token usage when available."""
+    try:
+        elapsed_str = f"{elapsed_sec:.1f}s"
+        if token_usage:
+            inp = token_usage.get("input_tokens", 0) + token_usage.get("cached_input_tokens", 0)
+            out = token_usage.get("output_tokens", 0)
+            msg = f"[PIKA] Agent complete ({prompt_name}): {elapsed_str}, in={inp}, out={out}\n"
+        else:
+            msg = f"[PIKA] Agent complete ({prompt_name}): {elapsed_str}\n"
+        sys.stderr.write(msg)
+        sys.stderr.flush()
+    except OSError:
+        pass
 
 
 def _get_effective_inputs(config: dict[str, Any], command: str | None) -> dict[str, Any]:
@@ -340,16 +365,26 @@ def resolve_codebase_dir_path(
 ) -> Path:
     """Resolve codebase directory path. Defaults to project_root when not provided.
 
-    Uses --codebase-dir or commands.<cmd>.inputs.codebase_dir if set and the path exists;
-    otherwise returns project_root.
+    Uses --codebase-dir or commands.<cmd>.inputs.codebase_dir if set.
+    When the configured path is "." returns project_root.
+    When path does not exist, it is created relative to project_root and returned.
+    If configured path exists but is not a directory, falls back to project_root.
     """
     codebase_path = resolve_input_path(
         config, project_root, "codebase_dir",
         overrides=ctx.input_overrides, command=ctx.command,
     )
-    if codebase_path is not None and codebase_path.exists():
-        return codebase_path.resolve()
-    return project_root.resolve()
+    if codebase_path is None:
+        return project_root.resolve()
+
+    resolved = codebase_path.resolve()
+    if resolved == project_root.resolve():
+        return project_root.resolve()
+    if not resolved.exists():
+        resolved.mkdir(parents=True, exist_ok=True)
+    if not resolved.is_dir():
+        return project_root.resolve()
+    return resolved
 
 
 def resolve_project_context_path(
@@ -500,6 +535,84 @@ def resolve_manual_resolution_path_for_command(
     """Resolve manual_resolution path: out/agent_runs/{command}/manual_resolution.csv."""
     base = _agent_runs_base(config, project_root, command=command_name)
     return (base / command_name / "manual_resolution.csv").resolve()
+
+
+def resolve_resolution_template_path_for_run(
+    config: dict[str, Any],
+    project_root: Path,
+    command_name: str,
+    run_id: str,
+) -> Path:
+    """Resolve run-scoped manual resolution template path.
+
+    Returns: out/agent_runs/{command}/{run_id}/manual_resolution/resolutions.yaml
+    """
+    run_dir = resolve_agent_runs_dir_for_command(
+        config, project_root, command_name, run_id
+    )
+    return (run_dir / "manual_resolution" / "resolutions.yaml").resolve()
+
+
+def persist_manual_resolution_block_for_run(
+    config: dict[str, Any],
+    project_root: Path,
+    command_name: str,
+    run_id: str,
+    stage: str,
+    items: list[dict[str, Any]],
+    *,
+    source: str = "agent",
+    completed_stages: list[str] | None = None,
+    spec_rows: list[dict[str, Any]] | None = None,
+    headers: list[str] | None = None,
+    shared_contracts: list[dict[str, Any]] | None = None,
+) -> Path:
+    """Persist blocking manual-resolution artifacts for a run.
+
+    Writes:
+    - run-scoped stage JSON: manual_resolution/{stage}.json
+    - run-scoped template: manual_resolution/resolutions.yaml
+    - run_meta updates: blocked_at_stage, completed_stages, resolution_status
+    """
+    from core.resolution import generate_resolution_template
+
+    run_dir = resolve_agent_runs_dir_for_command(config, project_root, command_name, run_id)
+    manual_dir = run_dir / "manual_resolution"
+    manual_dir.mkdir(parents=True, exist_ok=True)
+
+    stage_payload = {"stage": stage, "items": items}
+    (manual_dir / f"{stage}.json").write_text(
+        json.dumps(stage_payload, indent=2),
+        encoding="utf-8",
+    )
+
+    template_path = generate_resolution_template(
+        run_dir=run_dir,
+        stage=stage,
+        items=items,
+        command=command_name,
+        run_id=run_id,
+        source=source,
+        spec_rows=spec_rows,
+        headers=headers,
+        shared_contracts=shared_contracts,
+    )
+
+    run_meta_path = run_dir / "run_meta.json"
+    run_meta: dict[str, Any] = {}
+    if run_meta_path.exists():
+        try:
+            run_meta = json.loads(run_meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            run_meta = {}
+    run_meta["command"] = command_name
+    run_meta["run_id"] = run_id
+    run_meta["blocked_at_stage"] = stage
+    run_meta["completed_stages"] = completed_stages or []
+    run_meta["resolution_status"] = "pending"
+    run_meta_path.write_text(json.dumps(run_meta, indent=2), encoding="utf-8")
+
+    return template_path
 
 
 def resolve_intermediate_map_dir(
@@ -679,6 +792,28 @@ def get_local_command(config: dict[str, Any]) -> str:
     return get_pika_config().get("local", {}).get("command", "codex")
 
 
+def get_local_exec_timeout_sec(config: dict[str, Any]) -> int:
+    """Return local CLI timeout in seconds.
+
+    Resolution order:
+    1) workspace config `agent.local_exec_timeout_sec` (positive number),
+    2) pika default `local.exec_timeout_sec`,
+    3) hard default `600`.
+    """
+    from core.pika_config import get_pika_config
+
+    agent = config.get("agent")
+    if isinstance(agent, dict):
+        override = agent.get("local_exec_timeout_sec")
+        if isinstance(override, (int, float)) and override > 0:
+            return int(override)
+
+    default_timeout = get_pika_config().get("local", {}).get("exec_timeout_sec", 600)
+    if isinstance(default_timeout, (int, float)) and default_timeout > 0:
+        return int(default_timeout)
+    return 600
+
+
 def get_reasoning_effort(config: dict[str, Any], prompt_name: str) -> str:
     """Return Codex model_reasoning_effort for the given prompt.
 
@@ -747,6 +882,165 @@ def get_api_config(config: dict[str, Any]) -> dict[str, Any]:
     return {"api_key": str(key).strip(), "url": str(url), "model": str(model)}
 
 
+def _safe_workspace_token(value: str, fallback: str) -> str:
+    """Return filesystem-safe token for temp workspace names."""
+    token = re.sub(r"[^A-Za-z0-9_.-]+", "_", value or "").strip("_.-")
+    return token[:48] if token else fallback
+
+
+def _resolve_local_agent_temp_base_dir(config: dict[str, Any], project_root: Path) -> Path:
+    """Resolve base directory for local agent isolated temp workspaces."""
+    from core.pika_config import get_pika_config
+
+    pika_local = get_pika_config().get("local", {})
+    agent = config.get("agent")
+    configured = None
+    if isinstance(agent, dict):
+        configured = agent.get("local_temp_workspace_dir")
+    if not isinstance(configured, str) or not configured.strip():
+        configured = pika_local.get("temp_workspace_base_dir")
+    if isinstance(configured, str) and configured.strip():
+        candidate = Path(configured.strip())
+        if not candidate.is_absolute():
+            candidate = (project_root / candidate).resolve()
+        return candidate
+    return Path(tempfile.gettempdir()).resolve()
+
+
+def _resolve_local_agent_temp_ttl_sec(config: dict[str, Any]) -> int:
+    """Resolve stale isolated workspace TTL in seconds."""
+    from core.pika_config import get_pika_config
+
+    pika_local = get_pika_config().get("local", {})
+    default_ttl = pika_local.get("temp_workspace_ttl_sec", 86_400)
+    agent = config.get("agent")
+    configured = None
+    if isinstance(agent, dict):
+        configured = agent.get("local_temp_workspace_ttl_sec")
+    value = configured if configured is not None else default_ttl
+    try:
+        ttl = int(value)
+    except (TypeError, ValueError):
+        return 86_400
+    return max(0, ttl)
+
+
+def _resolve_local_agent_temp_prefix(config: dict[str, Any]) -> str:
+    """Resolve isolated workspace directory name prefix."""
+    from core.pika_config import get_pika_config
+
+    pika_local = get_pika_config().get("local", {})
+    configured = pika_local.get("temp_workspace_prefix")
+    if isinstance(configured, str) and configured.strip():
+        return configured.strip()
+    return _LOCAL_AGENT_TEMP_PREFIX
+
+
+def _cleanup_stale_local_agent_workspaces(base_dir: Path, prefix: str, ttl_sec: int) -> None:
+    """Best-effort cleanup for stale isolated local workspaces."""
+    if ttl_sec <= 0:
+        return
+    now = time.time()
+    try:
+        children = list(base_dir.glob(f"{prefix}*"))
+    except OSError:
+        return
+    for child in children:
+        try:
+            if not child.is_dir():
+                continue
+            age_sec = now - child.stat().st_mtime
+            if age_sec >= ttl_sec:
+                shutil.rmtree(child, ignore_errors=True)
+        except OSError:
+            continue
+
+
+def _create_local_agent_temp_workspace(
+    config: dict[str, Any],
+    project_root: Path,
+    *,
+    command: str,
+    run_id: str,
+    prompt_name: str,
+) -> Path:
+    """Create isolated temp workspace for a local agent invocation."""
+    base_dir = _resolve_local_agent_temp_base_dir(config, project_root)
+    base_dir.mkdir(parents=True, exist_ok=True)
+    prefix = _resolve_local_agent_temp_prefix(config)
+    ttl_sec = _resolve_local_agent_temp_ttl_sec(config)
+    _cleanup_stale_local_agent_workspaces(base_dir, prefix, ttl_sec)
+
+    safe_command = _safe_workspace_token(command, "cmd")
+    safe_run = _safe_workspace_token(run_id, "run")
+    safe_prompt = _safe_workspace_token(prompt_name, "prompt")
+    temp_name_prefix = f"{prefix}{safe_command}_{safe_run}_{safe_prompt}_"
+    return Path(tempfile.mkdtemp(prefix=temp_name_prefix, dir=str(base_dir)))
+
+
+def _cleanup_local_agent_temp_workspace(path: Path | None) -> None:
+    """Best-effort immediate cleanup for isolated temp workspace."""
+    if path is None:
+        return
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def create_local_agent_shared_workspace(
+    config: dict[str, Any],
+    project_root: Path,
+    *,
+    command: str,
+    run_id: str,
+) -> Path:
+    """Create a run-scoped shared temp workspace for local agent invocations."""
+    return _create_local_agent_temp_workspace(
+        config,
+        project_root,
+        command=command,
+        run_id=run_id,
+        prompt_name="shared",
+    )
+
+
+def cleanup_local_agent_temp_workspace(path: Path | None) -> None:
+    """Public cleanup wrapper for shared/local agent temp workspaces."""
+    _cleanup_local_agent_temp_workspace(path)
+
+
+def _is_path_within(path: Path, ancestor: Path) -> bool:
+    """Return True when path is equal to or contained by ancestor."""
+    try:
+        path.resolve().relative_to(ancestor.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def sync_local_agent_workspace(source_dir: Path, workspace_dir: Path) -> None:
+    """Replace workspace contents with a deterministic mirror of source_dir."""
+    source = source_dir.resolve()
+    workspace = workspace_dir.resolve()
+    if not source.exists() or not source.is_dir():
+        raise ValueError(f"Local workspace sync source must be an existing directory: {source}")
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    for child in workspace.iterdir():
+        if child.is_dir():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            child.unlink(missing_ok=True)
+
+    for child in source.iterdir():
+        child_resolved = child.resolve()
+        if child_resolved == workspace or _is_path_within(workspace, child_resolved):
+            continue
+        destination = workspace / child.name
+        if child.is_dir():
+            shutil.copytree(child, destination, symlinks=True)
+        else:
+            shutil.copy2(child, destination)
+
+
 def invoke_agent_local(
     prompt_name: str,
     template_vars: dict[str, Any],
@@ -754,9 +1048,10 @@ def invoke_agent_local(
     schema_path: Path | None,
     config: dict[str, Any],
     ctx: RuntimeContext,
+    local_workspace_override: Path | None = None,
     retry_instruction: str | None = None,
 ) -> dict[str, Any]:
-    """Invoke agent via local CLI (e.g. Codex). Renders prompt, runs exec, returns parsed JSON."""
+    """Invoke agent via local CLI (e.g. Codex) in an isolated temp workspace."""
     project_root = Path(ctx.project_root)
     registry = load_prompt_registry(config)
     spec = registry.get(prompt_name)
@@ -773,7 +1068,21 @@ def invoke_agent_local(
     run_dir = resolve_agent_artifacts_dir_for_command(
         config, project_root, ctx.command, run_id
     )
+    run_dir.mkdir(parents=True, exist_ok=True)
     output_path = run_dir / "local_output.json"
+    managed_workspace = local_workspace_override is None
+    if local_workspace_override is not None:
+        isolated_workspace = local_workspace_override.resolve()
+        isolated_workspace.mkdir(parents=True, exist_ok=True)
+    else:
+        isolated_workspace = _create_local_agent_temp_workspace(
+            config,
+            project_root,
+            command=ctx.command,
+            run_id=run_id,
+            prompt_name=prompt_name,
+        )
+    isolated_output_path = isolated_workspace / "local_output.json"
 
     if schema_path and schema_path.exists():
         schema_path_resolved = (
@@ -792,6 +1101,7 @@ def invoke_agent_local(
             "prompt_name": prompt_name,
             "output_path": str(output_path),
             "schema_path": str(schema_path_resolved),
+            "workspace": str(isolated_workspace),
             "provider": "local",
         },
     )
@@ -801,21 +1111,40 @@ def invoke_agent_local(
     agent = config.get("agent")
     if isinstance(agent, dict) and "stream_output" in agent:
         stream_output = bool(agent.get("stream_output", True))
-    from core.pika_config import get_pika_config
-
-    local_timeout = get_pika_config().get("local", {}).get("exec_timeout_sec", 600)
+    local_timeout = get_local_exec_timeout_sec(config)
     reasoning_effort = get_reasoning_effort(config, prompt_name)
     try:
-        result = run_local_exec(
+        t0 = time.perf_counter()
+        result, token_usage = run_local_exec(
             prompt=prompt_text,
             output_schema_path=schema_path_resolved,
-            workspace=project_root,
-            output_path=output_path,
+            workspace=isolated_workspace,
+            output_path=isolated_output_path,
             command=local_cmd,
             timeout=local_timeout,
             stream_output=stream_output,
             reasoning_effort=reasoning_effort,
         )
+        if isolated_output_path.exists():
+            try:
+                shutil.copy2(isolated_output_path, output_path)
+            except OSError as exc:
+                get_run_logger().warning(
+                    "Could not copy local output artifact from %s to %s: %s",
+                    isolated_output_path,
+                    output_path,
+                    exc,
+                )
+        else:
+            try:
+                output_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+            except OSError as exc:
+                get_run_logger().warning(
+                    "Could not write local output artifact to %s: %s",
+                    output_path,
+                    exc,
+                )
+        elapsed = time.perf_counter() - t0
         log_lifecycle_event(
             "agent_invoke_local_complete",
             command=ctx.command,
@@ -825,6 +1154,19 @@ def invoke_agent_local(
                 "output_path": str(output_path),
             },
         )
+        if token_usage:
+            log_lifecycle_event(
+                "agent_token_usage",
+                command=ctx.command,
+                run_id=ctx.run_id,
+                extra={
+                    "prompt_name": prompt_name,
+                    "input_tokens": token_usage["input_tokens"],
+                    "cached_input_tokens": token_usage["cached_input_tokens"],
+                    "output_tokens": token_usage["output_tokens"],
+                },
+            )
+        _emit_agent_conclusion(prompt_name, elapsed, token_usage)
         return result
     except subprocess.CalledProcessError as exc:
         log_lifecycle_event(
@@ -841,6 +1183,9 @@ def invoke_agent_local(
         raise RuntimeError(
             f"Local CLI exec failed (exit {exc.returncode}): {exc.stderr or exc.stdout or 'no output'}"
         ) from exc
+    finally:
+        if managed_workspace:
+            _cleanup_local_agent_temp_workspace(isolated_workspace)
 
 
 def invoke_agent_api(
@@ -894,7 +1239,8 @@ def invoke_agent_api(
     except OSError:
         pass
 
-    result = run_api_invoke(
+    t0 = time.perf_counter()
+    result, token_usage = run_api_invoke(
         prompt=prompt_text,
         api_key=api_cfg["api_key"],
         url=api_cfg["url"],
@@ -904,6 +1250,7 @@ def invoke_agent_api(
         stream_output=stream_output,
         output_path=output_path,
     )
+    elapsed = time.perf_counter() - t0
 
     log_lifecycle_event(
         "agent_invoke_api_complete",
@@ -914,11 +1261,19 @@ def invoke_agent_api(
             "output_path": str(output_path),
         },
     )
-    try:
-        sys.stderr.write("[PIKA] Agent complete.\n")
-        sys.stderr.flush()
-    except OSError:
-        pass
+    if token_usage:
+        log_lifecycle_event(
+            "agent_token_usage",
+            command=ctx.command,
+            run_id=ctx.run_id,
+            extra={
+                "prompt_name": prompt_name,
+                "input_tokens": token_usage.get("input_tokens", 0),
+                "cached_input_tokens": token_usage.get("cached_input_tokens", 0),
+                "output_tokens": token_usage.get("output_tokens", 0),
+            },
+        )
+    _emit_agent_conclusion(prompt_name, elapsed, token_usage)
     return result
 
 
@@ -958,6 +1313,7 @@ def invoke_agent_with_schema_retry(
     schema_path: Path | None,
     config: dict[str, Any],
     ctx: RuntimeContext,
+    local_workspace_override: Path | None = None,
     invocation_timestamp: str | None = None,
 ) -> dict[str, Any]:
     """Invoke agent and validate output. Retry up to configurable times on schema failure.
@@ -986,6 +1342,11 @@ def invoke_agent_with_schema_retry(
                 "max_attempts": max_retries + 1,
             },
         )
+        if "control_vocab_section" not in template_vars:
+            project_root = Path(ctx.project_root)
+            template_vars["control_vocab_section"] = resolve_control_vocab_content(
+                config, project_root
+            )
         _write_codebase_content_before_invoke(
             template_vars,
             config=config,
@@ -998,6 +1359,7 @@ def invoke_agent_with_schema_retry(
                 schema_path=schema_path,
                 config=config,
                 ctx=ctx,
+                local_workspace_override=local_workspace_override,
                 retry_instruction=retry_instruction,
             )
         elif provider == "api":
@@ -1053,6 +1415,10 @@ def invoke_agent_with_schema_retry(
                 },
             )
             if attempt < max_retries:
+                sys.stderr.write(
+                    f"[PIKA] {prompt_name}: schema validation failed (attempt {attempt + 1}/{max_retries + 1}), retrying...\n"
+                )
+                sys.stderr.flush()
                 log_lifecycle_event(
                     "lifecycle_schema_validation_retry",
                     command=ctx.command,
@@ -1064,6 +1430,10 @@ def invoke_agent_with_schema_retry(
                     },
                 )
             else:
+                sys.stderr.write(
+                    f"[PIKA] {prompt_name}: schema validation failed after {max_retries + 1} attempt(s)\n"
+                )
+                sys.stderr.flush()
                 raise last_error from exc
 
     raise last_error  # type: ignore[misc]

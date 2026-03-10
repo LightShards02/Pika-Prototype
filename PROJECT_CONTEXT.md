@@ -89,8 +89,8 @@ Some situations require human decisions. These are emitted as **manual_resolutio
 
 - **Phase 1: Project Implementation**
   - Inputs: Formatted SADS
-  - Agent: Implementer
-  - Outputs: planner/linker artifacts, deterministic batch plans/briefs, and per-batch spec-keyed diff plans; PIKA applies validated patches to Code and mapping updates to tables
+  - Agent: Unified Planner + per-batch Implementer
+  - Outputs: unified plan (module file plans, spec dependency graph, shared contracts), deterministic batch plans/briefs, and per-batch spec-keyed diff plans; PIKA applies validated patches to Code and mapping updates to tables
   - **Implement loop (future):** Each `implement` run can trigger: implement → test → issue tracking update → implement. On verification failure, PIKA adds rows to Implementation Issue Tracker; subsequent runs may consume those issues. Current implementation executes multiple deterministic batches per run.
 
 - **Phase 2: Design Backtracing**
@@ -208,13 +208,12 @@ Inputs:
 Agent outputs (schema-validated files):
 - If manual resolution is required: **manual_resolution_items only**
 - Otherwise:
-  - module-local anchor plans (`planned_anchors`, `provided_intents`, `required_intents`)
-  - global link plan (`contracts`, `bindings`, optional `integration_actions`)
+  - unified plan: per-module file plans (`planned_anchors`), cross-module spec-to-spec dependency graph (`spec_dependencies`), shared contract declarations (`shared_contracts`)
   - per-batch implement output keyed by `spec_id`, including `diffs[].diff_path` (agent writes unified diff files to `agent_artifacts_dir`)
 
 PIKA translation:
-- validates link plan and batch plan dependency integrity
-- builds deterministic batch briefs and executes batches in dependency order
+- validates unified plan (DAG acyclicity, spec coverage, module coverage)
+- builds deterministic batch plan and briefs from spec dependency graph, executes batches in dependency order
 - applies diffs safely to the Code repository
 - updates mapped columns in Design Spec and deduplicated test mappings in test spec output
 

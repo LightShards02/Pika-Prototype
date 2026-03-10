@@ -17,17 +17,17 @@ acceptance_criteria: Optional. Concrete acceptance criteria for verification.
 implementation_status: Optional. User workflow status for the spec row.
 """
 from core.lifecycle import (
-    append_manual_resolution_items_to_file,
     has_blocking_manual_resolution,
     invoke_agent_with_schema_retry,
     log_lifecycle_event,
+    persist_manual_resolution_block_for_run,
     resolve_agent_artifacts_dir_for_command,
     resolve_agent_runs_dir_for_command,
     resolve_codebase_dir_path,
     resolve_input_path,
-    resolve_manual_resolution_path_for_command,
     resolve_output_schema_path,
     resolve_project_context_content,
+    resolve_resolution_template_path_for_run,
     resolve_run_summary_path_for_command,
 )
 
@@ -69,12 +69,16 @@ def run_plan(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
     # 7. Manual-resolution: append items to file and return blocked
     if has_blocking_manual_resolution(output):
         log_lifecycle_event("lifecycle_manual_resolution", command="plan", run_id=ctx.run_id)
-        manual_path = resolve_manual_resolution_path_for_command(config, project_root, "plan")
-        if manual_path:
-            append_manual_resolution_items_to_file(
-                output["manual_resolution_items"],
-                manual_path,
-            )
+        persist_manual_resolution_block_for_run(
+            config,
+            project_root,
+            "plan",
+            ctx.run_id,
+            "plan",
+            output["manual_resolution_items"],
+            source="agent",
+            completed_stages=["load_inputs", "invoke_agent"],
+        )
         return {
             "command": "plan",
             "status": "blocked",
@@ -96,7 +100,9 @@ def _build_template_vars(
     inputs: dict[str, Any],
 ) -> dict[str, Any]:
     """Build template variables for project_designer prompt."""
-    manual_path = resolve_manual_resolution_path_for_command(config, project_root, "plan")
+    manual_path = resolve_resolution_template_path_for_run(
+        config, project_root, "plan", ctx.run_id
+    )
     run_summary_path = resolve_run_summary_path_for_command(config, project_root, "plan")
     schema_path = resolve_output_schema_path(
         config, project_root, "plan_output", command="plan"
@@ -122,6 +128,7 @@ def _build_template_vars(
         "manual_resolution_file": str(manual_path),
         "run_summary_file": str(run_summary_path),
         "agent_artifacts_dir": str(artifacts_path),
+        "resolved_decisions": ctx.resolved_decisions or "",
     }
 
 

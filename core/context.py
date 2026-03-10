@@ -22,3 +22,5 @@ class RuntimeContext:
     project_root: str  # Workspace root: the project being built
     config_path: str
     input_overrides: dict[str, str] = field(default_factory=dict)
+    resume_run_id: str | None = None  # When set, use this run_id and load resolutions
+    resolved_decisions: str | None = None  # Injected into agent prompts on resume

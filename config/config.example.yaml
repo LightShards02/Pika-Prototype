@@ -15,6 +15,7 @@ version: 1
 project:
   name: pika
   root_dir: .
+  # control_vocab_path: vocab.yaml  # optional; per-project controlled vocabulary (categorized terms + definitions) injected into all LLM prompts. See dataset/nutrition/vocab.yaml for example.
   state:
     design_spec_path: out/state/DESIGN-SPEC.csv
     id_registry_path: out/state/id_registry.json
@@ -26,6 +27,7 @@ agent:
   stream_output: true  # Stream output + heartbeat when agent runs (api, local).
   # When provider is local (e.g. Codex CLI):
   # local_command: codex
+  # local_exec_timeout_sec: 1200  # Optional workspace override for long-running local agent calls
   # reasoning_effort: per-prompt Codex model_reasoning_effort (low|medium|high|xhigh)
   #   Keys: prompt_name (map_spec_to_code, implement_anchor_planner, implement_anchor_linker, implement_from_specs) or default
   #   Pika defaults: map + anchor agents = medium, implementer = high
@@ -122,19 +124,29 @@ commands:
       agent_runs_dir: { path: out/agent_runs, no_overwrite: false }
       agent_artifacts_dir: { path: out/agent_artifacts, no_overwrite: false }
       logs_dir: { path: out/logs, no_overwrite: false }
-    # anchor_planner_prompt_name: implement_anchor_planner
-    # anchor_linker_prompt_name: implement_anchor_linker
-    # linker_max_attempts: 2
     # type_placement_path: workspace/shared-contracts/
     # allowed_module_roles: [frontend, api, domain, infra, shared, cli, worker]
     # disallowed_link_kinds_by_required_role:
     #   frontend: [service_interface, event_topic, db_table, file_format, external_api, test_suite]
     #   domain: [external_api]
+    # leaf_dependency_roles: [infra]
+    # leaf_dependency_policy:
+    #   mode: auto_drop
+    #   track_external_dependencies: true
+    # contract_kind_definitions:
+    #   api_endpoint:
+    #     definition: Internal project API boundary between project modules.
+    #   external_api:
+    #     definition: Out-of-project third-party/system API boundary only.
+    # type_shape_match:
+    #   min_auto_bind_score: 0.70
+    #   tie_margin: 0.08
+    # field_match_score_threshold: 0.80  # Normalized Damerau-Levenshtein score threshold (0..1) for contract/spec high-match pairs.
     # test_spec_path: out/state/test_spec.csv
     # issue_tracker_path: out/issue_tracking.csv
-    # repair_max_attempts: 0
     # forbidden_paths: [docs/, specs/]
     # verification_commands: [pytest -q]
+    # semantic_validation_retries: 2
     # budgets:
     #   max_specs_per_batch: 15
     #   max_files: 10

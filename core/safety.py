@@ -354,7 +354,7 @@ def _validate_csv_columns(
 # ---------------------------------------------------------------------------
 def _run_step_7_unsupported_command(command: str, errors: list[str]) -> None:
     """Step 7: Reject unsupported commands."""
-    supported = {"plan", "format", "review", "map", "implement", "resolve_plan"}
+    supported = {"plan", "format", "review", "map", "implement", "resolve_plan", "resolve"}
     if command not in supported:
         errors.append(f"Unsupported command for safety validation: {command}")
 

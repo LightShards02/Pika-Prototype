@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/test_map_handler.py -v)",
+      "Bash(python -m unittest tests.test_map_handler -v)",
+      "Bash(conda run -n Local python -m unittest tests.test_map_handler -v)"
+    ]
+  }
+}

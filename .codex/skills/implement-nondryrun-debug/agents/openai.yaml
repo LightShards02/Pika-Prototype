@@ -1,0 +1,4 @@
+interface:
+  display_name: "Implement Non-Dry-Run Debugger"
+  short_description: "Run fixed implement command and triage stderr/logs deterministically"
+  default_prompt: "Use this skill to debug non-dry-run implement by running `python cli.py agent implement --project-root dataset/nutrition --codebase-dir src`, waiting for completion with no intermediate analysis, then diagnosing success/failure from stderr and logs with follow-up risk evaluation."

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ImplementOutput",
-  "description": "Implementer output for one batch: either manual-resolution-only or spec-keyed diffs with mappings.",
+  "description": "Implementer output for one batch: either manual-resolution-only or spec-keyed results with optional hybrid diff_plan.",
   "type": "object",
   "oneOf": [
     {
@@ -18,10 +18,11 @@
     },
     {
       "type": "object",
-      "required": ["run_summary"],
+      "required": ["run_summary", "diff_plan"],
       "additionalProperties": false,
       "properties": {
-        "run_summary": { "$ref": "#/$defs/run_summary" }
+        "run_summary": { "$ref": "#/$defs/run_summary" },
+        "diff_plan": { "$ref": "#/$defs/diff_plan" }
       },
       "patternProperties": {
         "^[A-Za-z][0-9]+$": { "$ref": "#/$defs/spec_result" }
@@ -38,25 +39,47 @@
         "notes": { "type": "string" }
       }
     },
+    "diff_plan": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/diff_plan_item" }
+    },
+    "diff_plan_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "diff_id",
+        "diff_path",
+        "touched_files",
+        "owner_spec_id",
+        "related_spec_ids",
+        "file_path",
+        "op"
+      ],
+      "properties": {
+        "diff_id": { "type": "string", "minLength": 1 },
+        "diff_path": { "type": "string", "minLength": 1 },
+        "touched_files": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "verification_notes": { "type": "string" },
+        "owner_spec_id": { "type": "string", "pattern": "^[A-Za-z][0-9]+$" },
+        "related_spec_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "pattern": "^[A-Za-z][0-9]+$" }
+        },
+        "file_path": { "type": "string", "minLength": 1 },
+        "op": { "type": "string", "enum": ["create", "modify", "delete", "rename"] }
+      }
+    },
     "spec_result": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["summary", "diffs", "mapped_classes_functions", "mapped_test_cases"],
+      "required": ["summary", "diff_refs", "mapped_classes_functions", "mapped_test_cases"],
       "properties": {
         "summary": { "type": "string", "minLength": 1 },
-        "diffs": {
+        "diff_refs": {
           "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["diff_id", "diff_path", "touched_files", "verification_notes"],
-            "properties": {
-              "diff_id": { "type": "string", "minLength": 1 },
-              "diff_path": { "type": "string", "minLength": 1 },
-              "touched_files": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
-              "verification_notes": { "type": "string" }
-            }
-          }
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
         },
         "mapped_classes_functions": {
           "type": "array",

@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 from core.agent_invoker import (
     _api_params_for_command,
     _normalize_for_codex_response_format,
+    _parse_codex_token_usage,
     _parse_combined_prompt,
     check_codex_available,
     extract_json_from_text,
@@ -134,7 +135,7 @@ class RunLocalExecIntegrationTests(unittest.TestCase):
                 'Output exactly: {"handshake":"ok"}'
             )
 
-            result = run_local_exec(
+            result, _ = run_local_exec(
                 prompt=prompt,
                 output_schema_path=schema_path,
                 workspace=root,
@@ -235,11 +236,34 @@ class RunApiInvokeTests(unittest.TestCase):
 
         with patch("core.agent_invoker.requests") as mock_requests:
             mock_requests.post.return_value = mock_response
-            result = run_api_invoke(
+            result, usage = run_api_invoke(
                 "[System]\nHi\n\n[User]\nHello",
                 api_key="test-key",
             )
             self.assertEqual(result, {"handshake": "ok"})
+            self.assertIsNone(usage)
+
+    def test_returns_usage_when_present(self) -> None:
+        """Returns usage dict when API response includes usage."""
+        mock_response = MagicMock()
+        mock_response.ok = True
+        mock_response.json.return_value = {
+            "choices": [
+                {"message": {"content": '{"handshake": "ok"}'}}
+            ],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 50},
+        }
+
+        with patch("core.agent_invoker.requests") as mock_requests:
+            mock_requests.post.return_value = mock_response
+            result, usage = run_api_invoke(
+                "[System]\nHi\n\n[User]\nHello",
+                api_key="test-key",
+            )
+            self.assertEqual(result, {"handshake": "ok"})
+            self.assertIsNotNone(usage)
+            self.assertEqual(usage["input_tokens"], 100)
+            self.assertEqual(usage["output_tokens"], 50)
 
     def test_raises_when_requests_missing(self) -> None:
         """Raises clear error when requests is not installed."""
@@ -285,7 +309,7 @@ class RunLocalExecSubprocessDecodeTests(unittest.TestCase):
             proc.stdout = ""
 
             with patch("core.agent_invoker.subprocess.run", return_value=proc) as mock_run:
-                out = run_local_exec(
+                out, _ = run_local_exec(
                     prompt="Return JSON",
                     output_schema_path=schema_path,
                     workspace=root,
@@ -384,7 +408,7 @@ class RunLocalExecSubprocessDecodeTests(unittest.TestCase):
                 "core.agent_invoker.subprocess.run",
                 side_effect=[proc_fail, proc_ok],
             ) as mock_run:
-                out = run_local_exec(
+                out, _ = run_local_exec(
                     prompt="Return JSON",
                     output_schema_path=schema_path,
                     workspace=root,
@@ -399,3 +423,80 @@ class RunLocalExecSubprocessDecodeTests(unittest.TestCase):
             second_cmd = mock_run.call_args_list[1][0][0]
             self.assertIn("--output-schema", first_cmd)
             self.assertNotIn("--output-schema", second_cmd)
+
+
+class ParseCodexTokenUsageTests(unittest.TestCase):
+    """Tests for _parse_codex_token_usage."""
+
+    def test_extracts_last_turn_completed_usage(self) -> None:
+        """Parses turn.completed events and returns last usage."""
+        jsonl = (
+            '{"type":"thread.started","thread_id":"abc"}\n'
+            '{"type":"turn.started"}\n'
+            '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":50,"output_tokens":25}}\n'
+            '{"type":"turn.completed","usage":{"input_tokens":200,"cached_input_tokens":100,"output_tokens":50}}\n'
+        )
+        usage = _parse_codex_token_usage(jsonl)
+        self.assertIsNotNone(usage)
+        self.assertEqual(usage["input_tokens"], 200)
+        self.assertEqual(usage["cached_input_tokens"], 100)
+        self.assertEqual(usage["output_tokens"], 50)
+
+    def test_returns_none_when_no_turn_completed(self) -> None:
+        """Returns None when no turn.completed in stream."""
+        jsonl = '{"type":"thread.started"}\n{"type":"turn.started"}\n'
+        self.assertIsNone(_parse_codex_token_usage(jsonl))
+
+    def test_returns_none_for_empty_string(self) -> None:
+        """Returns None for empty input."""
+        self.assertIsNone(_parse_codex_token_usage(""))
+
+    def test_handles_malformed_lines_gracefully(self) -> None:
+        """Skips malformed JSON lines and still parses valid turn.completed."""
+        jsonl = (
+            'not json\n'
+            '{"type":"turn.completed","usage":{"input_tokens":42,"cached_input_tokens":0,"output_tokens":10}}\n'
+        )
+        usage = _parse_codex_token_usage(jsonl)
+        self.assertIsNotNone(usage)
+        self.assertEqual(usage["input_tokens"], 42)
+        self.assertEqual(usage["output_tokens"], 10)
+
+
+class RunLocalExecJsonFlagTests(unittest.TestCase):
+    """Tests that run_local_exec adds --json for token usage."""
+
+    def test_json_flag_in_exec_args(self) -> None:
+        """Codex exec is invoked with --json for token usage capture."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            schema_path = root / "schema.json"
+            schema_path.write_text(
+                '{"type":"object","required":["x"],"properties":{"x":{"type":"string"}},"additionalProperties":false}',
+                encoding="utf-8",
+            )
+            output_path = root / "out" / "local_output.txt"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text('{"x":"y"}', encoding="utf-8")
+
+            proc = MagicMock()
+            proc.returncode = 0
+            proc.stderr = ""
+            proc.stdout = '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20}}\n'
+
+            with patch("core.agent_invoker.subprocess.run", return_value=proc) as mock_run:
+                result, token_usage = run_local_exec(
+                    prompt="Return JSON",
+                    output_schema_path=schema_path,
+                    workspace=root,
+                    output_path=output_path,
+                    stream_output=False,
+                    timeout=10,
+                )
+
+            self.assertEqual(result, {"x": "y"})
+            self.assertIsNotNone(token_usage)
+            self.assertEqual(token_usage["input_tokens"], 100)
+            self.assertEqual(token_usage["output_tokens"], 20)
+            cmd = mock_run.call_args[0][0]
+            self.assertIn("--json", cmd)

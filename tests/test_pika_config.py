@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from core.pika_config import get_pika_config, load_pika_config, reset_pika_config_cache
 
@@ -64,6 +67,25 @@ class PikaConfigTests(unittest.TestCase):
         reset_pika_config_cache()
         b = get_pika_config()
         self.assertIsNot(a, b)
+
+    def test_load_raises_when_config_file_missing(self) -> None:
+        """Missing config/pika.yaml is a hard requirement."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            missing_path = Path(tmpdir) / "pika.yaml"
+            with patch("core.pika_config._PIKA_CONFIG_PATH", missing_path):
+                reset_pika_config_cache()
+                with self.assertRaises(FileNotFoundError):
+                    load_pika_config()
+
+    def test_load_raises_when_required_fields_are_missing(self) -> None:
+        """Required fields in pika.yaml must be present."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            incomplete_path = Path(tmpdir) / "pika.yaml"
+            incomplete_path.write_text("api: {}\n", encoding="utf-8")
+            with patch("core.pika_config._PIKA_CONFIG_PATH", incomplete_path):
+                reset_pika_config_cache()
+                with self.assertRaises(ValueError):
+                    load_pika_config()
 
 
 if __name__ == "__main__":

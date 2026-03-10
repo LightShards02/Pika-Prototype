@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ImplementUnifiedPlannerOutput",
+  "description": "Unified planner output for implement planning: per-module file plans, cross-module spec dependencies, and shared contract declarations in a single pass.",
+  "type": "object",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manual_resolution_items"],
+      "properties": {
+        "manual_resolution_items": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/manual_resolution_item" }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module_plans", "spec_dependencies", "shared_contracts"],
+      "properties": {
+        "module_plans": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/module_plan" }
+        },
+        "spec_dependencies": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/spec_dependency" }
+        },
+        "shared_contracts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/shared_contract" }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "module_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module_tag", "planned_anchors"],
+      "properties": {
+        "module_tag": { "type": "string", "minLength": 1 },
+        "planned_anchors": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/planned_anchor" }
+        },
+        "intra_module_dependencies": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/intra_dependency" }
+        }
+      }
+    },
+    "planned_anchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "anchor_kind",
+        "anchor_materialization_kind",
+        "planned_file_path",
+        "spec_ids"
+      ],
+      "properties": {
+        "anchor_kind": {
+          "type": "string",
+          "enum": ["new_symbol", "existing_symbol", "file_location", "boundary_file"]
+        },
+        "anchor_materialization_kind": {
+          "type": "string",
+          "enum": ["schema", "interface", "runtime_logic", "wiring", "test"]
+        },
+        "planned_file_path": { "type": "string", "minLength": 1 },
+        "planned_symbol": { "type": "string" },
+        "signature_hint": { "type": "string" },
+        "spec_ids": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Za-z][0-9]+$" }
+        }
+      }
+    },
+    "intra_dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["spec_id", "depends_on", "reason"],
+      "properties": {
+        "spec_id": { "type": "string", "pattern": "^[A-Za-z][0-9]+$" },
+        "depends_on": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Za-z][0-9]+$" }
+        },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "spec_dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["consumer_spec_id", "provider_spec_ids"],
+      "properties": {
+        "consumer_spec_id": { "type": "string", "pattern": "^[A-Za-z][0-9]+$" },
+        "provider_spec_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "pattern": "^[A-Za-z][0-9]+$" }
+        },
+        "rationale": { "type": "string" }
+      }
+    },
+    "shared_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_id", "owning_module", "planned_file_path", "consumed_by_specs"],
+      "properties": {
+        "contract_id": { "type": "string", "minLength": 1 },
+        "owning_module": { "type": "string", "minLength": 1 },
+        "planned_file_path": { "type": "string", "minLength": 1 },
+        "consumed_by_specs": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Za-z][0-9]+$" }
+        },
+        "description": { "type": "string" },
+        "fields": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/contract_field" }
+        }
+      }
+    },
+    "contract_field": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type_name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "type_name": { "type": "string", "minLength": 1 },
+        "constraints": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "manual_option": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["option_id", "label", "effect"],
+      "properties": {
+        "option_id": { "type": "string", "minLength": 1 },
+        "label": { "type": "string", "minLength": 1 },
+        "effect": { "type": "string", "minLength": 1 }
+      }
+    },
+    "manual_resolution_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["item_id", "title", "question", "options", "required", "blocking_reason"],
+      "properties": {
+        "item_id": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "question": { "type": "string", "minLength": 1 },
+        "options": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/manual_option" } },
+        "recommended_option_id": { "type": "string" },
+        "required": { "type": "boolean", "const": true },
+        "blocking_reason": { "type": "string", "minLength": 1 },
+        "evidence_refs": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

@@ -56,6 +56,36 @@ class ConfigLoaderImplementPolicyTests(unittest.TestCase):
         with self.assertRaises(ConfigSchemaValidationError):
             load_and_validate_config(path, SCHEMA_PATH)
 
+    def test_field_match_score_threshold_accepts_normalized_number(self) -> None:
+        """Normalized score threshold in [0,1] should pass schema validation."""
+        config = yaml.safe_load(EXAMPLE_CONFIG_PATH.read_text(encoding="utf-8"))
+        config["commands"]["implement"]["field_match_score_threshold"] = 0.8
+        path = self._write_temp_config(yaml.safe_dump(config, sort_keys=False))
+        loaded = load_and_validate_config(path, SCHEMA_PATH)
+        self.assertEqual(
+            loaded["commands"]["implement"]["field_match_score_threshold"],
+            0.8,
+        )
+
+    def test_field_match_score_threshold_rejects_out_of_range(self) -> None:
+        """Score threshold outside [0,1] should fail schema validation."""
+        config = yaml.safe_load(EXAMPLE_CONFIG_PATH.read_text(encoding="utf-8"))
+        config["commands"]["implement"]["field_match_score_threshold"] = 1.1
+        path = self._write_temp_config(yaml.safe_dump(config, sort_keys=False))
+        with self.assertRaises(ConfigSchemaValidationError):
+            load_and_validate_config(path, SCHEMA_PATH)
+
+    def test_field_match_distance_threshold_alias_accepts_normalized_number(self) -> None:
+        """Deprecated alias remains schema-valid for backward compatibility."""
+        config = yaml.safe_load(EXAMPLE_CONFIG_PATH.read_text(encoding="utf-8"))
+        config["commands"]["implement"]["field_match_distance_threshold"] = 0.7
+        path = self._write_temp_config(yaml.safe_dump(config, sort_keys=False))
+        loaded = load_and_validate_config(path, SCHEMA_PATH)
+        self.assertEqual(
+            loaded["commands"]["implement"]["field_match_distance_threshold"],
+            0.7,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

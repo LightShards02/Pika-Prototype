@@ -48,7 +48,13 @@ class RunLoggerTests(unittest.TestCase):
             logger.removeHandler(handler)
             handler.close()
 
-    def _make_ctx(self, *, root: Path, run_id: str = "run123") -> RuntimeContext:
+    def _make_ctx(
+        self,
+        *,
+        root: Path,
+        run_id: str = "run123",
+        resume_run_id: str | None = None,
+    ) -> RuntimeContext:
         """Create ctx."""
         return RuntimeContext(
             command="format",
@@ -58,6 +64,7 @@ class RunLoggerTests(unittest.TestCase):
             run_id=run_id,
             project_root=str(root),
             config_path=str(root / "config" / "config.example.yaml"),
+            resume_run_id=resume_run_id,
         )
 
     def test_init_run_logger_uses_logging_log_dir(self) -> None:
@@ -130,6 +137,50 @@ class RunLoggerTests(unittest.TestCase):
         self.assertGreaterEqual(len(lines), 2)
         first_event = json.loads(lines[1])  # Line 0 is $meta header
         self.assertEqual(first_event["level"], "DEBUG")
+
+    def test_init_run_logger_appends_existing_log_on_resume(self) -> None:
+        """Resume path appends to an existing run log instead of failing."""
+        root = Path(tempfile.mkdtemp(prefix="run-logger-resume-"))
+        logs_dir = root / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        existing = logs_dir / "format_run123.log"
+        existing.write_text(
+            (
+                '{"$meta":{"command":"format","run_id":"run123"}}\n'
+                '{"timestamp":"2026-03-05T23:00:00 UTC-8","level":"INFO","event":"command_start"}\n'
+            ),
+            encoding="utf-8",
+        )
+
+        ctx = self._make_ctx(root=root, run_id="run123", resume_run_id="run123")
+        config = {"logging": {"log_dir": str(logs_dir)}}
+
+        created_path = init_run_logger(project_root=root, config=config, ctx=ctx)
+        logger = logging.getLogger(RUN_LOGGER_NAME)
+        logger.info("command_end", extra={"event": "command_end", "status": "completed"})
+
+        self.assertEqual(created_path, existing)
+        lines = [l for l in existing.read_text(encoding="utf-8").splitlines() if l.strip()]
+        self.assertGreaterEqual(len(lines), 3)
+        self.assertEqual(sum(1 for l in lines if l.startswith('{"$meta":')), 1)
+        last = json.loads(lines[-1])
+        self.assertEqual(last.get("event"), "command_end")
+        self.assertEqual(last.get("status"), "completed")
+
+    def test_init_run_logger_non_resume_existing_file_still_fails(self) -> None:
+        """Non-resume path still uses exclusive create for collision safety."""
+        root = Path(tempfile.mkdtemp(prefix="run-logger-collision-"))
+        logs_dir = root / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        existing = logs_dir / "format_run123.log"
+        existing.write_text("existing\n", encoding="utf-8")
+
+        ctx = self._make_ctx(root=root, run_id="run123")
+        config = {"logging": {"log_dir": str(logs_dir)}}
+
+        with self.assertRaises(RuntimeError) as exc_ctx:
+            init_run_logger(project_root=root, config=config, ctx=ctx)
+        self.assertIn("Failed to create log file", str(exc_ctx.exception))
 
 
 if __name__ == "__main__":

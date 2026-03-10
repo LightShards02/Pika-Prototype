@@ -7,13 +7,14 @@ from typing import Any
 
 from core.context import RuntimeContext
 from core.lifecycle import (
-    append_manual_resolution_items_to_file,
     has_blocking_manual_resolution,
     invoke_agent_with_schema_retry,
     log_lifecycle_event,
+    persist_manual_resolution_block_for_run,
     resolve_input_path,
-    resolve_manual_resolution_path_for_command,
     resolve_output_schema_path,
+    resolve_resolution_template_path_for_run,
+    resolve_run_summary_path_for_command,
 )
 
 
@@ -58,6 +59,15 @@ def run_resolve_plan(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, A
         template_vars={
             "issue_tracking_content": inputs["issue_tracking_content"],
             "design_spec_content": inputs["design_spec_content"],
+            "manual_resolution_file": str(
+                resolve_resolution_template_path_for_run(
+                    config, project_root, "resolve_plan", ctx.run_id
+                )
+            ),
+            "run_summary_file": str(
+                resolve_run_summary_path_for_command(config, project_root, "resolve_plan")
+            ),
+            "resolved_decisions": ctx.resolved_decisions or "",
         },
         schema_path=schema_path,
         config=config,
@@ -67,10 +77,15 @@ def run_resolve_plan(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, A
     # 7. Manual-resolution: append items to file and return blocked
     if has_blocking_manual_resolution(output):
         log_lifecycle_event("lifecycle_manual_resolution", command="resolve_plan", run_id=ctx.run_id)
-        manual_path = resolve_manual_resolution_path_for_command(config, project_root, "resolve_plan")
-        append_manual_resolution_items_to_file(
+        persist_manual_resolution_block_for_run(
+            config,
+            project_root,
+            "resolve_plan",
+            ctx.run_id,
+            "resolve_plan",
             output["manual_resolution_items"],
-            manual_path,
+            source="agent",
+            completed_stages=["load_inputs", "invoke_agent"],
         )
         return {
             "command": "resolve_plan",

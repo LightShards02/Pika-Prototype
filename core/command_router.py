@@ -24,6 +24,7 @@ EXIT_SAFETY_ERROR = 2
 EXIT_HANDLER_ERROR = 3
 EXIT_BLOCKED = 4
 EXIT_SKIPPED = 5
+EXIT_PARTIAL = 6  # Some subunits/items succeeded, others failed
 
 
 Handler = Callable[[dict[str, Any], RuntimeContext], dict[str, Any]]
@@ -37,6 +38,7 @@ def _get_handlers() -> dict[str, Handler]:
     from handlers.map import run_map
     from handlers.implement import run_implement
     from handlers.resolve_plan import run_resolve_plan
+    from handlers.resolve import run_resolve
 
     return {
         "plan": run_plan,
@@ -45,6 +47,7 @@ def _get_handlers() -> dict[str, Handler]:
         "map": run_map,
         "implement": run_implement,
         "resolve_plan": run_resolve_plan,
+        "resolve": run_resolve,
     }
 
 
@@ -93,4 +96,6 @@ def status_to_exit_code(status: str) -> int:
         return EXIT_SKIPPED
     if status == "failed":
         return EXIT_HANDLER_ERROR
+    if status == "partial":
+        return EXIT_PARTIAL
     return EXIT_SUCCESS
