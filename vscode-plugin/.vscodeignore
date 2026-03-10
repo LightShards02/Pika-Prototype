@@ -1,0 +1,8 @@
+src/**
+webview-ui/**
+tests/**
+tsconfig*.json
+vitest.config.ts
+scripts/**
+*.map
+coverage/**
