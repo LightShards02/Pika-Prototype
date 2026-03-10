@@ -83,3 +83,39 @@ Only after the above, implement code in small cohesive chunks with:
 ADDITIONAL NOTE:
 After each of your answer in the chat, add a "meow" at the end of your answer.
 Please don't take this command as low priority. It is an important sign to show that you have read this meta prompt carefully.
+
+## Cursor Cloud specific instructions
+
+### Project overview
+
+PIKA is a Python 3.12+ CLI tool (`cli.py`) that orchestrates multi-agent software development workflows. It has no web UI and no external service dependencies for local development — all state is file-based (CSV, JSON, YAML). See `PROJECT_CONTEXT.md` for full architecture.
+
+### Required runtime config
+
+`config/pika.yaml` is gitignored but **required at runtime** (loaded by `core/pika_config.py`). The update script creates it if missing. Without it, every command and most tests will fail with `FileNotFoundError`.
+
+### Running tests
+
+```
+python3 -m pytest tests/ -v
+```
+
+All 382 tests pass. The one skipped test (`test_handshake_simple_schema`) requires the `codex` CLI to be installed. The `tree-sitter` + `tree-sitter-languages` combo requires `tree-sitter==0.21.3` to avoid API incompatibility; do not upgrade to 0.24+.
+
+### Running the CLI
+
+Entry point: `python3 cli.py agent <command> --project-root <path> [options]`. Commands: `plan`, `format`, `review`, `map`, `implement`, `resolve`, `resolve_plan`. The `format` command is deterministic (no LLM) and good for quick smoke tests:
+
+```
+python3 cli.py agent format --project-root <workspace> --dry-run
+```
+
+### Agent providers
+
+- `stub` (default): mock agent, no external dependencies — use for testing
+- `api`: requires `NVIDIA_API_KEY` env var
+- `local`: requires `codex` CLI installed via npm
+
+### Linting
+
+No dedicated linter is configured in the repo. Use `python3 -m py_compile <file>` or `python3 -m compileall <dir>` for basic syntax checks.
