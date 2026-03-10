@@ -41,6 +41,15 @@ export interface ExtensionStatePayload {
   importedPreviewPath?: string;
   rows: DesignSpecRow[];
   specToCodeMappings: SpecCodeMapping[];
+  codexRuntime: CodexRuntimePayload;
+}
+
+export interface CodexRuntimePayload {
+  status: "ready" | "missing";
+  source: "configured" | "auto" | "none";
+  configuredPath?: string;
+  effectivePath?: string;
+  message: string;
 }
 
 export interface WebviewIncomingMessage {

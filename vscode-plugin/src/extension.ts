@@ -1,6 +1,7 @@
 import * as path from "path";
 import { readFile as readFileFromFs } from "fs/promises";
 import * as vscode from "vscode";
+import { detectCodexRuntimeState } from "./core/codexExecutable";
 import { parseDesignSpecCsv } from "./core/csvParser";
 import { mapCursorContextToSpecs, mapDesignSpecsToCode } from "./core/mappingService";
 import { buildPreviewOutputPath, buildSpecPreviewMarkdown } from "./core/specPreviewDocument";
@@ -16,9 +17,12 @@ interface OpenCodeReferencePayload {
 }
 
 interface WebviewMessage {
-  type: "chooseDesignSpec" | "requestCodeMapping" | "refreshMappings" | "openCodeReference";
+  type: "chooseDesignSpec" | "requestCodeMapping" | "refreshMappings" | "openCodeReference" | "configureCodexPath";
   payload?: OpenCodeReferencePayload;
 }
+
+const CODEX_PATH_CONFIGURATION_SECTION = "designSpecMapper";
+const CODEX_PATH_CONFIGURATION_KEY = "codexPath";
 
 function isFunctionOrClassSymbol(kind: vscode.SymbolKind): boolean {
   return (
@@ -77,6 +81,7 @@ class DesignSpecPreviewProvider implements vscode.WebviewViewProvider {
     this.webviews.add(webviewView.webview);
     this.postState(webviewView.webview);
     void this.postCursorContextMapping(webviewView.webview);
+    void this.refreshCodexRuntimeStatus();
 
     webviewView.onDidDispose(() => {
       this.webviews.delete(webviewView.webview);
@@ -119,6 +124,23 @@ class DesignSpecPreviewProvider implements vscode.WebviewViewProvider {
 
     if (message.type === "openCodeReference" && message.payload) {
       await this.openCodeReference(message.payload);
+      return;
+    }
+
+    if (message.type === "configureCodexPath") {
+      await this.configureCodexPathFromDialog(webview);
+    }
+  }
+
+  /**
+   * Refreshes Codex runtime readiness and pushes state to all active webviews.
+   */
+  public async refreshCodexRuntimeStatus(): Promise<void> {
+    const configuredPath = this.getConfiguredCodexPath();
+    const codexRuntime = await detectCodexRuntimeState(configuredPath);
+    this.stateStore.setCodexRuntime(codexRuntime);
+    for (const currentWebview of this.webviews) {
+      this.postState(currentWebview);
     }
   }
 
@@ -206,6 +228,36 @@ class DesignSpecPreviewProvider implements vscode.WebviewViewProvider {
       void vscode.window.showInformationMessage("Refreshed placeholder spec mappings.");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown mapping refresh error";
+      webview.postMessage({ type: "error", message });
+    }
+  }
+
+  /**
+   * Prompts user to choose Codex executable and persists it in extension settings.
+   * @param webview Source webview for error messaging.
+   */
+  private async configureCodexPathFromDialog(webview: vscode.Webview): Promise<void> {
+    const selected = await vscode.window.showOpenDialog({
+      canSelectMany: false,
+      canSelectFiles: true,
+      canSelectFolders: false,
+      openLabel: "Select Codex Executable",
+    });
+    if (!selected || selected.length === 0) {
+      return;
+    }
+
+    try {
+      await this.persistConfiguredCodexPath(selected[0].fsPath);
+      await this.refreshCodexRuntimeStatus();
+      const codexRuntime = this.stateStore.getState().codexRuntime;
+      if (codexRuntime.status === "ready") {
+        void vscode.window.showInformationMessage("Codex executable configured and ready.");
+      } else {
+        void vscode.window.showWarningMessage(codexRuntime.message);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to configure Codex executable path.";
       webview.postMessage({ type: "error", message });
     }
   }
@@ -315,6 +367,29 @@ class DesignSpecPreviewProvider implements vscode.WebviewViewProvider {
       type: "stateUpdated",
       payload: this.stateStore.getState(),
     });
+  }
+
+  /**
+   * Reads user-configured Codex executable path from VS Code settings.
+   */
+  private getConfiguredCodexPath(): string | undefined {
+    return vscode.workspace
+      .getConfiguration(CODEX_PATH_CONFIGURATION_SECTION)
+      .get<string>(CODEX_PATH_CONFIGURATION_KEY);
+  }
+
+  /**
+   * Persists user-selected Codex executable path into VS Code settings.
+   * @param codexPath Selected path from file picker.
+   */
+  private async persistConfiguredCodexPath(codexPath: string): Promise<void> {
+    const hasWorkspaceFolder = (vscode.workspace.workspaceFolders?.length ?? 0) > 0;
+    const target = hasWorkspaceFolder
+      ? vscode.ConfigurationTarget.Workspace
+      : vscode.ConfigurationTarget.Global;
+    await vscode.workspace
+      .getConfiguration(CODEX_PATH_CONFIGURATION_SECTION)
+      .update(CODEX_PATH_CONFIGURATION_KEY, codexPath, target);
   }
 
   /**
@@ -502,7 +577,14 @@ export function activate(context: vscode.ExtensionContext): void {
         void previewProvider.broadcastCursorContext();
       }
     }),
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration(`${CODEX_PATH_CONFIGURATION_SECTION}.${CODEX_PATH_CONFIGURATION_KEY}`)) {
+        void previewProvider.refreshCodexRuntimeStatus();
+      }
+    }),
   );
+
+  void previewProvider.refreshCodexRuntimeStatus();
 
   context.subscriptions.push(
     vscode.commands.registerCommand("designSpecMapper.openPreview", async () => {

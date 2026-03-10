@@ -965,3 +965,24 @@
   - `npm run typecheck` -> pass
   - `npm test` -> `8 passed`
   - Manual GUI walkthrough with recording + screenshot confirmed all five requested behaviors.
+
+## Current Task: Plugin Codex Executable Detection + Readiness UI
+
+- [x] Add plugin runtime state/schema for Codex executable readiness and path source.
+- [x] Implement startup auto-detection of `codex` executable (configured path first, PATH/common locations fallback).
+- [x] Add manual configure action from webview (button -> file picker -> save path -> re-validate).
+- [x] Render panel readiness indicator (`ready` vs `not configured`) and conditional configure button.
+- [x] Add targeted unit tests for executable detection helper and run plugin checks.
+- [ ] Commit and push the feature branch changes.
+
+## Current Task Review: Plugin Codex Executable Detection + Readiness UI
+
+- Added deterministic Codex executable detection helper for configured path validation plus auto-scan across `PATH` and common install directories.
+- Extended extension state and webview payload contracts with `codexRuntime` readiness metadata and wired launch-time refresh.
+- Added panel UI readiness badge, codex details text, and conditional `Configure Codex Path` button when runtime is missing.
+- Added manual path-configuration flow in extension host (file picker -> settings update -> runtime re-validation -> panel refresh).
+- Verification:
+  - `npm run compile` -> pass
+  - `npm run typecheck` -> pass
+  - `npm test` -> `16 passed`
+  - Manual GUI walkthrough recorded: `plugin_codex_detection_ready_transition.mp4` (Not ready + configure button -> Ready after selecting `/tmp/codex-demo/codex`).

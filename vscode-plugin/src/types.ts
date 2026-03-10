@@ -66,6 +66,17 @@ export interface CursorSpecContext {
 }
 
 /**
+ * Represents Codex executable runtime readiness in the VS Code extension.
+ */
+export interface CodexRuntimeState {
+  status: "ready" | "missing";
+  source: "configured" | "auto" | "none";
+  configuredPath?: string;
+  effectivePath?: string;
+  message: string;
+}
+
+/**
  * Represents extension-managed in-memory state for imported data and mappings.
  */
 export interface ExtensionState {
@@ -73,4 +84,5 @@ export interface ExtensionState {
   importedPreviewPath?: string;
   rows: DesignSpecRow[];
   specToCodeMappings: SpecCodeMapping[];
+  codexRuntime: CodexRuntimeState;
 }

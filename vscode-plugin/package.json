@@ -38,6 +38,17 @@
           "type": "webview"
         }
       ]
+    },
+    "configuration": {
+      "title": "Design Spec Mapper",
+      "properties": {
+        "designSpecMapper.codexPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to Codex executable. Leave blank to auto-detect at extension startup.",
+          "scope": "machine-overridable"
+        }
+      }
     }
   },
   "scripts": {

@@ -46,9 +46,38 @@ button:hover {
 .status {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   border: 1px solid var(--vscode-panel-border);
   padding: 8px;
+}
+
+.codex-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.codex-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.codex-badge.ready {
+  background: var(--vscode-testing-iconPassed);
+  color: var(--vscode-editor-background);
+}
+
+.codex-badge.missing {
+  background: var(--vscode-testing-iconFailed);
+  color: var(--vscode-editor-background);
+}
+
+.secondary-button {
+  width: fit-content;
 }
 
 .error {

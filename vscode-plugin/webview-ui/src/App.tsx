@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
+  CodexRuntimePayload,
   CodeReference,
   CursorContextMapping,
   ExtensionStatePayload,
@@ -9,10 +10,21 @@ import {
 
 interface AppProps {
   postMessage: (message: {
-    type: "chooseDesignSpec" | "requestCodeMapping" | "refreshMappings" | "openCodeReference";
+    type:
+      | "chooseDesignSpec"
+      | "requestCodeMapping"
+      | "refreshMappings"
+      | "openCodeReference"
+      | "configureCodexPath";
     payload?: CodeReference;
   }) => void;
 }
+
+const DEFAULT_CODEX_RUNTIME: CodexRuntimePayload = {
+  status: "missing",
+  source: "none",
+  message: "Codex executable status is still being resolved.",
+};
 
 /**
  * Renders the design-spec import, preview, and bidirectional mapping UI.
@@ -21,6 +33,7 @@ export function App({ postMessage }: AppProps): React.ReactElement {
   const [statePayload, setStatePayload] = useState<ExtensionStatePayload>({
     rows: [],
     specToCodeMappings: [],
+    codexRuntime: DEFAULT_CODEX_RUNTIME,
   });
   const [cursorContext, setCursorContext] = useState<CursorContextMapping>({
     filePath: "",
@@ -36,7 +49,11 @@ export function App({ postMessage }: AppProps): React.ReactElement {
     const onMessage = (event: MessageEvent<WebviewIncomingMessage>) => {
       const message = event.data;
       if (message.type === "stateUpdated" && message.payload) {
-        setStatePayload(message.payload as ExtensionStatePayload);
+        const payload = message.payload as ExtensionStatePayload;
+        setStatePayload({
+          ...payload,
+          codexRuntime: payload.codexRuntime ?? DEFAULT_CODEX_RUNTIME,
+        });
         setError("");
       } else if (message.type === "cursorContextUpdated" && message.payload) {
         setCursorContext(message.payload as CursorContextMapping);
@@ -59,6 +76,7 @@ export function App({ postMessage }: AppProps): React.ReactElement {
     }
     return map;
   }, [statePayload.specToCodeMappings]);
+  const codexReady = statePayload.codexRuntime.status === "ready";
 
   return (
     <div className="app">
@@ -87,6 +105,27 @@ export function App({ postMessage }: AppProps): React.ReactElement {
       </header>
 
       <section className="status">
+        <div className="codex-status-row">
+          <strong>Agent readiness:</strong>
+          <span className={`codex-badge ${codexReady ? "ready" : "missing"}`}>
+            {codexReady ? "Ready" : "Not ready"}
+          </span>
+        </div>
+        <div>
+          <strong>Codex executable:</strong> {statePayload.codexRuntime.effectivePath ?? "Not detected"}
+        </div>
+        <div>
+          <strong>Codex details:</strong> {statePayload.codexRuntime.message}
+        </div>
+        {!codexReady ? (
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => postMessage({ type: "configureCodexPath" })}
+          >
+            Configure Codex Path
+          </button>
+        ) : null}
         <div>
           <strong>Imported CSV:</strong> {statePayload.importedFilePath ?? "Not imported yet"}
         </div>

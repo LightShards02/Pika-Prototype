@@ -3,6 +3,11 @@ import { ExtensionState } from "../types";
 const INITIAL_STATE: ExtensionState = {
   rows: [],
   specToCodeMappings: [],
+  codexRuntime: {
+    status: "missing",
+    source: "none",
+    message: "Codex executable status is still being resolved.",
+  },
 };
 
 /**
@@ -20,6 +25,7 @@ export class StateStore {
       importedPreviewPath: this.state.importedPreviewPath,
       rows: [...this.state.rows],
       specToCodeMappings: [...this.state.specToCodeMappings],
+      codexRuntime: { ...this.state.codexRuntime },
     };
   }
 
@@ -38,6 +44,7 @@ export class StateStore {
       importedPreviewPath: update.importedPreviewPath,
       rows: [...update.rows],
       specToCodeMappings: [...update.specToCodeMappings],
+      codexRuntime: { ...this.state.codexRuntime },
     };
   }
 
@@ -60,6 +67,17 @@ export class StateStore {
     this.state = {
       ...this.state,
       importedPreviewPath,
+    };
+  }
+
+  /**
+   * Updates Codex runtime readiness after auto-detection or manual configuration.
+   * @param codexRuntime Latest runtime readiness payload.
+   */
+  public setCodexRuntime(codexRuntime: ExtensionState["codexRuntime"]): void {
+    this.state = {
+      ...this.state,
+      codexRuntime: { ...codexRuntime },
     };
   }
 }
