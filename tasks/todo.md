@@ -936,3 +936,32 @@
 - `conda run -n Local python -m pytest tests/test_implement_execution.py -q` -> `26 passed`
 - `conda run -n Local python -m pytest tests/test_implement_handler.py -q` -> `46 passed`
 - Latest non-dry-run implement run: `20260308_133253_m0700` -> `status: blocked` at `implement_B0` (manual resolution), not `verification_failed_B0/B1`.
+
+## Current Task: VS Code Plugin MVP (React)
+
+- [x] Scaffold VS Code extension + React webview build pipeline.
+- [x] Implement design spec import (CSV) and table preview in webview.
+- [x] Implement placeholder spec->code mapping with deterministic dummy data.
+- [x] Implement code->spec mapping view on active code file context with dummy data.
+- [x] Add focused unit tests for parser/mapping services.
+- [x] Run targeted checks (`npm run compile`, `npm test`) and package validation.
+
+## Current Task: VS Code Plugin UX + Real-Time Mapping Enhancements
+
+- [x] Show imported design spec as its own file-tab document with mapping hyperlinks to code symbols.
+- [x] Replace import/refresh text buttons with icon-sized buttons and tooltips.
+- [x] Add real-time cursor-to-spec mapping in left panel for current function/class context.
+- [x] Add/adjust focused tests for new placeholder mapping helpers.
+- [x] Run targeted checks and complete manual GUI walkthrough with demo artifact.
+
+## Current Task Review: VS Code Plugin UX + Real-Time Mapping Enhancements
+
+- Simplified plugin panel to only title, imported filenames, icon controls, and real-time cursor mapping output.
+- Removed editor top-bar/codelens mapping UI and command contributions for in-editor mapping banners.
+- Updated spec preview generation to open rendered markdown table tabs and emit function/class hyperlinks in `file/symbol` format.
+- Fixed invalid-link root and line-targeting bugs by resolving mapping roots from imported CSV location and finding symbol declaration lines via deterministic filesystem scan.
+- Verification:
+  - `npm run compile` -> pass
+  - `npm run typecheck` -> pass
+  - `npm test` -> `8 passed`
+  - Manual GUI walkthrough with recording + screenshot confirmed all five requested behaviors.

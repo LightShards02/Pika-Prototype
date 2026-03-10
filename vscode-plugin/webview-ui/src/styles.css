@@ -1,0 +1,137 @@
+.app {
+  box-sizing: border-box;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.toolbar h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+button {
+  border: 1px solid var(--vscode-button-border, transparent);
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.icon-button {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 4px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.status {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border: 1px solid var(--vscode-panel-border);
+  padding: 8px;
+}
+
+.error {
+  color: var(--vscode-errorForeground);
+}
+
+.panel {
+  border: 1px solid var(--vscode-panel-border);
+  padding: 8px;
+}
+
+.panel h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+th,
+td {
+  border: 1px solid var(--vscode-panel-border);
+  text-align: left;
+  padding: 6px;
+  vertical-align: top;
+}
+
+th {
+  background: var(--vscode-editorGroupHeader-tabsBackground);
+}
+
+.empty {
+  opacity: 0.8;
+  margin: 0;
+}
+
+.inline-link-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.inline-link-list a {
+  color: var(--vscode-textLink-foreground);
+  text-decoration: underline;
+}
+
+.inline-link-list a:hover {
+  color: var(--vscode-textLink-activeForeground);
+}
+
+.code-file {
+  margin-bottom: 8px;
+}
+
+.mapping-list {
+  margin: 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.spec-id {
+  font-weight: 700;
+  margin-right: 6px;
+}
+
+.meta {
+  margin-right: 8px;
+  opacity: 0.9;
+}
+
+.spec-content {
+  margin-top: 4px;
+  opacity: 0.95;
+}
