@@ -39,6 +39,8 @@ export interface CursorContextMapping {
 export interface ExtensionStatePayload {
   importedFilePath?: string;
   importedPreviewPath?: string;
+  issueTrackerFilePath?: string;
+  testingPlanFilePath?: string;
   codeDirectoryPath?: string;
   rows: DesignSpecRow[];
   specToCodeMappings: SpecCodeMapping[];
@@ -64,6 +66,10 @@ export interface MappingRuntimePayload {
 export interface CodexValidationRuntimePayload {
   isValidating: boolean;
   message: string;
+}
+
+export interface ImportedDocumentOpenPayload {
+  documentType: "designSpec" | "issueTracker" | "testingPlan";
 }
 
 export interface WebviewIncomingMessage {

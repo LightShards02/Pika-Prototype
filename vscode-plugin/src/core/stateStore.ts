@@ -31,6 +31,8 @@ export class StateStore {
     return {
       importedFilePath: this.state.importedFilePath,
       importedPreviewPath: this.state.importedPreviewPath,
+      issueTrackerFilePath: this.state.issueTrackerFilePath,
+      testingPlanFilePath: this.state.testingPlanFilePath,
       codeDirectoryPath: this.state.codeDirectoryPath,
       rows: [...this.state.rows],
       specToCodeMappings: [...this.state.specToCodeMappings],
@@ -53,6 +55,8 @@ export class StateStore {
     this.state = {
       importedFilePath: update.importedFilePath,
       importedPreviewPath: update.importedPreviewPath,
+      issueTrackerFilePath: this.state.issueTrackerFilePath,
+      testingPlanFilePath: this.state.testingPlanFilePath,
       codeDirectoryPath: this.state.codeDirectoryPath,
       rows: [...update.rows],
       specToCodeMappings: [...update.specToCodeMappings],
@@ -81,6 +85,28 @@ export class StateStore {
     this.state = {
       ...this.state,
       importedPreviewPath,
+    };
+  }
+
+  /**
+   * Updates imported issue tracking sheet path.
+   * @param issueTrackerFilePath Imported issue tracking file path.
+   */
+  public setIssueTrackerFilePath(issueTrackerFilePath?: string): void {
+    this.state = {
+      ...this.state,
+      issueTrackerFilePath,
+    };
+  }
+
+  /**
+   * Updates imported testing plan document path.
+   * @param testingPlanFilePath Imported testing plan file path.
+   */
+  public setTestingPlanFilePath(testingPlanFilePath?: string): void {
+    this.state = {
+      ...this.state,
+      testingPlanFilePath,
     };
   }
 

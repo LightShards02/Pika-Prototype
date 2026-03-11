@@ -5,6 +5,7 @@ import {
   CodeReference,
   CursorContextMapping,
   ExtensionStatePayload,
+  ImportedDocumentOpenPayload,
   MappingRuntimePayload,
   SpecCodeMapping,
   WebviewIncomingMessage,
@@ -14,12 +15,15 @@ interface AppProps {
   postMessage: (message: {
     type:
       | "chooseDesignSpec"
+      | "chooseIssueTracker"
+      | "chooseTestingPlan"
       | "requestCodeMapping"
       | "refreshMappings"
       | "openCodeReference"
+      | "openImportedDocument"
       | "configureCodexPath"
       | "configureCodeDirectory";
-    payload?: CodeReference;
+    payload?: CodeReference | ImportedDocumentOpenPayload;
   }) => void;
 }
 
@@ -96,22 +100,35 @@ export function App({ postMessage }: AppProps): React.ReactElement {
   }, [statePayload.specToCodeMappings]);
   const codexReady = statePayload.codexRuntime.status === "ready";
   const mappingRunning = statePayload.mappingRuntime.isRunning;
+  const documentRows = [
+    {
+      id: "designSpec" as const,
+      title: "Design Spec",
+      path: statePayload.importedFilePath,
+      importMessageType: "chooseDesignSpec" as const,
+      importDisabled: mappingRunning,
+    },
+    {
+      id: "issueTracker" as const,
+      title: "Issue Tracking Sheet",
+      path: statePayload.issueTrackerFilePath,
+      importMessageType: "chooseIssueTracker" as const,
+      importDisabled: false,
+    },
+    {
+      id: "testingPlan" as const,
+      title: "Testing Plan",
+      path: statePayload.testingPlanFilePath,
+      importMessageType: "chooseTestingPlan" as const,
+      importDisabled: false,
+    },
+  ];
 
   return (
     <div className="app">
       <header className="toolbar">
         <h2>Design Spec Mapper (MVP)</h2>
         <div className="actions">
-          <button
-            type="button"
-            className="icon-button"
-            title="Import design spec CSV"
-            aria-label="Import design spec CSV"
-            disabled={mappingRunning}
-            onClick={() => postMessage({ type: "chooseDesignSpec" })}
-          >
-            ⭱
-          </button>
           <button
             type="button"
             className="icon-button"
@@ -124,6 +141,37 @@ export function App({ postMessage }: AppProps): React.ReactElement {
           </button>
         </div>
       </header>
+
+      <section className="document-column">
+        <h3>Documents</h3>
+        {documentRows.map((row) => (
+          <div className="document-row" key={row.id}>
+            <button
+              type="button"
+              className={`document-bar ${row.path ? "imported" : "empty"}`}
+              title={row.path ? `Double-click to quick-open ${row.title}` : `${row.title} is not imported yet`}
+              onDoubleClick={() =>
+                postMessage({
+                  type: "openImportedDocument",
+                  payload: { documentType: row.id },
+                })
+              }
+            >
+              <span className="document-title">{row.title}</span>
+              <span className="document-path">{row.path ?? "Not imported"}</span>
+            </button>
+            <button
+              type="button"
+              className="secondary-button document-import-button"
+              disabled={row.importDisabled}
+              onClick={() => postMessage({ type: row.importMessageType })}
+            >
+              Import
+            </button>
+          </div>
+        ))}
+        <p className="document-hint">Double-click a document bar to quick-open the imported file.</p>
+      </section>
 
       <section className="status">
         <div className="mapping-status-row">
@@ -172,10 +220,7 @@ export function App({ postMessage }: AppProps): React.ReactElement {
           Configure Code Directory
         </button>
         <div>
-          <strong>Imported CSV:</strong> {statePayload.importedFilePath ?? "Not imported yet"}
-        </div>
-        <div>
-          <strong>Spec tab file:</strong> {statePayload.importedPreviewPath ?? "Not generated yet"}
+          <strong>Spec preview tab:</strong> {statePayload.importedPreviewPath ?? "Not generated yet"}
         </div>
         {error ? <div className="error">Error: {error}</div> : null}
       </section>

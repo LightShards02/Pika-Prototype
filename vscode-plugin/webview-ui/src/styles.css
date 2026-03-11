@@ -57,6 +57,68 @@ button:hover {
   padding: 8px;
 }
 
+.document-column {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--vscode-panel-border);
+  padding: 8px;
+}
+
+.document-column h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.document-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.document-bar {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+  border: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editorWidget-background);
+  color: var(--vscode-foreground);
+  text-align: left;
+}
+
+.document-bar.imported {
+  border-color: var(--vscode-testing-iconPassed);
+}
+
+.document-bar.empty {
+  border-color: var(--vscode-editorWarning-foreground);
+}
+
+.document-title {
+  font-weight: 700;
+}
+
+.document-path {
+  opacity: 0.85;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  width: 100%;
+}
+
+.document-import-button {
+  width: 64px;
+}
+
+.document-hint {
+  margin: 0;
+  opacity: 0.8;
+  font-size: 12px;
+}
+
 .mapping-status-row {
   display: flex;
   align-items: center;

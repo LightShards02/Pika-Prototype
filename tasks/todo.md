@@ -1039,7 +1039,7 @@
 - [x] Implement folder picker flow that only accepts directories inside workspace root.
 - [x] Add targeted helper tests for workspace path scoping and default resolution.
 - [x] Run plugin compile/typecheck/tests and manual GUI walkthrough recording.
-- [ ] Commit and push changes.
+- [x] Commit and push changes.
 
 ## Current Task Review: Code Directory Configure Button + Workspace-Scoped Selection
 
@@ -1053,3 +1053,24 @@
   - `npm run typecheck` -> pass
   - `npm test` -> `23 passed`
   - Manual GUI walkthrough recorded showing default root and update to inside-workspace directory.
+
+## Current Task: Document Import Column + Double-Click Quick Open
+
+- [x] Replace prior design-spec-only import affordance with a 3-row document import column.
+- [x] Add rows for Design Spec, Issue Tracking Sheet, and Testing Plan, each with right-side Import button.
+- [x] Add double-click quick-open action on each row bar when the document is imported.
+- [x] Add extension host message handlers and state fields for issue/testing document paths.
+- [x] Run compile/typecheck/tests and manual GUI walkthrough recording.
+- [ ] Commit and push changes.
+
+## Current Task Review: Document Import Column + Double-Click Quick Open
+
+- Added a dedicated `Documents` column in plugin panel with three rows (`Design Spec`, `Issue Tracking Sheet`, `Testing Plan`) and per-row `Import` buttons.
+- Added webview/extension message flow for importing issue/testing documents and double-click quick-open actions for all three document rows.
+- Extended extension/webview state contracts and state store to carry imported issue/testing file paths.
+- Kept mapping refresh control in toolbar while removing the old top-level design-spec import button from the header.
+- Verification:
+  - `npm run compile` -> pass
+  - `npm run typecheck` -> pass
+  - `npm test` -> `23 passed`
+  - Manual GUI walkthrough recorded: `plugin_document_column_import_and_quick_open.mp4`.

@@ -19,15 +19,24 @@ interface OpenCodeReferencePayload {
   symbol?: string;
 }
 
+type ImportedDocumentType = "designSpec" | "issueTracker" | "testingPlan";
+
+interface OpenImportedDocumentPayload {
+  documentType: ImportedDocumentType;
+}
+
 interface WebviewMessage {
   type:
     | "chooseDesignSpec"
+    | "chooseIssueTracker"
+    | "chooseTestingPlan"
     | "requestCodeMapping"
     | "refreshMappings"
     | "openCodeReference"
+    | "openImportedDocument"
     | "configureCodexPath"
     | "configureCodeDirectory";
-  payload?: OpenCodeReferencePayload;
+  payload?: OpenCodeReferencePayload | OpenImportedDocumentPayload;
 }
 
 const CODEX_PATH_CONFIGURATION_SECTION = "designSpecMapper";
@@ -124,6 +133,16 @@ class DesignSpecPreviewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
+    if (message.type === "chooseIssueTracker") {
+      await this.importIssueTrackerFromDialog(webview);
+      return;
+    }
+
+    if (message.type === "chooseTestingPlan") {
+      await this.importTestingPlanFromDialog(webview);
+      return;
+    }
+
     if (message.type === "requestCodeMapping") {
       await this.postCursorContextMapping(webview);
       return;
@@ -134,8 +153,13 @@ class DesignSpecPreviewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    if (message.type === "openCodeReference" && message.payload) {
+    if (message.type === "openCodeReference" && message.payload && "filePath" in message.payload) {
       await this.openCodeReference(message.payload);
+      return;
+    }
+
+    if (message.type === "openImportedDocument" && message.payload && "documentType" in message.payload) {
+      await this.quickOpenImportedDocument(message.payload.documentType, webview);
       return;
     }
 
@@ -271,6 +295,65 @@ class DesignSpecPreviewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Imports issue tracking sheet path for quick-open and panel display.
+   * @param webview Source webview for error messaging.
+   */
+  private async importIssueTrackerFromDialog(webview: vscode.Webview): Promise<void> {
+    const selectedPath = await this.selectDocumentPathFromDialog("Import Issue Tracking Sheet");
+    if (!selectedPath) {
+      return;
+    }
+    try {
+      this.stateStore.setIssueTrackerFilePath(selectedPath);
+      for (const currentWebview of this.webviews) {
+        this.postState(currentWebview);
+      }
+      void vscode.window.showInformationMessage(`Imported issue tracking sheet: ${selectedPath}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown issue tracking import error";
+      webview.postMessage({ type: "error", message });
+    }
+  }
+
+  /**
+   * Imports testing plan document path for quick-open and panel display.
+   * @param webview Source webview for error messaging.
+   */
+  private async importTestingPlanFromDialog(webview: vscode.Webview): Promise<void> {
+    const selectedPath = await this.selectDocumentPathFromDialog("Import Testing Plan Document");
+    if (!selectedPath) {
+      return;
+    }
+    try {
+      this.stateStore.setTestingPlanFilePath(selectedPath);
+      for (const currentWebview of this.webviews) {
+        this.postState(currentWebview);
+      }
+      void vscode.window.showInformationMessage(`Imported testing plan: ${selectedPath}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown testing plan import error";
+      webview.postMessage({ type: "error", message });
+    }
+  }
+
+  /**
+   * Prompts user to choose a document file path for import rows.
+   * @param openLabel Dialog action label.
+   */
+  private async selectDocumentPathFromDialog(openLabel: string): Promise<string | undefined> {
+    const selected = await vscode.window.showOpenDialog({
+      canSelectMany: false,
+      canSelectFiles: true,
+      canSelectFolders: false,
+      openLabel,
+    });
+    if (!selected || selected.length === 0) {
+      return undefined;
+    }
+    return selected[0].fsPath;
+  }
+
+  /**
    * Refreshes placeholder mappings and preview table tab.
    * @param webview Source webview for error messaging.
    */
@@ -384,6 +467,48 @@ class DesignSpecPreviewProvider implements vscode.WebviewViewProvider {
       const message = error instanceof Error ? error.message : "Failed to configure code directory path.";
       webview.postMessage({ type: "error", message });
     }
+  }
+
+  /**
+   * Quick-opens imported document from document import column rows.
+   * @param documentType Document row type.
+   * @param webview Source webview for error messaging.
+   */
+  private async quickOpenImportedDocument(
+    documentType: ImportedDocumentType,
+    webview: vscode.Webview,
+  ): Promise<void> {
+    const state = this.stateStore.getState();
+    const documentPath = this.resolveImportedDocumentPath(state, documentType);
+    if (!documentPath) {
+      void vscode.window.showWarningMessage("Import this document before quick-open.");
+      return;
+    }
+    try {
+      const document = await vscode.workspace.openTextDocument(vscode.Uri.file(documentPath));
+      await vscode.window.showTextDocument(document, { preview: false });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to quick-open imported document.";
+      webview.postMessage({ type: "error", message });
+    }
+  }
+
+  /**
+   * Resolves document path from extension state for quick-open actions.
+   * @param state Current extension state snapshot.
+   * @param documentType Document row type.
+   */
+  private resolveImportedDocumentPath(
+    state: ReturnType<StateStore["getState"]>,
+    documentType: ImportedDocumentType,
+  ): string | undefined {
+    if (documentType === "designSpec") {
+      return state.importedFilePath;
+    }
+    if (documentType === "issueTracker") {
+      return state.issueTrackerFilePath;
+    }
+    return state.testingPlanFilePath;
   }
 
   /**
