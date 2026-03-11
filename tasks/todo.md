@@ -1030,3 +1030,26 @@
   - `npm run typecheck` -> pass
   - `npm test` -> `18 passed`
   - Manual GUI walkthrough recorded: `plugin_codex_validation_and_readiness_gating.mp4` (not-ready refresh disabled -> validation progress shown -> ready after pass).
+
+## Current Task: Code Directory Configure Button + Workspace-Scoped Selection
+
+- [x] Add extension/webview state for effective code directory path.
+- [x] Add settings + runtime resolution so default code directory is workspace root.
+- [x] Add `Configure Code Directory` button and current path display in panel.
+- [x] Implement folder picker flow that only accepts directories inside workspace root.
+- [x] Add targeted helper tests for workspace path scoping and default resolution.
+- [x] Run plugin compile/typecheck/tests and manual GUI walkthrough recording.
+- [ ] Commit and push changes.
+
+## Current Task Review: Code Directory Configure Button + Workspace-Scoped Selection
+
+- Added workspace-scoped code directory resolver helpers with inside-parent checks and workspace-root fallback defaults.
+- Added `designSpecMapper.codeDirectory` config setting and extension runtime/state propagation for effective code directory.
+- Added `Configure Code Directory` panel button and `Code directory` display, including folder-picker flow and inside-workspace guardrails.
+- Updated mapping root resolution to use effective code directory and kept preview output files under workspace root.
+- Added unit tests for code-directory normalization/containment/default resolution and re-ran plugin checks.
+- Verification:
+  - `npm run compile` -> pass
+  - `npm run typecheck` -> pass
+  - `npm test` -> `23 passed`
+  - Manual GUI walkthrough recorded showing default root and update to inside-workspace directory.

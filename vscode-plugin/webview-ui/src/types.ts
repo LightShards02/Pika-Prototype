@@ -39,6 +39,7 @@ export interface CursorContextMapping {
 export interface ExtensionStatePayload {
   importedFilePath?: string;
   importedPreviewPath?: string;
+  codeDirectoryPath?: string;
   rows: DesignSpecRow[];
   specToCodeMappings: SpecCodeMapping[];
   codexRuntime: CodexRuntimePayload;

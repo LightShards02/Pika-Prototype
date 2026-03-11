@@ -47,6 +47,12 @@
           "default": "",
           "description": "Absolute path to Codex executable. Leave blank to auto-detect at extension startup.",
           "scope": "machine-overridable"
+        },
+        "designSpecMapper.codeDirectory": {
+          "type": "string",
+          "default": "",
+          "description": "Directory used for resolving mapped code links. Defaults to the workspace root and must stay inside it.",
+          "scope": "machine-overridable"
         }
       }
     }

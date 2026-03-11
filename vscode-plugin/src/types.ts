@@ -99,6 +99,7 @@ export interface CodexValidationRuntimeState {
 export interface ExtensionState {
   importedFilePath?: string;
   importedPreviewPath?: string;
+  codeDirectoryPath?: string;
   rows: DesignSpecRow[];
   specToCodeMappings: SpecCodeMapping[];
   codexRuntime: CodexRuntimeState;

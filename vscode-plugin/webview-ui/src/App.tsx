@@ -17,7 +17,8 @@ interface AppProps {
       | "requestCodeMapping"
       | "refreshMappings"
       | "openCodeReference"
-      | "configureCodexPath";
+      | "configureCodexPath"
+      | "configureCodeDirectory";
     payload?: CodeReference;
   }) => void;
 }
@@ -158,6 +159,17 @@ export function App({ postMessage }: AppProps): React.ReactElement {
           onClick={() => postMessage({ type: "configureCodexPath" })}
         >
           Configure Codex Path
+        </button>
+        <div>
+          <strong>Code directory:</strong> {statePayload.codeDirectoryPath ?? "Not resolved"}
+        </div>
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={mappingRunning}
+          onClick={() => postMessage({ type: "configureCodeDirectory" })}
+        >
+          Configure Code Directory
         </button>
         <div>
           <strong>Imported CSV:</strong> {statePayload.importedFilePath ?? "Not imported yet"}

@@ -1,6 +1,7 @@
 import * as path from "path";
 import { readFile as readFileFromFs } from "fs/promises";
 import * as vscode from "vscode";
+import { isPathInsideParent, resolveEffectiveCodeDirectoryPath } from "./core/codeDirectory";
 import { detectCodexRuntimeState } from "./core/codexExecutable";
 import { validateCodexExecutableHandshake } from "./core/codexValidation";
 import { parseDesignSpecCsv } from "./core/csvParser";
@@ -19,12 +20,19 @@ interface OpenCodeReferencePayload {
 }
 
 interface WebviewMessage {
-  type: "chooseDesignSpec" | "requestCodeMapping" | "refreshMappings" | "openCodeReference" | "configureCodexPath";
+  type:
+    | "chooseDesignSpec"
+    | "requestCodeMapping"
+    | "refreshMappings"
+    | "openCodeReference"
+    | "configureCodexPath"
+    | "configureCodeDirectory";
   payload?: OpenCodeReferencePayload;
 }
 
 const CODEX_PATH_CONFIGURATION_SECTION = "designSpecMapper";
 const CODEX_PATH_CONFIGURATION_KEY = "codexPath";
+const CODE_DIRECTORY_CONFIGURATION_KEY = "codeDirectory";
 
 function isFunctionOrClassSymbol(kind: vscode.SymbolKind): boolean {
   return (
@@ -82,6 +90,7 @@ class DesignSpecPreviewProvider implements vscode.WebviewViewProvider {
     webviewView.webview.html = getWebviewHtml(webviewView.webview, this.extensionUri);
 
     this.webviews.add(webviewView.webview);
+    this.refreshCodeDirectoryPath();
     this.postState(webviewView.webview);
     void this.postCursorContextMapping(webviewView.webview);
     void this.refreshCodexRuntimeStatus();
@@ -132,6 +141,11 @@ class DesignSpecPreviewProvider implements vscode.WebviewViewProvider {
 
     if (message.type === "configureCodexPath") {
       await this.configureCodexPathFromDialog(webview);
+      return;
+    }
+
+    if (message.type === "configureCodeDirectory") {
+      await this.configureCodeDirectoryFromDialog(webview);
     }
   }
 
@@ -333,6 +347,46 @@ class DesignSpecPreviewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Prompts user to choose code directory under workspace root and persists it.
+   * @param webview Source webview for error messaging.
+   */
+  private async configureCodeDirectoryFromDialog(webview: vscode.Webview): Promise<void> {
+    const workspaceRootPath = this.resolveWorkspaceRootPath();
+    if (!workspaceRootPath) {
+      void vscode.window.showWarningMessage("Open a workspace folder before configuring code directory.");
+      return;
+    }
+
+    const selected = await vscode.window.showOpenDialog({
+      canSelectMany: false,
+      canSelectFiles: false,
+      canSelectFolders: true,
+      defaultUri: vscode.Uri.file(workspaceRootPath),
+      openLabel: "Select Code Directory",
+    });
+    if (!selected || selected.length === 0) {
+      return;
+    }
+
+    const selectedPath = selected[0].fsPath;
+    if (!isPathInsideParent(workspaceRootPath, selectedPath)) {
+      const message = "Selected directory must be inside the current workspace root.";
+      void vscode.window.showErrorMessage(message);
+      webview.postMessage({ type: "error", message });
+      return;
+    }
+
+    try {
+      await this.persistConfiguredCodeDirectoryPath(selectedPath);
+      this.refreshCodeDirectoryPath();
+      void vscode.window.showInformationMessage(`Code directory configured: ${selectedPath}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to configure code directory path.";
+      webview.postMessage({ type: "error", message });
+    }
+  }
+
+  /**
    * Resolves workspace folder based on imported uri or active workspace.
    * @param importedFileUri Imported csv URI.
    */
@@ -344,10 +398,22 @@ class DesignSpecPreviewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Resolves workspace root path for current VS Code workspace.
+   */
+  private resolveWorkspaceRootPath(): string | undefined {
+    return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  }
+
+  /**
    * Resolves root path used to interpret relative mapped file links.
    * @param importedFileUri Imported csv URI.
    */
   private resolveMappingRootPath(importedFileUri?: vscode.Uri): string | undefined {
+    const configuredCodeDirectoryPath = this.stateStore.getState().codeDirectoryPath;
+    if (configuredCodeDirectoryPath) {
+      return configuredCodeDirectoryPath;
+    }
+
     const workspaceFolder = this.resolveWorkspaceFolder(importedFileUri);
     if (workspaceFolder && importedFileUri && vscode.workspace.getWorkspaceFolder(importedFileUri)) {
       return workspaceFolder.uri.fsPath;
@@ -440,6 +506,20 @@ class DesignSpecPreviewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Refreshes effective code directory path from config with workspace-root fallback.
+   */
+  public refreshCodeDirectoryPath(): void {
+    const effectiveCodeDirectoryPath = resolveEffectiveCodeDirectoryPath(
+      this.getConfiguredCodeDirectoryPath(),
+      this.resolveWorkspaceRootPath(),
+    );
+    this.stateStore.setCodeDirectoryPath(effectiveCodeDirectoryPath);
+    for (const currentWebview of this.webviews) {
+      this.postState(currentWebview);
+    }
+  }
+
+  /**
    * Updates Codex runtime state and broadcasts to all open webviews.
    * @param codexRuntime Runtime readiness payload.
    */
@@ -510,6 +590,15 @@ class DesignSpecPreviewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Reads user-configured code directory path from VS Code settings.
+   */
+  private getConfiguredCodeDirectoryPath(): string | undefined {
+    return vscode.workspace
+      .getConfiguration(CODEX_PATH_CONFIGURATION_SECTION)
+      .get<string>(CODE_DIRECTORY_CONFIGURATION_KEY);
+  }
+
+  /**
    * Persists user-selected Codex executable path into VS Code settings.
    * @param codexPath Selected path from file picker.
    */
@@ -521,6 +610,20 @@ class DesignSpecPreviewProvider implements vscode.WebviewViewProvider {
     await vscode.workspace
       .getConfiguration(CODEX_PATH_CONFIGURATION_SECTION)
       .update(CODEX_PATH_CONFIGURATION_KEY, codexPath, target);
+  }
+
+  /**
+   * Persists user-selected code directory path into VS Code settings.
+   * @param codeDirectoryPath Selected directory path from folder picker.
+   */
+  private async persistConfiguredCodeDirectoryPath(codeDirectoryPath: string): Promise<void> {
+    const hasWorkspaceFolder = (vscode.workspace.workspaceFolders?.length ?? 0) > 0;
+    const target = hasWorkspaceFolder
+      ? vscode.ConfigurationTarget.Workspace
+      : vscode.ConfigurationTarget.Global;
+    await vscode.workspace
+      .getConfiguration(CODEX_PATH_CONFIGURATION_SECTION)
+      .update(CODE_DIRECTORY_CONFIGURATION_KEY, codeDirectoryPath, target);
   }
 
   /**
@@ -570,9 +673,10 @@ class DesignSpecPreviewProvider implements vscode.WebviewViewProvider {
       return doc.uri.toString();
     }
 
-    const outputUri = vscode.Uri.file(buildPreviewOutputPath(mappingRootPath ?? workspaceFolder.uri.fsPath));
+    const outputBasePath = workspaceFolder.uri.fsPath;
+    const outputUri = vscode.Uri.file(buildPreviewOutputPath(outputBasePath));
     await vscode.workspace.fs.createDirectory(
-      vscode.Uri.file(path.join(mappingRootPath ?? workspaceFolder.uri.fsPath, ".design-spec-mapper")),
+      vscode.Uri.file(path.join(outputBasePath, ".design-spec-mapper")),
     );
     await vscode.workspace.fs.writeFile(outputUri, Buffer.from(markdown, "utf8"));
     await vscode.workspace.openTextDocument(outputUri);
@@ -712,9 +816,13 @@ export function activate(context: vscode.ExtensionContext): void {
       if (event.affectsConfiguration(`${CODEX_PATH_CONFIGURATION_SECTION}.${CODEX_PATH_CONFIGURATION_KEY}`)) {
         void previewProvider.refreshCodexRuntimeStatus();
       }
+      if (event.affectsConfiguration(`${CODEX_PATH_CONFIGURATION_SECTION}.${CODE_DIRECTORY_CONFIGURATION_KEY}`)) {
+        previewProvider.refreshCodeDirectoryPath();
+      }
     }),
   );
 
+  previewProvider.refreshCodeDirectoryPath();
   void previewProvider.refreshCodexRuntimeStatus();
 
   context.subscriptions.push(

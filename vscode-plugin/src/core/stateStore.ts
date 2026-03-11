@@ -31,6 +31,7 @@ export class StateStore {
     return {
       importedFilePath: this.state.importedFilePath,
       importedPreviewPath: this.state.importedPreviewPath,
+      codeDirectoryPath: this.state.codeDirectoryPath,
       rows: [...this.state.rows],
       specToCodeMappings: [...this.state.specToCodeMappings],
       codexRuntime: { ...this.state.codexRuntime },
@@ -52,6 +53,7 @@ export class StateStore {
     this.state = {
       importedFilePath: update.importedFilePath,
       importedPreviewPath: update.importedPreviewPath,
+      codeDirectoryPath: this.state.codeDirectoryPath,
       rows: [...update.rows],
       specToCodeMappings: [...update.specToCodeMappings],
       codexRuntime: { ...this.state.codexRuntime },
@@ -79,6 +81,17 @@ export class StateStore {
     this.state = {
       ...this.state,
       importedPreviewPath,
+    };
+  }
+
+  /**
+   * Updates effective code directory path used by mapping links and resolution.
+   * @param codeDirectoryPath Effective code directory path.
+   */
+  public setCodeDirectoryPath(codeDirectoryPath?: string): void {
+    this.state = {
+      ...this.state,
+      codeDirectoryPath,
     };
   }
 
