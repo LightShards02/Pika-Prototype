@@ -79,14 +79,15 @@ button:hover {
 .document-bar {
   flex: 1;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: flex-start;
-  gap: 2px;
+  gap: 8px;
   min-width: 0;
   border: 1px solid var(--vscode-panel-border);
   background: var(--vscode-editorWidget-background);
   color: var(--vscode-foreground);
   text-align: left;
+  padding: 6px 8px;
 }
 
 .document-bar.imported {
@@ -99,6 +100,29 @@ button:hover {
 
 .document-title {
   font-weight: 700;
+}
+
+.document-icon {
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.document-labels {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
 }
 
 .document-path {
@@ -117,6 +141,18 @@ button:hover {
   margin: 0;
   opacity: 0.8;
   font-size: 12px;
+}
+
+@media (max-width: 245px) {
+  .document-labels,
+  .document-hint {
+    display: none;
+  }
+
+  .document-bar {
+    justify-content: center;
+    padding: 6px;
+  }
 }
 
 .mapping-status-row {

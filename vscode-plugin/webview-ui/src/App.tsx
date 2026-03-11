@@ -104,6 +104,7 @@ export function App({ postMessage }: AppProps): React.ReactElement {
     {
       id: "designSpec" as const,
       title: "Design Spec",
+      iconText: "DS",
       path: statePayload.importedFilePath,
       importMessageType: "chooseDesignSpec" as const,
       importDisabled: mappingRunning,
@@ -111,6 +112,7 @@ export function App({ postMessage }: AppProps): React.ReactElement {
     {
       id: "issueTracker" as const,
       title: "Issue Tracking Sheet",
+      iconText: "IT",
       path: statePayload.issueTrackerFilePath,
       importMessageType: "chooseIssueTracker" as const,
       importDisabled: false,
@@ -118,6 +120,7 @@ export function App({ postMessage }: AppProps): React.ReactElement {
     {
       id: "testingPlan" as const,
       title: "Testing Plan",
+      iconText: "TP",
       path: statePayload.testingPlanFilePath,
       importMessageType: "chooseTestingPlan" as const,
       importDisabled: false,
@@ -150,6 +153,7 @@ export function App({ postMessage }: AppProps): React.ReactElement {
               type="button"
               className={`document-bar ${row.path ? "imported" : "empty"}`}
               title={row.path ? `Double-click to quick-open ${row.title}` : `${row.title} is not imported yet`}
+              aria-label={`${row.title} document bar`}
               onDoubleClick={() =>
                 postMessage({
                   type: "openImportedDocument",
@@ -157,8 +161,13 @@ export function App({ postMessage }: AppProps): React.ReactElement {
                 })
               }
             >
-              <span className="document-title">{row.title}</span>
-              <span className="document-path">{row.path ?? "Not imported"}</span>
+              <span className="document-icon" aria-hidden="true">
+                {row.iconText}
+              </span>
+              <span className="document-labels">
+                <span className="document-title">{row.title}</span>
+                <span className="document-path">{row.path ?? "Not imported"}</span>
+              </span>
             </button>
             <button
               type="button"

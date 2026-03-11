@@ -1074,3 +1074,23 @@
   - `npm run typecheck` -> pass
   - `npm test` -> `23 passed`
   - Manual GUI walkthrough recorded: `plugin_document_column_import_and_quick_open.mp4`.
+
+## Current Task: Adaptive Document Row Layout for Narrow Panel Width
+
+- [x] Add left icons on each document bar in Documents column.
+- [x] Add responsive layout breakpoint that hides document labels/path text when panel width is narrow.
+- [x] Keep document bar and import button usable in compact mode.
+- [x] Run plugin compile/typecheck/tests.
+- [x] Run manual GUI walkthrough recording demonstrating compact behavior.
+- [ ] Commit and push changes.
+
+## Current Task Review: Adaptive Document Row Layout for Narrow Panel Width
+
+- Added left document icons (`DS`, `IT`, `TP`) inside each document bar and grouped text into a label container.
+- Added responsive compact breakpoint for document rows so label/path text collapses while icon + Import button remain visible.
+- Preserved document row quick-open and Import button interactions in both regular and compact states.
+- Verification:
+  - `npm run compile` -> pass
+  - `npm run typecheck` -> pass
+  - `npm test` -> `23 passed`
+  - Manual GUI walkthrough recorded for wide/narrow panel behavior.
