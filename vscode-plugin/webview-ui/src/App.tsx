@@ -151,15 +151,14 @@ export function App({ postMessage }: AppProps): React.ReactElement {
         <div>
           <strong>Codex details:</strong> {statePayload.codexRuntime.message}
         </div>
-        {!codexReady ? (
-          <button
-            type="button"
-            className="secondary-button"
-            onClick={() => postMessage({ type: "configureCodexPath" })}
-          >
-            Configure Codex Path
-          </button>
-        ) : null}
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={statePayload.codexValidationRuntime.isValidating}
+          onClick={() => postMessage({ type: "configureCodexPath" })}
+        >
+          Configure Codex Path
+        </button>
         <div>
           <strong>Imported CSV:</strong> {statePayload.importedFilePath ?? "Not imported yet"}
         </div>
