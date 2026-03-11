@@ -1061,7 +1061,7 @@
 - [x] Add double-click quick-open action on each row bar when the document is imported.
 - [x] Add extension host message handlers and state fields for issue/testing document paths.
 - [x] Run compile/typecheck/tests and manual GUI walkthrough recording.
-- [ ] Commit and push changes.
+- [x] Commit and push changes.
 
 ## Current Task Review: Document Import Column + Double-Click Quick Open
 
