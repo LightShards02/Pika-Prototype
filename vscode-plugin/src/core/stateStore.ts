@@ -18,11 +18,22 @@ const INITIAL_STATE: ExtensionState = {
   },
 };
 
+interface StateStoreOptions {
+  lastMappedAt?: number;
+}
+
 /**
  * Maintains extension in-memory state for the current VS Code session.
  */
 export class StateStore {
-  private state: ExtensionState = { ...INITIAL_STATE };
+  private state: ExtensionState;
+
+  constructor(options?: StateStoreOptions) {
+    this.state = {
+      ...INITIAL_STATE,
+      lastMappedAt: options?.lastMappedAt,
+    };
+  }
 
   /**
    * Returns a readonly snapshot of current state.
@@ -34,6 +45,7 @@ export class StateStore {
       issueTrackerFilePath: this.state.issueTrackerFilePath,
       testingPlanFilePath: this.state.testingPlanFilePath,
       codeDirectoryPath: this.state.codeDirectoryPath,
+      lastMappedAt: this.state.lastMappedAt,
       rows: [...this.state.rows],
       specToCodeMappings: [...this.state.specToCodeMappings],
       codexRuntime: { ...this.state.codexRuntime },
@@ -58,6 +70,7 @@ export class StateStore {
       issueTrackerFilePath: this.state.issueTrackerFilePath,
       testingPlanFilePath: this.state.testingPlanFilePath,
       codeDirectoryPath: this.state.codeDirectoryPath,
+      lastMappedAt: this.state.lastMappedAt,
       rows: [...update.rows],
       specToCodeMappings: [...update.specToCodeMappings],
       codexRuntime: { ...this.state.codexRuntime },
@@ -118,6 +131,17 @@ export class StateStore {
     this.state = {
       ...this.state,
       codeDirectoryPath,
+    };
+  }
+
+  /**
+   * Updates timestamp (epoch ms) of the most recent refresh mapping action.
+   * @param lastMappedAt Epoch timestamp in milliseconds.
+   */
+  public setLastMappedAt(lastMappedAt?: number): void {
+    this.state = {
+      ...this.state,
+      lastMappedAt,
     };
   }
 

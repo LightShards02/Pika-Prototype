@@ -42,6 +42,7 @@ interface WebviewMessage {
 const CODEX_PATH_CONFIGURATION_SECTION = "designSpecMapper";
 const CODEX_PATH_CONFIGURATION_KEY = "codexPath";
 const CODE_DIRECTORY_CONFIGURATION_KEY = "codeDirectory";
+const LAST_MAPPED_AT_WORKSPACE_STATE_KEY = "designSpecMapper.lastMappedAt";
 
 function isFunctionOrClassSymbol(kind: vscode.SymbolKind): boolean {
   return (
@@ -86,6 +87,7 @@ class DesignSpecPreviewProvider implements vscode.WebviewViewProvider {
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly stateStore: StateStore,
+    private readonly workspaceState: vscode.Memento,
   ) {}
 
   /**
@@ -370,6 +372,7 @@ class DesignSpecPreviewProvider implements vscode.WebviewViewProvider {
     }
 
     try {
+      await this.updateLastMappedAtNow();
       await this.runMappingWithRuntime("Running spec-to-code mappings...", async () => {
         const importedUri = state.importedFilePath ? vscode.Uri.file(state.importedFilePath) : undefined;
         const workspaceFolder = this.resolveWorkspaceFolder(importedUri);
@@ -397,6 +400,18 @@ class DesignSpecPreviewProvider implements vscode.WebviewViewProvider {
       const message = error instanceof Error ? error.message : "Unknown mapping refresh error";
       webview.postMessage({ type: "error", message });
     }
+  }
+
+  /**
+   * Stores click-time timestamp for refresh mapping and broadcasts panel state.
+   */
+  private async updateLastMappedAtNow(): Promise<void> {
+    const lastMappedAt = Date.now();
+    this.stateStore.setLastMappedAt(lastMappedAt);
+    for (const currentWebview of this.webviews) {
+      this.postState(currentWebview);
+    }
+    await this.workspaceState.update(LAST_MAPPED_AT_WORKSPACE_STATE_KEY, lastMappedAt);
   }
 
   /**
@@ -924,8 +939,9 @@ class DesignSpecPreviewProvider implements vscode.WebviewViewProvider {
  * @param context Extension context.
  */
 export function activate(context: vscode.ExtensionContext): void {
-  const stateStore = new StateStore();
-  const previewProvider = new DesignSpecPreviewProvider(context.extensionUri, stateStore);
+  const lastMappedAt = context.workspaceState.get<number>(LAST_MAPPED_AT_WORKSPACE_STATE_KEY);
+  const stateStore = new StateStore({ lastMappedAt });
+  const previewProvider = new DesignSpecPreviewProvider(context.extensionUri, stateStore, context.workspaceState);
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("designSpecMapper.previewView", previewProvider),

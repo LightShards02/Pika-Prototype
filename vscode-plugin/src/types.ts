@@ -102,6 +102,7 @@ export interface ExtensionState {
   issueTrackerFilePath?: string;
   testingPlanFilePath?: string;
   codeDirectoryPath?: string;
+  lastMappedAt?: number;
   rows: DesignSpecRow[];
   specToCodeMappings: SpecCodeMapping[];
   codexRuntime: CodexRuntimeState;

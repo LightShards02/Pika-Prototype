@@ -1,5 +1,12 @@
 # TODO
 
+- [x] Add `lastMappedAt` state field across extension + webview payload types.
+- [x] Persist `lastMappedAt` via VS Code workspace state and restore on activation.
+- [x] Update refresh handler to stamp `lastMappedAt` on refresh button execution.
+- [x] Render `Last mapped` panel row with `MM-DD HH:MM` formatting fallback.
+- [ ] Add targeted unit tests and run plugin checks.
+- [ ] Commit and push branch updates.
+
 - [ ] Reproduce current `implement` failure (`dataset/nutrition`, `--codebase-dir src`) and capture exit code/stdout/stderr.
 - [ ] Collect deterministic evidence from latest run artifacts (`summary.json`, `run_meta.json`, verification logs, runtime log).
 - [ ] Identify root cause and implement minimal fix with robust error handling.

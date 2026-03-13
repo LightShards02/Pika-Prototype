@@ -43,6 +43,21 @@ const DEFAULT_CODEX_VALIDATION_RUNTIME: CodexValidationRuntimePayload = {
   message: "",
 };
 
+function formatLastMappedDisplay(lastMappedAt?: number): string {
+  if (typeof lastMappedAt !== "number" || !Number.isFinite(lastMappedAt)) {
+    return "Not mapped yet";
+  }
+  const timestamp = new Date(lastMappedAt);
+  if (Number.isNaN(timestamp.getTime())) {
+    return "Not mapped yet";
+  }
+  const month = String(timestamp.getMonth() + 1).padStart(2, "0");
+  const day = String(timestamp.getDate()).padStart(2, "0");
+  const hours = String(timestamp.getHours()).padStart(2, "0");
+  const minutes = String(timestamp.getMinutes()).padStart(2, "0");
+  return `${month}-${day} ${hours}:${minutes}`;
+}
+
 /**
  * Renders the design-spec import, preview, and bidirectional mapping UI.
  */
@@ -191,6 +206,9 @@ export function App({ postMessage }: AppProps): React.ReactElement {
         </div>
         <div>
           <strong>Mapping details:</strong> {statePayload.mappingRuntime.message}
+        </div>
+        <div>
+          <strong>Last mapped:</strong> {formatLastMappedDisplay(statePayload.lastMappedAt)}
         </div>
         {statePayload.codexValidationRuntime.isValidating ? (
           <div className="validation-status">
