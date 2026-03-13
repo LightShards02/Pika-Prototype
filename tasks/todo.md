@@ -7,6 +7,18 @@
 - [x] Add targeted unit tests and run plugin checks.
 - [x] Commit and push branch updates.
 
+## Current Task Review: Plugin Last-Mapped Timestamp Persistence
+
+- Added extension/webview state support for `lastMappedAt` and initialized state from persisted workspace memento.
+- Refresh button flow now stamps click-time `Date.now()` and persists it via `designSpecMapper.lastMappedAt`.
+- Plugin status panel now renders `Last mapped` using `MM-DD HH:MM` formatting with `Not mapped yet` fallback.
+- Added focused `StateStore` tests for hydration, preservation across import updates, and explicit setter updates.
+- Verification:
+  - `npm run compile` -> pass
+  - `npm run typecheck` -> pass
+  - `npm test` -> `26 passed`
+  - Manual GUI launch blocker: VS Code Extension Development Host crashed with code `5` in this environment.
+
 - [ ] Reproduce current `implement` failure (`dataset/nutrition`, `--codebase-dir src`) and capture exit code/stdout/stderr.
 - [ ] Collect deterministic evidence from latest run artifacts (`summary.json`, `run_meta.json`, verification logs, runtime log).
 - [ ] Identify root cause and implement minimal fix with robust error handling.
