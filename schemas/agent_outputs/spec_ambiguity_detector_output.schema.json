@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SpecAmbiguityDetectorOutput",
+  "description": "Ambiguity Detector output. The agent scans SADS spec requirement and acceptance_criteria fields for vague language and emits manual_resolution_items. An empty array means no issues were found (non-blocking). Each item includes a suggested_improvement the user can accept, or they can choose 'let_agent_edit' to have spec_editor produce a rewrite.",
+  "type": "object",
+  "required": ["manual_resolution_items"],
+  "additionalProperties": false,
+  "properties": {
+    "manual_resolution_items": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/ambiguity_item" }
+    }
+  },
+  "$defs": {
+    "ambiguity_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "item_id",
+        "title",
+        "spec_id",
+        "field",
+        "vague_phrases",
+        "suggested_improvement",
+        "options"
+      ],
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Unique identifier for this resolution item (e.g. AMB-001)."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Short human-readable summary of the ambiguity."
+        },
+        "spec_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identifier of the spec row containing the vague language."
+        },
+        "field": {
+          "type": "string",
+          "enum": ["requirement", "acceptance_criteria"],
+          "description": "Which SADS field contains the vague language."
+        },
+        "vague_phrases": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Exact phrases or clauses from the field that are vague or unmeasurable."
+        },
+        "suggested_improvement": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Agent-proposed rewrite of the entire field with specific, measurable language."
+        },
+        "options": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/resolution_option" },
+          "description": "Resolution options presented to the user."
+        }
+      }
+    },
+    "resolution_option": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["option_id", "label", "effect"],
+      "properties": {
+        "option_id": {
+          "type": "string",
+          "enum": ["accept_suggestion", "let_agent_edit", "skip"],
+          "description": "accept_suggestion: apply suggested_improvement; let_agent_edit: call spec_editor for a custom rewrite; skip: leave original unchanged."
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable option label."
+        },
+        "effect": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Short description of what choosing this option does."
+        }
+      }
+    }
+  }
+}

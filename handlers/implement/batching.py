@@ -278,7 +278,103 @@ def _build_batches(
             prev_batch = bid
             prev_chunk_files = chunk_files
 
+    if spec_to_files:
+        batches = _add_file_overlap_edges(batches, spec_to_files)
+
     return {"batches": batches}
+
+
+def _reachable_from(
+    start: str,
+    deps: dict[str, set[str]],
+) -> set[str]:
+    """BFS reachability from start node following deps edges (start -> its deps)."""
+    visited: set[str] = set()
+    queue = list(deps.get(start, set()))
+    while queue:
+        node = queue.pop()
+        if node in visited:
+            continue
+        visited.add(node)
+        queue.extend(deps.get(node, set()))
+    return visited
+
+
+def _compute_full_reachability(
+    batch_ids: list[str],
+    deps: dict[str, set[str]],
+) -> dict[str, set[str]]:
+    """Compute transitive reachability for all nodes (node -> set of nodes it can reach)."""
+    return {bid: _reachable_from(bid, deps) for bid in batch_ids}
+
+
+def _add_file_overlap_edges(
+    batches: list[dict[str, Any]],
+    spec_to_files: dict[str, set[str]],
+) -> list[dict[str, Any]]:
+    """Serialize batch pairs that share files but have no existing dependency order.
+
+    For each pair (Bi, Bj) with i < j that share at least one planned file path:
+    - If neither batch is already transitively ordered relative to the other:
+      add Bi -> Bj (Bj depends on Bi, runs after).
+    - If any transitive order already exists (either direction): skip.
+      The pair is already serialized through their spec-derived deps, so the later
+      batch's workspace sync will naturally see the earlier batch's applied patches.
+
+    This guarantees:
+    - No cycles: an edge is only added when neither side can reach the other.
+    - No batch merges: batch contents and sizes are never changed.
+    - Minimal parallelism impact: only unordered file-sharing pairs are serialized.
+
+    Pairs are processed in stable (i, j) index order for determinism. Reachability
+    is updated incrementally so that edges added earlier are visible when later pairs
+    are evaluated.
+    """
+    if not spec_to_files:
+        return batches
+
+    deps: dict[str, set[str]] = {
+        b["batch_id"]: set(b.get("depends_on_batches", []))
+        for b in batches
+    }
+    batch_ids = [b["batch_id"] for b in batches]
+    reachability = _compute_full_reachability(batch_ids, deps)
+
+    batch_files: dict[str, set[str]] = {
+        b["batch_id"]: {
+            f
+            for sid in b.get("spec_ids", [])
+            for f in spec_to_files.get(str(sid), set())
+        }
+        for b in batches
+    }
+
+    for i, bi_entry in enumerate(batches):
+        bi = bi_entry["batch_id"]
+        for bj_entry in batches[i + 1 :]:
+            bj = bj_entry["batch_id"]
+            if not (batch_files[bi] & batch_files[bj]):
+                continue
+            # Only add an edge when neither side already orders the other.
+            # Adding Bj→Bi (deps[bj].add(bi)) is cycle-free iff Bi does not
+            # already transitively depend on Bj (i.e. bi_reaches_bj is False).
+            # Because bj_reaches_bi is also False here, both conditions hold.
+            bi_reaches_bj = bj in reachability.get(bi, set())
+            bj_reaches_bi = bi in reachability.get(bj, set())
+            if bi_reaches_bj or bj_reaches_bi:
+                continue
+            # Neither side is ordered: add Bi -> Bj and propagate reachability.
+            deps[bj].add(bi)
+            new_reach = {bi} | reachability.get(bi, set())
+            reachability[bj] |= new_reach
+            for node in batch_ids:
+                if bj in reachability.get(node, set()):
+                    reachability[node] |= new_reach
+
+    for b in batches:
+        b["depends_on_batches"] = sorted(deps[b["batch_id"]])
+
+    return batches
 
 
 def _deps_for_chunk(

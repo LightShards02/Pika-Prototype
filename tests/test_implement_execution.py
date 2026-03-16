@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import tempfile
@@ -768,6 +769,208 @@ class ImplementExecutionPatchApplySemanticGuardTests(unittest.TestCase):
         )
         self.assertTrue(any("git apply --check failed" in v for v in violations))
 
+    def test_semantic_guard_accepts_patch_when_change_is_already_applied(self) -> None:
+        """Patch already reflected in current files passes semantic validation."""
+        diff_path = self.repo / "agent_artifacts" / "D1_applied.diff"
+        diff_path.parent.mkdir(parents=True, exist_ok=True)
+        diff_path.write_text(
+            "\n".join(
+                [
+                    "--- a/CORE/tests/test_domain_logic.py",
+                    "+++ b/CORE/tests/test_domain_logic.py",
+                    "@@ -1,2 +1,2 @@",
+                    " a",
+                    "-b",
+                    "+c",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        apply_proc = subprocess.run(
+            ["git", "-C", str(self.repo), "apply", "--directory", "src", str(diff_path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(apply_proc.returncode, 0, msg=apply_proc.stderr)
+
+        output = {
+            "run_summary": {"status": "success"},
+            "diff_plan": [
+                {
+                    "diff_id": "D1",
+                    "diff_path": str(diff_path.relative_to(self.repo)),
+                    "touched_files": ["CORE/tests/test_domain_logic.py"],
+                    "owner_spec_id": "A1021",
+                    "related_spec_ids": ["A1021"],
+                    "file_path": "CORE/tests/test_domain_logic.py",
+                    "op": "modify",
+                }
+            ],
+            "A1021": {
+                "summary": "x",
+                "diff_refs": ["D1"],
+                "mapped_classes_functions": [],
+                "mapped_test_cases": [],
+            },
+        }
+        contract = {
+            "allowed_prefixes": ["CORE/"],
+            "allowed_exact_paths": [],
+            "forbidden_path_prefixes": [],
+        }
+
+        violations = validate_implement_output_semantics(
+            output,
+            contract,
+            self.repo,
+            codebase_prefix_rel="src",
+        )
+        self.assertEqual(violations, [])
+
+    def test_semantic_guard_accepts_whitespace_only_context_mismatch(self) -> None:
+        """Whitespace-only context mismatches pass via --ignore-space-change fallback."""
+        target = self.repo / "src" / "CORE" / "tests" / "test_whitespace.py"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("def test_tab_indent():\n\treturn 1\n", encoding="utf-8")
+
+        diff_path = self.repo / "agent_artifacts" / "D_ws.diff"
+        diff_path.parent.mkdir(parents=True, exist_ok=True)
+        diff_path.write_text(
+            "\n".join(
+                [
+                    "--- a/CORE/tests/test_whitespace.py",
+                    "+++ b/CORE/tests/test_whitespace.py",
+                    "@@ -1,2 +1,3 @@",
+                    " def test_tab_indent():",
+                    "-    return 1",
+                    "+\treturn 1",
+                    "+    return 2",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        output = {
+            "run_summary": {"status": "success"},
+            "diff_plan": [
+                {
+                    "diff_id": "D_ws",
+                    "diff_path": str(diff_path.relative_to(self.repo)),
+                    "touched_files": ["CORE/tests/test_whitespace.py"],
+                    "owner_spec_id": "A1021",
+                    "related_spec_ids": ["A1021"],
+                    "file_path": "CORE/tests/test_whitespace.py",
+                    "op": "modify",
+                }
+            ],
+            "A1021": {
+                "summary": "x",
+                "diff_refs": ["D_ws"],
+                "mapped_classes_functions": [],
+                "mapped_test_cases": [],
+            },
+        }
+        contract = {
+            "allowed_prefixes": ["CORE/"],
+            "allowed_exact_paths": [],
+            "forbidden_path_prefixes": [],
+        }
+
+        violations = validate_implement_output_semantics(
+            output,
+            contract,
+            self.repo,
+            codebase_prefix_rel="src",
+        )
+        self.assertEqual(violations, [])
+
+    def test_semantic_guard_normalizes_blank_context_hunk_mismatch(self) -> None:
+        """Whitespace-only context drift is normalized before semantic apply check."""
+        target = self.repo / "src" / "SHARED" / "tests" / "test_contract_schemas.py"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            "\n".join(
+                [
+                    "from __future__ import annotations",
+                    "",
+                    "import json",
+                    "from pathlib import Path",
+                    "",
+                    "",
+                    "def _load_schema(file_name: str) -> dict:",
+                    "    return {}",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        diff_path = self.repo / "agent_artifacts" / "D1_blank_context.diff"
+        diff_path.parent.mkdir(parents=True, exist_ok=True)
+        original_patch = "\n".join(
+            [
+                "--- a/SHARED/tests/test_contract_schemas.py",
+                "+++ b/SHARED/tests/test_contract_schemas.py",
+                "@@ -3,6 +3,7 @@",
+                " import json",
+                " from pathlib import Path",
+                " ",
+                " ",
+                " ",
+                "+from SHARED.contracts.auth_contracts import LoginRequestDTO",
+                " def _load_schema(file_name: str) -> dict:",
+                "",
+            ]
+        )
+        diff_path.write_text(original_patch, encoding="utf-8")
+
+        output = {
+            "run_summary": {"status": "success"},
+            "diff_plan": [
+                {
+                    "diff_id": "D1",
+                    "diff_path": str(diff_path.relative_to(self.repo)),
+                    "touched_files": ["SHARED/tests/test_contract_schemas.py"],
+                    "owner_spec_id": "A1027",
+                    "related_spec_ids": ["A1027"],
+                    "file_path": "SHARED/tests/test_contract_schemas.py",
+                    "op": "modify",
+                }
+            ],
+            "A1027": {
+                "summary": "x",
+                "diff_refs": ["D1"],
+                "mapped_classes_functions": [],
+                "mapped_test_cases": [],
+            },
+        }
+        contract = {
+            "allowed_prefixes": ["SHARED/"],
+            "allowed_exact_paths": [],
+            "forbidden_path_prefixes": [],
+        }
+
+        violations = validate_implement_output_semantics(
+            output,
+            contract,
+            self.repo,
+            codebase_prefix_rel="src",
+        )
+        self.assertEqual(violations, [])
+
+        normalized_patch = diff_path.read_text(encoding="utf-8")
+        self.assertNotEqual(normalized_patch, original_patch)
+        self.assertIn("+from SHARED.contracts.auth_contracts import LoginRequestDTO", normalized_patch)
+        check = subprocess.run(
+            ["git", "-C", str(self.repo), "apply", "--check", "--directory", "src", str(diff_path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(check.returncode, 0, msg=check.stderr)
+
     def test_semantic_guard_accepts_applicable_patch(self) -> None:
         """Patch applicable under codebase prefix passes semantic validation."""
         diff_path = self.repo / "agent_artifacts" / "D1_valid.diff"
@@ -970,6 +1173,10 @@ class ImplementExecutionLocalWorkspaceTests(unittest.TestCase):
         self.assertIsInstance(template_vars, dict)
         assert isinstance(template_vars, dict)
         self.assertEqual(template_vars.get("codebase_dir"), str(self.shared_workspace.resolve()))
+        artifacts_dir = Path(str(template_vars.get("agent_artifacts_dir", "")))
+        self.assertEqual(artifacts_dir.name, "B0")
+        self.assertEqual(artifacts_dir.parent.name, "run-local-batch-1")
+        self.assertEqual(artifacts_dir.parent.parent.name, "implement")
 
     def test_execute_batch_retry_hook_resyncs_workspace_and_refreshes_prompt_state(self) -> None:
         """Semantic retry pre-attempt hook resyncs local workspace on retry attempts."""
@@ -1454,6 +1661,278 @@ class ImplementExecutionWorktreeScopeTests(unittest.TestCase):
 
         self.assertTrue(result["success"], msg=str(result["records"]))
         self.assertEqual(local_only.read_text(encoding="utf-8"), "new\n")
+
+    def test_apply_and_verify_accepts_whitespace_only_context_mismatch_with_fallback(self) -> None:
+        """Apply path retries with --ignore-space-change for whitespace-only context mismatches."""
+        target = self.project_root / "src" / "CORE" / "tests" / "test_whitespace_apply.py"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("def test_tab_indent():\n\treturn 1\n", encoding="utf-8")
+        patch = self.tmp / "whitespace_context_patch.diff"
+        patch.write_text(
+            "\n".join(
+                [
+                    "--- a/src/CORE/tests/test_whitespace_apply.py",
+                    "+++ b/src/CORE/tests/test_whitespace_apply.py",
+                    "@@ -1,2 +1,3 @@",
+                    " def test_tab_indent():",
+                    "-    return 1",
+                    "+\treturn 1",
+                    "+    return 2",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        result = _apply_and_verify(
+            self.project_root,
+            "B8",
+            [str(patch)],
+            ["python verify_cwd.py"],
+            self.verification,
+            codebase_dir=self.project_root / "src",
+        )
+
+        self.assertTrue(result["success"], msg=str(result["records"]))
+        updated = target.read_text(encoding="utf-8")
+        self.assertIn("return 2", updated)
+
+    def test_apply_and_verify_skips_patch_when_change_is_already_applied(self) -> None:
+        """Already-applied patches are treated as idempotent no-ops."""
+        target = self.project_root / "CORE" / "already_applied.txt"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("old\n", encoding="utf-8")
+        patch = self.tmp / "already_applied.diff"
+        patch.write_text(
+            _modify_file_diff("CORE/already_applied.txt", "old", "new"),
+            encoding="utf-8",
+        )
+
+        preapply = subprocess.run(
+            ["git", "-C", str(self.repo), "apply", "--directory", "dataset/nutrition", str(patch)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(preapply.returncode, 0, msg=preapply.stderr)
+
+        result = _apply_and_verify(
+            self.project_root,
+            "B9",
+            [str(patch)],
+            ["python verify_cwd.py"],
+            self.verification,
+        )
+
+        self.assertTrue(result["success"], msg=str(result["records"]))
+        self.assertEqual(target.read_text(encoding="utf-8"), "new\n")
+        kinds = [r.get("kind") for r in result.get("records", []) if isinstance(r, dict)]
+        self.assertIn("patch_already_applied_skip", kinds)
+
+
+class ImplementExecutionWorktreeBootstrapTests(unittest.TestCase):
+    """Regression tests for detached worktree bootstrap in ignored subproject roots."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="implement-worktree-bootstrap-"))
+        self.repo = self.tmp / "repo"
+        self.project_root = self.repo / "dataset" / "nutrition"
+        (self.project_root / "CORE").mkdir(parents=True, exist_ok=True)
+        (self.project_root / "CORE" / "project.marker").write_text("ok\n", encoding="utf-8")
+        (self.project_root / "verify_cwd.py").write_text(
+            (
+                "import pathlib\n"
+                "import sys\n\n"
+                "marker = pathlib.Path('CORE/project.marker')\n"
+                "sys.exit(0 if marker.exists() else 1)\n"
+            ),
+            encoding="utf-8",
+        )
+        (self.repo / ".gitignore").write_text("dataset/\n", encoding="utf-8")
+        (self.repo / "README.md").write_text("seed\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "init"],
+            cwd=str(self.repo),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "add", ".gitignore", "README.md"],
+            cwd=str(self.repo),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=Test User",
+                "commit",
+                "-m",
+                "init",
+            ],
+            cwd=str(self.repo),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.patch = self.tmp / "project_patch.diff"
+        self.patch.write_text(_new_file_diff("CORE/generated_module.py", "VALUE = 1"), encoding="utf-8")
+        self.verification = self.tmp / "verification"
+        self.verification.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_apply_and_verify_bootstraps_missing_project_root_inside_worktree(self) -> None:
+        """Ignored project subpaths are bootstrapped and synced into detached verification worktree."""
+        result = _apply_and_verify(
+            self.project_root,
+            "B0",
+            [str(self.patch)],
+            ["python verify_cwd.py"],
+            self.verification,
+        )
+
+        self.assertTrue(result["success"], msg=str(result["records"]))
+        command_records = [r for r in result.get("records", []) if isinstance(r, dict) and "command" in r]
+        self.assertEqual(len(command_records), 1)
+        self.assertEqual(command_records[0].get("command"), "python verify_cwd.py")
+        self.assertEqual(command_records[0].get("exit_code"), 0)
+        kinds = [r.get("kind") for r in result.get("records", []) if isinstance(r, dict)]
+        self.assertNotIn("worktree_project_root_bootstrap_failed", kinds)
+        self.assertTrue((self.project_root / "CORE" / "generated_module.py").exists())
+
+
+class TestContractSchemaConformanceCheck(unittest.TestCase):
+    """Tests for _check_contract_schema_conformance and _schema_allows_null."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write_schema(self, rel_path: str, schema: dict) -> Path:
+        path = self.tmp / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(schema), encoding="utf-8")
+        return path
+
+    def _brief(self, contract_id: str, planned_path: str, fields: list[dict]) -> dict:
+        return {
+            "shared_contracts": [{
+                "contract_id": contract_id,
+                "planned_file_path": planned_path,
+                "fields": fields,
+            }]
+        }
+
+    def test_passes_all_required_and_nullable_consistent(self) -> None:
+        """Schema with all properties in required and correct nullability passes."""
+        from handlers.implement.execution import _check_contract_schema_conformance
+        self._write_schema("shared/my_dto.json", {
+            "properties": {
+                "user_id": {"type": "string"},
+                "display_name": {"type": ["string", "null"]},
+            },
+            "required": ["user_id", "display_name"],
+        })
+        brief = self._brief("my_dto", "shared/my_dto.json", [
+            {"name": "user_id", "type_name": "string", "nullable": False},
+            {"name": "display_name", "type_name": "string", "nullable": True},
+        ])
+        result = _check_contract_schema_conformance(brief, self.tmp)
+        self.assertEqual(result["status"], "passed", result)
+        self.assertIn("my_dto:conformant", result["checks"])
+
+    def test_fails_when_field_not_in_required(self) -> None:
+        """Schema property missing from required produces fields_not_in_required violation."""
+        from handlers.implement.execution import _check_contract_schema_conformance
+        self._write_schema("shared/my_dto.json", {
+            "properties": {
+                "user_id": {"type": "string"},
+                "optional_name": {"type": "string"},
+            },
+            "required": ["user_id"],  # optional_name missing from required
+        })
+        brief = self._brief("my_dto", "shared/my_dto.json", [
+            {"name": "user_id", "type_name": "string", "nullable": False},
+            {"name": "optional_name", "type_name": "string", "nullable": False},
+        ])
+        result = _check_contract_schema_conformance(brief, self.tmp)
+        self.assertEqual(result["status"], "failed")
+        kinds = [v["kind"] for v in result["violations"]]
+        self.assertIn("fields_not_in_required", kinds)
+
+    def test_fails_when_nullable_true_but_no_null_type(self) -> None:
+        """Field with nullable=true but schema using plain string type produces violation."""
+        from handlers.implement.execution import _check_contract_schema_conformance
+        self._write_schema("shared/my_dto.json", {
+            "properties": {"display_name": {"type": "string"}},  # no null
+            "required": ["display_name"],
+        })
+        brief = self._brief("my_dto", "shared/my_dto.json", [
+            {"name": "display_name", "type_name": "string", "nullable": True},
+        ])
+        result = _check_contract_schema_conformance(brief, self.tmp)
+        self.assertEqual(result["status"], "failed")
+        kinds = [v["kind"] for v in result["violations"]]
+        self.assertIn("nullable_true_but_no_null_type", kinds)
+
+    def test_fails_when_nullable_false_but_allows_null(self) -> None:
+        """Field with nullable=false but schema allowing null produces violation."""
+        from handlers.implement.execution import _check_contract_schema_conformance
+        self._write_schema("shared/my_dto.json", {
+            "properties": {"user_id": {"type": ["string", "null"]}},
+            "required": ["user_id"],
+        })
+        brief = self._brief("my_dto", "shared/my_dto.json", [
+            {"name": "user_id", "type_name": "string", "nullable": False},
+        ])
+        result = _check_contract_schema_conformance(brief, self.tmp)
+        self.assertEqual(result["status"], "failed")
+        kinds = [v["kind"] for v in result["violations"]]
+        self.assertIn("nullable_false_but_null_type", kinds)
+
+    def test_skips_missing_file(self) -> None:
+        """Contract whose planned_file_path does not exist is skipped, not failed."""
+        from handlers.implement.execution import _check_contract_schema_conformance
+        brief = self._brief("my_dto", "shared/nonexistent.json", [
+            {"name": "user_id", "type_name": "string", "nullable": False},
+        ])
+        result = _check_contract_schema_conformance(brief, self.tmp)
+        self.assertEqual(result["status"], "passed")
+        self.assertIn("my_dto:file_not_found_skipped", result["checks"])
+
+    def test_allows_null_via_anyof(self) -> None:
+        """nullable=true field using anyOf with null type passes."""
+        from handlers.implement.execution import _check_contract_schema_conformance
+        self._write_schema("shared/my_dto.json", {
+            "properties": {
+                "display_name": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            },
+            "required": ["display_name"],
+        })
+        brief = self._brief("my_dto", "shared/my_dto.json", [
+            {"name": "display_name", "type_name": "string", "nullable": True},
+        ])
+        result = _check_contract_schema_conformance(brief, self.tmp)
+        self.assertEqual(result["status"], "passed", result)
+
+    def test_schema_allows_null_variants(self) -> None:
+        """_schema_allows_null recognises list types, anyOf, oneOf, and bare null."""
+        from handlers.implement.execution import _schema_allows_null
+        self.assertTrue(_schema_allows_null({"type": ["string", "null"]}))
+        self.assertTrue(_schema_allows_null({"type": "null"}))
+        self.assertTrue(_schema_allows_null({"anyOf": [{"type": "string"}, {"type": "null"}]}))
+        self.assertTrue(_schema_allows_null({"oneOf": [{"type": "integer"}, {"type": "null"}]}))
+        self.assertFalse(_schema_allows_null({"type": "string"}))
+        self.assertFalse(_schema_allows_null({"anyOf": [{"type": "string"}, {"type": "boolean"}]}))
 
 
 if __name__ == "__main__":

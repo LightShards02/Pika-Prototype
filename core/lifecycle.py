@@ -23,11 +23,17 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from core.time_utils import format_timestamp_local_minutes
 from pathlib import Path
 from typing import Any, Callable
 
-from core.agent_invoker import render_prompt, run_api_invoke, run_local_exec
+from core.agent_invoker import (
+    check_local_available,
+    render_prompt,
+    run_api_invoke,
+    run_local_exec,
+)
 from core.context import RuntimeContext
 from core.errors import SafetyPreconditionError
 from core.pika_paths import resolve_schema_path
@@ -43,7 +49,7 @@ def _emit_agent_conclusion(
     elapsed_sec: float,
     token_usage: dict[str, int] | None = None,
 ) -> None:
-    """Emit agent call conclusion to stderr: elapsed time and token usage when available."""
+    """Emit agent call conclusion to stderr: elapsed time and token usage (always)."""
     try:
         elapsed_str = f"{elapsed_sec:.1f}s"
         if token_usage:
@@ -51,7 +57,7 @@ def _emit_agent_conclusion(
             out = token_usage.get("output_tokens", 0)
             msg = f"[PIKA] Agent complete ({prompt_name}): {elapsed_str}, in={inp}, out={out}\n"
         else:
-            msg = f"[PIKA] Agent complete ({prompt_name}): {elapsed_str}\n"
+            msg = f"[PIKA] Agent complete ({prompt_name}): {elapsed_str}, in=N/A, out=N/A\n"
         sys.stderr.write(msg)
         sys.stderr.flush()
     except OSError:
@@ -259,7 +265,7 @@ def resolve_input_path(
             return _resolve_path_from_value(value.strip(), project_root)
 
     # design_spec_path: command-specific resolution for map, implement, review, resolve_plan
-    if key == "design_spec_path" and command in ("map", "implement", "review", "resolve_plan"):
+    if key == "design_spec_path" and command in ("map", "implement", "review", "resolve_plan", "refine"):
         commands_cfg = config.get("commands")
         if isinstance(commands_cfg, dict):
             cmd_cfg = commands_cfg.get(command)
@@ -850,6 +856,48 @@ def get_reasoning_effort(config: dict[str, Any], prompt_name: str) -> str:
     return "medium"
 
 
+def get_local_model(config: dict[str, Any], prompt_name: str) -> str:
+    """Return Codex model ID for local provider for the given prompt.
+
+    Resolves: project agent.local_model[prompt_name] or .default,
+    then pika local.model[prompt_name] or .default.
+    pika local.model is required, so a value is always returned.
+
+    Returns:
+        Model ID string (e.g. gpt-5-codex).
+    """
+    from core.pika_config import get_pika_config
+
+    def _from_obj(obj: dict[str, str], key: str) -> str | None:
+        val = obj.get(key) or obj.get("default")
+        return str(val).strip() if isinstance(val, str) and val.strip() else None
+
+    agent = config.get("agent")
+    if isinstance(agent, dict):
+        project_model = agent.get("local_model")
+        if isinstance(project_model, str) and project_model.strip():
+            return project_model.strip()
+        if isinstance(project_model, dict):
+            out = _from_obj(
+                {k: str(v) for k, v in project_model.items() if isinstance(v, str)},
+                prompt_name,
+            )
+            if out:
+                return out
+
+    pika_model = get_pika_config().get("local", {}).get("model")
+    if isinstance(pika_model, str) and pika_model.strip():
+        return pika_model.strip()
+    if isinstance(pika_model, dict):
+        out = _from_obj(
+            {k: str(v) for k, v in pika_model.items() if isinstance(v, str)},
+            prompt_name,
+        )
+        if out:
+            return out
+    return "gpt-5-codex"
+
+
 def get_api_config(config: dict[str, Any]) -> dict[str, Any]:
     """Return API config (api_key_env, url, model) from workspace + pika config."""
     import os
@@ -936,6 +984,34 @@ def _resolve_local_agent_temp_prefix(config: dict[str, Any]) -> str:
     return _LOCAL_AGENT_TEMP_PREFIX
 
 
+def _resolve_local_agent_fallback_temp_base_dir(project_root: Path) -> Path:
+    """Return project-local fallback base dir for local agent temp workspaces."""
+    return (project_root / "out" / "local_agent_temp").resolve()
+
+
+def _probe_local_agent_temp_workspace_access(path: Path) -> None:
+    """Raise when the process cannot read/write inside workspace path."""
+    probe_file = path / ".pika_access_probe"
+    list(path.iterdir())
+    probe_file.write_text("ok", encoding="utf-8")
+    probe_file.unlink(missing_ok=True)
+
+
+def _create_local_agent_workspace_dir(base_dir: Path, temp_name_prefix: str) -> Path:
+    """Create a unique workspace directory using inherited ACLs from base_dir."""
+    for _ in range(64):
+        suffix = uuid.uuid4().hex[:8]
+        candidate = base_dir / f"{temp_name_prefix}{suffix}"
+        try:
+            candidate.mkdir(parents=False, exist_ok=False)
+            return candidate
+        except FileExistsError:
+            continue
+    raise FileExistsError(
+        f"Unable to create unique local agent workspace under {base_dir}"
+    )
+
+
 def _cleanup_stale_local_agent_workspaces(base_dir: Path, prefix: str, ttl_sec: int) -> None:
     """Best-effort cleanup for stale isolated local workspaces."""
     if ttl_sec <= 0:
@@ -965,17 +1041,37 @@ def _create_local_agent_temp_workspace(
     prompt_name: str,
 ) -> Path:
     """Create isolated temp workspace for a local agent invocation."""
-    base_dir = _resolve_local_agent_temp_base_dir(config, project_root)
-    base_dir.mkdir(parents=True, exist_ok=True)
     prefix = _resolve_local_agent_temp_prefix(config)
     ttl_sec = _resolve_local_agent_temp_ttl_sec(config)
-    _cleanup_stale_local_agent_workspaces(base_dir, prefix, ttl_sec)
-
     safe_command = _safe_workspace_token(command, "cmd")
     safe_run = _safe_workspace_token(run_id, "run")
     safe_prompt = _safe_workspace_token(prompt_name, "prompt")
     temp_name_prefix = f"{prefix}{safe_command}_{safe_run}_{safe_prompt}_"
-    return Path(tempfile.mkdtemp(prefix=temp_name_prefix, dir=str(base_dir)))
+    primary_base = _resolve_local_agent_temp_base_dir(config, project_root)
+    fallback_base = _resolve_local_agent_fallback_temp_base_dir(project_root)
+    base_candidates: list[Path] = [primary_base]
+    if fallback_base != primary_base:
+        base_candidates.append(fallback_base)
+
+    last_error: OSError | None = None
+    for base_dir in base_candidates:
+        created_workspace: Path | None = None
+        try:
+            base_dir.mkdir(parents=True, exist_ok=True)
+            _cleanup_stale_local_agent_workspaces(base_dir, prefix, ttl_sec)
+            created_workspace = _create_local_agent_workspace_dir(
+                base_dir, temp_name_prefix
+            )
+            _probe_local_agent_temp_workspace_access(created_workspace)
+            return created_workspace
+        except OSError as exc:
+            last_error = exc
+            if created_workspace is not None:
+                _cleanup_local_agent_temp_workspace(created_workspace)
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Unable to create local agent temp workspace")
 
 
 def _cleanup_local_agent_temp_workspace(path: Path | None) -> None:
@@ -1022,6 +1118,7 @@ def sync_local_agent_workspace(source_dir: Path, workspace_dir: Path) -> None:
     workspace = workspace_dir.resolve()
     if not source.exists() or not source.is_dir():
         raise ValueError(f"Local workspace sync source must be an existing directory: {source}")
+    logger = get_run_logger()
     workspace.mkdir(parents=True, exist_ok=True)
 
     for child in workspace.iterdir():
@@ -1030,15 +1127,24 @@ def sync_local_agent_workspace(source_dir: Path, workspace_dir: Path) -> None:
         else:
             child.unlink(missing_ok=True)
 
-    for child in source.iterdir():
-        child_resolved = child.resolve()
-        if child_resolved == workspace or _is_path_within(workspace, child_resolved):
+    source_children = sorted(source.iterdir(), key=lambda path: path.name.lower())
+    for child in source_children:
+        try:
+            child_resolved = child.resolve()
+            if child_resolved == workspace or _is_path_within(workspace, child_resolved):
+                continue
+            destination = workspace / child.name
+            if child.is_dir():
+                shutil.copytree(child, destination, symlinks=True)
+            else:
+                shutil.copy2(child, destination)
+        except OSError as exc:
+            logger.warning(
+                "Skipping unreadable path while syncing local workspace: %s (%s)",
+                child,
+                exc,
+            )
             continue
-        destination = workspace / child.name
-        if child.is_dir():
-            shutil.copytree(child, destination, symlinks=True)
-        else:
-            shutil.copy2(child, destination)
 
 
 def invoke_agent_local(
@@ -1113,7 +1219,13 @@ def invoke_agent_local(
         stream_output = bool(agent.get("stream_output", True))
     local_timeout = get_local_exec_timeout_sec(config)
     reasoning_effort = get_reasoning_effort(config, prompt_name)
+    local_model = get_local_model(config, prompt_name)
     try:
+        if not check_local_available(local_cmd):
+            raise RuntimeError(
+                "Local provider authentication is unavailable. "
+                "Run `codex login status` and `codex login` if needed, then retry."
+            )
         t0 = time.perf_counter()
         result, token_usage = run_local_exec(
             prompt=prompt_text,
@@ -1124,6 +1236,8 @@ def invoke_agent_local(
             timeout=local_timeout,
             stream_output=stream_output,
             reasoning_effort=reasoning_effort,
+            model=local_model,
+            stream_reasoning=ctx.verbose,
         )
         if isolated_output_path.exists():
             try:
@@ -1544,12 +1658,6 @@ def invoke_agent_stub(
                 "planned_anchors": [],
                 "provided_intents": [],
                 "required_intents": [],
-            }
-        if prompt_name == "implement_anchor_linker":
-            return {
-                "contracts": [],
-                "bindings": [],
-                "integration_actions": [],
             }
         spec_ids = list(_stub_map_mappings_from_csv(
             template_vars.get("selected_specs_csv") or ""

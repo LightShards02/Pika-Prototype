@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from core.context import RuntimeContext
 from core.lifecycle import (
+    _create_local_agent_temp_workspace,
     _emit_agent_conclusion,
     _backfill_missing_required_output_fields,
     _filter_output_to_schema_properties,
@@ -19,6 +20,7 @@ from core.lifecycle import (
     get_api_config,
     get_local_command,
     get_local_exec_timeout_sec,
+    get_local_model,
     get_reasoning_effort,
     get_schema_validation_retries,
     invoke_agent_local,
@@ -31,6 +33,7 @@ from core.lifecycle import (
     resolve_manual_resolution_path_for_command,
     resolve_resolution_template_path_for_run,
     resolve_run_summary_path_for_command,
+    sync_local_agent_workspace,
     validate_output_against_schema,
 )
 
@@ -53,14 +56,14 @@ class EmitAgentConclusionTests(unittest.TestCase):
         self.assertIn("out=850", out)
 
     def test_emit_agent_conclusion_without_tokens(self) -> None:
-        """Emits only elapsed time when token_usage is None."""
+        """Emits elapsed time and N/A token usage when token_usage is None."""
         buf = io.StringIO()
         with patch.object(sys, "stderr", buf):
-            _emit_agent_conclusion("implement_anchor_linker", 12.3, None)
+            _emit_agent_conclusion("implement_unified_planner", 12.3, None)
         out = buf.getvalue()
-        self.assertIn("[PIKA] Agent complete (implement_anchor_linker): 12.3s", out)
-        self.assertNotIn("in=", out)
-        self.assertNotIn("out=", out)
+        self.assertIn("[PIKA] Agent complete (implement_unified_planner): 12.3s", out)
+        self.assertIn("in=N/A", out)
+        self.assertIn("out=N/A", out)
 
 
 class CommandAwareResolveTests(unittest.TestCase):
@@ -386,6 +389,62 @@ class GetReasoningEffortTests(unittest.TestCase):
         self.assertEqual(get_reasoning_effort(config, "nonexistent_prompt"), "medium")
 
 
+class GetLocalModelTests(unittest.TestCase):
+    """Tests for get_local_model."""
+
+    def test_project_override_string(self) -> None:
+        """Project config local_model (string) overrides pika for all prompts."""
+        config = {"agent": {"local_model": "gpt-5-codex"}}
+        with patch("core.pika_config.get_pika_config") as m:
+            m.return_value = {"local": {"model": {"default": "gpt-4-codex"}}}
+            self.assertEqual(get_local_model(config, "implement_from_specs"), "gpt-5-codex")
+            self.assertEqual(get_local_model(config, "map_spec_to_code"), "gpt-5-codex")
+
+    def test_project_override_per_prompt(self) -> None:
+        """Project config local_model (object) overrides pika per prompt."""
+        config = {
+            "agent": {
+                "local_model": {
+                    "implement_from_specs": "gpt-4-codex",
+                    "default": "gpt-5-codex",
+                }
+            }
+        }
+        with patch("core.pika_config.get_pika_config") as m:
+            m.return_value = {"local": {"model": {"default": "gpt-5-codex"}}}
+            self.assertEqual(get_local_model(config, "implement_from_specs"), "gpt-4-codex")
+            self.assertEqual(get_local_model(config, "map_spec_to_code"), "gpt-5-codex")
+
+    def test_pika_fallback_string(self) -> None:
+        """Pika local.model (string) used when project has no override."""
+        config = {}
+        with patch("core.pika_config.get_pika_config") as m:
+            m.return_value = {"local": {"model": "gpt-5-codex"}}
+            self.assertEqual(get_local_model(config, "implement_from_specs"), "gpt-5-codex")
+
+    def test_pika_fallback_per_prompt(self) -> None:
+        """Pika local.model (object) used per prompt when project has no override."""
+        config = {}
+        with patch("core.pika_config.get_pika_config") as m:
+            m.return_value = {
+                "local": {
+                    "model": {
+                        "default": "gpt-5-codex",
+                        "implement_from_specs": "gpt-4-codex",
+                    }
+                }
+            }
+            self.assertEqual(get_local_model(config, "implement_from_specs"), "gpt-4-codex")
+            self.assertEqual(get_local_model(config, "map_spec_to_code"), "gpt-5-codex")
+
+    def test_ignores_empty_string_falls_back_to_pika(self) -> None:
+        """Project local_model empty string falls back to pika."""
+        config = {"agent": {"local_model": "   "}}
+        with patch("core.pika_config.get_pika_config") as m:
+            m.return_value = {"local": {"model": "gpt-5-codex"}}
+            self.assertEqual(get_local_model(config, "implement_from_specs"), "gpt-5-codex")
+
+
 class ApiConfigTests(unittest.TestCase):
     """Tests for get_api_config helpers."""
 
@@ -486,6 +545,87 @@ def _test_tmpdir() -> Path:
     base = Path(__file__).resolve().parent.parent / "out" / "test-lifecycle"
     base.mkdir(parents=True, exist_ok=True)
     return Path(tempfile.mkdtemp(prefix="lifecycle-", dir=str(base)))
+
+
+class LocalAgentTempWorkspaceFallbackTests(unittest.TestCase):
+    """Tests for local agent temp workspace fallback behavior."""
+
+    def test_create_workspace_falls_back_to_project_local_base_when_primary_inaccessible(self) -> None:
+        """When primary base workspace probe fails, fallback base under project root is used."""
+        root = Path("C:/pika-test-root")
+        primary_base = Path("C:/pika-temp-primary")
+        fallback_base = (root / "out" / "local_agent_temp").resolve()
+        config: dict[str, object] = {}
+
+        with patch("core.lifecycle.Path.mkdir"):
+            with patch("core.lifecycle._cleanup_stale_local_agent_workspaces"):
+                with patch(
+                    "core.lifecycle._resolve_local_agent_temp_base_dir",
+                    return_value=primary_base,
+                ):
+                    with patch(
+                        "core.lifecycle._create_local_agent_workspace_dir",
+                        side_effect=[
+                            primary_base / "ws1",
+                            fallback_base / "ws2",
+                        ],
+                    ):
+                        with patch(
+                            "core.lifecycle._probe_local_agent_temp_workspace_access",
+                            side_effect=[PermissionError("denied"), None],
+                        ):
+                            workspace = _create_local_agent_temp_workspace(
+                                config,  # type: ignore[arg-type]
+                                root,
+                                command="implement",
+                                run_id="run-1",
+                                prompt_name="shared",
+                            )
+
+        self.assertEqual(workspace, fallback_base / "ws2")
+
+
+class SyncLocalAgentWorkspaceTests(unittest.TestCase):
+    """Tests for local workspace synchronization behavior."""
+
+    def test_sync_skips_unreadable_source_entry_and_copies_readable_entries(self) -> None:
+        """Unreadable source entries should be skipped without failing sync."""
+        source = Path("C:/src")
+        workspace = Path("C:/ws")
+        readable = source / "readable.txt"
+        blocked = source / ".pytest_cache"
+        stale = workspace / "stale.txt"
+
+        def fake_iterdir(path_obj: Path) -> list[Path]:
+            if path_obj == workspace:
+                return [stale]
+            if path_obj == source:
+                return [readable, blocked]
+            return []
+
+        def fake_exists(path_obj: Path) -> bool:
+            return path_obj == source
+
+        def fake_is_dir(path_obj: Path) -> bool:
+            if path_obj in (source, workspace):
+                return True
+            if path_obj == blocked:
+                raise PermissionError("denied")
+            return False
+
+        with patch.object(Path, "resolve", lambda path_obj: path_obj):
+            with patch.object(Path, "exists", fake_exists):
+                with patch.object(Path, "is_dir", fake_is_dir):
+                    with patch.object(Path, "mkdir"):
+                        with patch.object(Path, "iterdir", fake_iterdir):
+                            with patch.object(Path, "unlink"):
+                                with patch("core.lifecycle._is_path_within", return_value=False):
+                                    with patch("core.lifecycle.shutil.copytree") as mock_copytree:
+                                        with patch("core.lifecycle.shutil.copy2") as mock_copy2:
+                                            sync_local_agent_workspace(source, workspace)
+
+        mock_copy2.assert_called_once_with(readable, workspace / "readable.txt")
+        mock_copytree.assert_not_called()
 
 
 class ResolveAgentInputCodebaseContentDirTests(unittest.TestCase):
@@ -693,6 +833,57 @@ class InvokeAgentLocalIsolationTests(unittest.TestCase):
             self.assertEqual(captured.get("timeout"), 1200)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_invoke_agent_local_fails_fast_when_local_auth_unavailable(self) -> None:
+        """Local invoke raises clear error when codex auth/login is unavailable."""
+        root = Path("C:/proj")
+        schema_path = Path("C:/schema.json")
+        workspace = Path("C:/workspace")
+
+        class _PromptSpec:
+            system_prompt = "System {{value}}"
+            user_prompt = "User {{value}}"
+
+        class _Registry:
+            def get(self, prompt_name: str) -> _PromptSpec:
+                return _PromptSpec()
+
+            def get_schema_path(self, prompt_name: str) -> Path:
+                return schema_path
+
+        config = {
+            "agent": {
+                "provider": "local",
+                "local_command": "codex",
+                "stream_output": False,
+            }
+        }
+        ctx = RuntimeContext(
+            command="map",
+            dry_run=False,
+            verbose=False,
+            command_only_validation=False,
+            run_id="run-local-auth-unavailable",
+            project_root=str(root),
+            config_path=str(root / "config.yaml"),
+        )
+
+        with patch("core.lifecycle.Path.mkdir"):
+            with patch("core.lifecycle.load_prompt_registry", return_value=_Registry()):
+                with patch("core.lifecycle.check_local_available", return_value=False):
+                    with patch("core.lifecycle.run_local_exec") as mock_exec:
+                        with patch.object(Path, "exists", lambda p: p == schema_path):
+                            with self.assertRaises(RuntimeError) as exc_ctx:
+                                invoke_agent_local(
+                                    prompt_name="map_spec_to_code",
+                                    template_vars={"value": "x"},
+                                    schema_path=schema_path,
+                                    config=config,
+                                    ctx=ctx,
+                                    local_workspace_override=workspace,
+                                )
+                        mock_exec.assert_not_called()
+        self.assertIn("codex login", str(exc_ctx.exception))
 
     def test_invoke_agent_local_uses_isolated_workspace_and_cleans_up(self) -> None:
         """Local invoke runs outside project root and cleans temp workspace after completion."""

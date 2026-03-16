@@ -102,6 +102,12 @@ prompts:
       - name: control_vocab_section
         required: false
         description: Per-project controlled vocabulary (categorized terms + definitions). Injected by lifecycle when project.control_vocab_path is configured.
+      - name: resolved_decisions
+        required: false
+        description: Previously resolved manual decisions from prior blocked runs. Injected on resume. Empty string when not present.
+      - name: max_problem_threshold
+        required: false
+        description: Threshold below which the problems field must be populated. Only populate problems when confidence OR consistency_score is below this value. Default 1.0.
     system: |
       You are a strict software indexing agent.
       You MUST follow the output schema exactly. Your output JSON must validate against {{output_schema_file}} without exception.
@@ -118,12 +124,13 @@ prompts:
       - confidence (per code_ref): 0-1, how confident the symbol implements the spec (1 = high).
       - consistency_score (per code_ref): 0-1, how consistent the implementation is with the spec (1 = highly consistent, 0 = completely inconsistent).
       - assumptions (per mapping): assumptions made to produce this mapping. Nullable.
-      - problems (per code_ref): reason for low confidence or inconsistency only. Must be empty when both confidence and consistency_score are high.
+      - problems (per code_ref): reason for low confidence or inconsistency only. Only populate `problems` when confidence < {{max_problem_threshold}} OR consistency_score < {{max_problem_threshold}}. Must be empty string otherwise.
     user: |
       Context:
       {{project_context}}
       {{control_vocab_section}}
       {{extra_prompt_section}}
+      {{resolved_decisions}}
 
       Design Specs (CSV):
       {{design_spec_rows_csv}}
@@ -189,6 +196,42 @@ prompts:
       Return JSON only. Do not include markdown fences.
       If a blocking ambiguity exists, return only manual_resolution_items.
 
+      ## Phase 0: Spec Consistency Analysis (run before planning)
+
+      Review every spec in design_spec_csv for the following issue kinds.
+      Classify each finding as BLOCKING or WARNING using the criteria below.
+
+      Issue taxonomy:
+      - contradiction: two specs assert mutually exclusive behaviors for the same
+        entity or condition. BLOCKING when you cannot produce a logically consistent
+        anchor assignment without resolving it.
+      - overlap: two specs both claim ownership of the same behavior or code path.
+        BLOCKING when you cannot assign a single owning anchor without guessing.
+      - dependency_gap: spec A's requirement depends on behavior that no other spec
+        in the workset provides, and that behavior is not documented as external.
+        BLOCKING when the missing behavior is required for any of spec A's planned
+        anchors to be implementable.
+      - ambiguity: a requirement has no observable outcome or is underspecified to
+        the point that multiple incompatible implementations are equally valid from
+        spec text alone. BLOCKING when it prevents assigning planned_file_path or
+        anchor_materialization_kind.
+      - orphan_reference: a spec references a contract_id or interface defined by
+        no other spec and not marked as external. BLOCKING when another spec in the
+        workset consumes the same contract.
+
+      Resolution rules:
+      - BLOCKING issues → add as manual_resolution_items; return ONLY
+        manual_resolution_items (no module_plans).
+      - WARNING issues → add as spec_issues[] items alongside the normal plan.
+      - No issues found → omit spec_issues or emit an empty array.
+
+      spec_issues[] item fields:
+      - issue_id: stable string, e.g. "ISSUE-001" (increment per issue found)
+      - kind: one of the five enum values above
+      - affected_spec_ids: list of involved spec IDs (minimum one)
+      - description: one precise sentence describing the issue
+      - resolution_hint: (optional) one sentence suggesting how to resolve it
+
       You receive the FULL design spec and module catalog. Your job is to produce three things:
 
       1. **module_plans** — For each module, plan the files and symbols that will be created
@@ -204,8 +247,13 @@ prompts:
 
       3. **shared_contracts** — Canonical DTOs, interfaces, or type definitions shared across
          modules. Each shared_contract has a contract_id, owning_module (typically SHARED),
-         planned_file_path under {{type_placement_path}}, consumed_by_specs, and optional
-         field definitions. If the design spec has explicit shared contract specs, use them.
+         planned_file_path under {{type_placement_path}}, consumed_by_specs, and field
+         definitions. If the design spec has explicit shared contract specs, use them.
+         For each field in fields[], always emit `nullable` as a required boolean:
+         set `nullable: true` for fields that may be absent or null in a valid instance;
+         set `nullable: false` for fields that must always be present with a non-null value.
+         Do not encode optionality through type_name unions or by omitting fields — always
+         declare every field with an explicit `nullable`.
 
       Rules:
       - Every spec_id in the design spec must appear in at least one planned_anchor's spec_ids.
@@ -214,6 +262,18 @@ prompts:
       - Intra-module dependencies (within the same module) go in module_plans[].intra_module_dependencies.
       - Cross-module dependencies go in spec_dependencies.
       - shared_contracts should cover DTOs and types referenced by multiple modules.
+      - Contract completeness self-check: after declaring shared_contracts, scan every
+        spec_dependency you declared. For any cross-module dependency whose rationale
+        describes a named structural interface being exchanged — such as a typed filter
+        or parameter set passed across a module boundary, a paginated or typed result
+        envelope returned from one module to another, a completion or acknowledgement
+        response that multiple modules must agree on structurally, or an error detail
+        shape that consumer modules must handle by field — verify that a shared_contract
+        entry exists covering that interface. These boundaries are consistently missed
+        for secondary workflows and non-primary response paths.
+      - Nullable self-check: after declaring shared_contracts, verify that every field in
+        every shared_contract.fields[] has `nullable` set as a boolean (true or false).
+        A field without `nullable` is a schema violation and will be rejected.
       - planned_file_path for module_plans must stay under module_root_prefixes_by_tag in allowed_paths_json.
       - shared_contracts[].planned_file_path must stay under shared_contract_prefix in allowed_paths_json.
       - Do not emit planned_file_path under forbidden_path_patterns_json.
@@ -320,95 +380,6 @@ prompts:
       Deterministic output rule:
       Use one and only one anchor_materialization_kind enum for every planned_anchors item.
 
-  implement_anchor_linker:
-    description: "[DEPRECATED - replaced by implement_unified_planner] Produce global contracts and bindings from per-module anchor plans."
-    output_schema_file: schemas/agent_outputs/implement_anchor_linker_output.schema.json
-    template_variables:
-      - name: output_schema_file
-        required: true
-        description: Schema path the output must satisfy.
-      - name: project_context
-        required: true
-        description: Project context markdown text.
-      - name: module_catalog_json
-        required: true
-        description: Deterministic module catalog including module_role.
-      - name: anchor_plans_json
-        required: true
-        description: Planner outputs for all modules.
-      - name: type_placement_path
-        required: true
-        description: Shared path prefix for cross-module type definitions.
-      - name: disallowed_link_kinds_by_required_role_json
-        required: true
-        description: Role-based contract kinds that must not appear on required bindings.
-      - name: contract_kind_definitions_json
-        required: true
-        description: Canonical definitions for each contract kind. Use these semantics strictly.
-      - name: normalized_intent_catalog_json
-        required: true
-        description: Deterministic required->provided candidate rankings and adapter hints.
-      - name: manual_resolution_file
-        required: true
-        description: Storage path for manual resolution artifacts.
-      - name: run_summary_file
-        required: true
-        description: Storage path for run summary artifacts.
-      - name: linker_retry_context_json
-        required: true
-        description: Retry payload listing unbound required intents from prior validation, or null.
-    system: |
-      You are a strict anchor linker for implement workflow.
-      Output must validate against {{output_schema_file}} exactly.
-      Return JSON only.
-      Emit contracts + bindings as the canonical link plan.
-      If blocking ambiguity exists, return only manual_resolution_items.
-      Never emit bindings that violate disallowed_link_kinds_by_required_role_json.
-      Use contract_kind_definitions_json as authoritative kind semantics.
-      Treat external_api as out-of-project only; do not use it for internal module providers.
-      Prefer normalized_intent_catalog_json top-ranked candidates when they do not violate policy.
-      When a top-ranked candidate indicates adapter_needed, emit adapter_needed=true with adapter_plan.
-      For every required intent in anchor_plans_json, you must:
-      1) add at least one valid binding, or
-      2) include a manual_resolution_item explaining no valid link exists.
-      If a required intent can only be satisfied via a disallowed kind, include a manual_resolution_item for that intent.
-      When linker_retry_context_json includes unbound_required_intents, for each one you must:
-      1) add a valid binding, or
-      2) include a manual_resolution_item explaining no valid link exists.
-      When linker_retry_context_json includes validation_violations, address each violation with a compliant binding or a manual_resolution_item.
-      If any required intent remains unbound, return only manual_resolution_items.
-    user: |
-      Project Context:
-      {{project_context}}
-      {{control_vocab_section}}
-
-      Module Catalog:
-      {{module_catalog_json}}
-
-      Anchor Plans:
-      {{anchor_plans_json}}
-
-      Type Placement Path:
-      {{type_placement_path}}
-
-      Disallowed Linking Rules (by required module role):
-      {{disallowed_link_kinds_by_required_role_json}}
-
-      Contract Kind Definitions:
-      {{contract_kind_definitions_json}}
-
-      Normalized Intent Catalog:
-      {{normalized_intent_catalog_json}}
-
-      Manual Resolution File:
-      {{manual_resolution_file}}
-
-      Run Summary File:
-      {{run_summary_file}}
-
-      Linker Retry Context:
-      {{linker_retry_context_json}}
-
   implement_from_specs:
     description: Execute one implement batch and produce spec-keyed diff + mapping output.
     output_schema_file: schemas/agent_outputs/implement_output.schema.json
@@ -425,9 +396,6 @@ prompts:
       - name: design_spec_column_definitions
         required: true
         description: Column semantics for design spec table.
-      - name: indexed_mappings_csv
-        required: true
-        description: Existing mapping fields for selected specs.
       - name: codebase_dir
         required: false
         description: Codebase directory path.
@@ -524,14 +492,238 @@ prompts:
       Design Spec Column Definitions:
       {{design_spec_column_definitions}}
 
-      Existing Index Mappings (CSV):
-      {{indexed_mappings_csv}}
-
       Codebase Dir:
       {{codebase_dir}}
 
       Codebase Content:
       {{codebase_content}}
+
+      Runtime File Facts (JSON):
+      {{runtime_file_facts_json}}
+
+      Allowed Paths Contract (JSON):
+      {{allowed_paths_json}}
+
+      Forbidden Path Prefixes (JSON):
+      {{forbidden_path_patterns_json}}
+
+      Directory Tree Snapshot:
+      {{directory_tree_snapshot}}
+
+      Semantic Retry Context:
+      {{semantic_retry_context}}
+
+      Manual Resolution File:
+      {{manual_resolution_file}}
+
+      Run Summary File:
+      {{run_summary_file}}
+
+      Agent Artifacts Dir:
+      {{agent_artifacts_dir}}
+
+  map_spec_to_code_local:
+    description: Map each design spec row to relevant code references by exploring the codebase directly (local provider with filesystem access).
+    output_schema_file: schemas/agent_outputs/index_output.schema.json
+    template_variables:
+      - name: output_schema_file
+        required: true
+        description: Schema file path that this prompt output must validate against.
+      - name: project_context
+        required: true
+        description: Content of project context file (e.g. PROJECT_CONTEXT.md).
+      - name: extra_prompt_section
+        required: false
+        description: Optional extra prompt section (heading + content). Empty string when not provided.
+      - name: design_spec_rows_csv
+        required: true
+        description: Design spec rows as CSV text.
+      - name: design_spec_column_definitions
+        required: true
+        description: Column meanings/types/requirements for design spec table.
+      - name: codebase_dir
+        required: true
+        description: Root directory of the codebase. Explore this directory directly using file tools to find implementations.
+      - name: manual_resolution_file
+        required: true
+        description: Central CSV file path for all manual resolution items.
+      - name: run_summary_file
+        required: true
+        description: Central JSONL file path for run summaries.
+      - name: resolved_decisions
+        required: false
+        description: Previously resolved manual decisions from prior blocked runs. Empty string when not present.
+      - name: max_problem_threshold
+        required: false
+        description: Threshold below which the problems field must be populated. Only populate problems when confidence OR consistency_score is below this value. Default 1.0.
+    system: |
+      You are a strict software indexing agent with direct filesystem access.
+      You MUST follow the output schema exactly. Your output JSON must validate against {{output_schema_file}} without exception.
+      Return JSON only. Do not include markdown fences.
+      Interpret CSV columns using design_spec_column_definitions.
+      Use function/class symbol names for code references, not line numbers.
+      Put any manual-only items into manual_resolution_items.
+
+      Exploration strategy (mandatory — do not skip):
+      1. List the directory tree under {{codebase_dir}} to understand project layout.
+      2. For each spec, read candidate files identified from requirement and acceptance_criteria text.
+      3. Follow imports and call chains to locate indirect implementations.
+      4. code_ref.path must be relative to the codebase root (e.g. src/Auth/AuthController.cs), never an absolute path.
+
+      Output schema field definitions:
+      - status (per mapping): "mapped" = implementation fully matches spec; "partial" = potential mapping found but consistency or confidence is low; "unmapped" = no code reference found; "blocked" = requires manual resolution.
+      - code_refs (per mapping): each entry has path, symbol_name, symbol_type, confidence, consistency_score, problems.
+      - confidence (per code_ref): 0-1, how confident the symbol implements the spec (1 = high).
+      - consistency_score (per code_ref): 0-1, how consistent the implementation is with the spec (1 = highly consistent, 0 = completely inconsistent).
+      - assumptions (per mapping): assumptions made to produce this mapping. Nullable.
+      - problems (per code_ref): reason for low confidence or inconsistency only. Only populate `problems` when confidence < {{max_problem_threshold}} OR consistency_score < {{max_problem_threshold}}. Must be empty string otherwise.
+    user: |
+      Context:
+      {{project_context}}
+      {{extra_prompt_section}}
+      {{resolved_decisions}}
+
+      Design Specs (CSV):
+      {{design_spec_rows_csv}}
+
+      Design Spec Column Definitions:
+      {{design_spec_column_definitions}}
+
+      Codebase Directory (explore this directly using file tools):
+      {{codebase_dir}}
+
+      Manual Resolution File:
+      {{manual_resolution_file}}
+
+      Run Summary File:
+      {{run_summary_file}}
+
+  implement_from_specs_local:
+    description: Execute one implement batch and produce spec-keyed diff + mapping output (local provider with direct filesystem access).
+    output_schema_file: schemas/agent_outputs/implement_output.schema.json
+    template_variables:
+      - name: output_schema_file
+        required: true
+        description: Schema path that this output must validate against.
+      - name: project_context
+        required: true
+        description: Project context markdown text.
+      - name: selected_specs_csv
+        required: true
+        description: Batch-selected specs as CSV.
+      - name: design_spec_column_definitions
+        required: true
+        description: Column semantics for design spec table.
+      - name: codebase_dir
+        required: false
+        description: Codebase directory path. Explore this directly to read existing files and understand patterns.
+      - name: runtime_file_facts_json
+        required: true
+        description: Deterministic current file-state facts for batch-relevant paths (exists/is_file/sha256).
+      - name: batch_brief_json
+        required: true
+        description: Deterministic batch brief with constraints and relevant contracts/bindings.
+      - name: allowed_paths_json
+        required: true
+        description: Deterministic allowed path contract for touched files and mapped file references.
+      - name: directory_tree_snapshot
+        required: true
+        description: Current codebase directory tree snapshot.
+      - name: forbidden_path_patterns_json
+        required: true
+        description: Forbidden path prefixes for touched files and mappings.
+      - name: semantic_retry_context
+        required: false
+        description: Semantic validation feedback from previous failed attempt.
+      - name: manual_resolution_file
+        required: true
+        description: Storage path for manual resolution artifacts.
+      - name: run_summary_file
+        required: true
+        description: Storage path for run summary artifacts.
+      - name: agent_artifacts_dir
+        required: true
+        description: Directory to write unified diff files.
+      - name: control_vocab_section
+        required: false
+        description: Per-project controlled vocabulary (categorized terms + definitions). Injected by lifecycle when project.control_vocab_path is configured.
+      - name: resolved_decisions
+        required: false
+        description: Previously resolved manual decisions from prior blocked runs. Empty string when not present.
+    system: |
+      You are a strict implementer for one deterministic batch with direct filesystem access.
+      Output must validate against {{output_schema_file}} exactly.
+      Return JSON only.
+      Write each unified diff to a file in {{agent_artifacts_dir}} and return diff_path.
+      Do not embed raw diff text inline.
+      Grounding rule (mandatory):
+      - Before writing each diff, read the CURRENT target file content from filesystem and build hunks against exact current lines.
+      - Never reuse stale hunk context from prior attempts.
+      - If semantic_retry_context reports patch-apply failures, regenerate ALL failing diffs from current files.
+      Pattern reading rule (mandatory):
+      - Before implementing, read 1-2 existing files in the same module to understand naming, structure, and style conventions.
+      - Write new code consistent with those patterns, not with generic conventions.
+      Preferred hybrid output mode:
+      - Emit top-level diff_plan[] as the canonical patch plan for this batch.
+      - In each spec result, emit diff_refs[] pointing to diff_plan[].diff_id.
+      - If multiple specs share one file change, emit ONE diff_plan item for that file and reference it from all related specs.
+      - Set owner_spec_id to one canonical owner; include all affected specs in related_spec_ids.
+      Required output mode:
+      - Do NOT emit spec-local diffs[].
+      - Every spec result must use diff_refs[] only.
+      For paths listed in runtime_file_facts_json:
+      - if exists=true, do NOT emit "new file mode" for that path; emit a modify patch.
+      - if exists=false, create-file patch mode is allowed.
+      Path rules:
+      - touched_files must stay under allowed_paths_json.allowed_prefixes (or exact path entries).
+      - touched_files and patch file headers must be codebase-relative paths (example: CORE/tests/test_domain_logic.py), not workspace-prefixed paths (forbidden examples: src/CORE/..., dataset/nutrition/src/CORE/...).
+      - mapped_classes_functions[].file_path and mapped_test_cases[].test_file must be touched in this batch or already exist.
+      - Do not emit paths under forbidden_path_patterns_json.
+      Unified diff format rules (mandatory):
+      - Every patch must include file headers (`--- ...`, `+++ ...`) and valid hunk headers (`@@ -a,b +c,d @@`).
+      - Bare `@@` is invalid.
+      - Hunk line counts must match actual lines in the hunk body.
+      Short examples:
+      - VALID modify diff:
+        --- a/CORE/domain/password_policy.py
+        +++ b/CORE/domain/password_policy.py
+        @@ -10,2 +10,3 @@
+         def verify_password(...):
+        -    return {"verification_result": "failed"}
+        +    reason = "password_mismatch"
+        +    return {"verification_result": "failed", "failure_reason": reason}
+      - INVALID (bad hunk header):
+        --- a/CORE/tests/test_domain_logic.py
+        +++ b/CORE/tests/test_domain_logic.py
+        @@
+        +def test_new_case(): ...
+      - INVALID (wrong path scope):
+        touched_files: ["dataset/nutrition/src/CORE/tests/test_domain_logic.py"]
+      Shared contract JSON Schema files (mandatory when touching a shared_contract.planned_file_path):
+      - Set `required` to include every key in `properties` — all fields are required; nullability
+        is expressed through type, not omission.
+      - For a field with `nullable: true` in the brief, use `{"type": ["<base_type>", "null"]}` or
+        `{"anyOf": [{"type": "<base_type>"}, {"type": "null"}]}`.
+      - For a field with `nullable: false`, use only the base type — do not include `"null"`.
+      - When constructing producer-side object literals, always include all keys; use `null` for
+        absent nullable fields rather than omitting the key.
+      If blocked by ambiguity, return only manual_resolution_items.
+    user: |
+      Project Context:
+      {{project_context}}
+      {{control_vocab_section}}
+
+      Batch Brief:
+      {{batch_brief_json}}
+
+      Selected Specs (CSV):
+      {{selected_specs_csv}}
+
+      Design Spec Column Definitions:
+      {{design_spec_column_definitions}}
+
+      Codebase Dir (read existing files directly for patterns and current content):
+      {{codebase_dir}}
 
       Runtime File Facts (JSON):
       {{runtime_file_facts_json}}
@@ -611,6 +803,171 @@ prompts:
 
       Run Summary File:
       {{run_summary_file}}
+
+  spec_ambiguity_detector:
+    description: Scan SADS spec requirement and acceptance_criteria fields for vague language and emit manual_resolution_items.
+    output_schema_file: schemas/agent_outputs/spec_ambiguity_detector_output.schema.json
+    template_variables:
+      - name: output_schema_file
+        required: true
+        description: Schema file path that this prompt output must validate against.
+      - name: project_context
+        required: true
+        description: Content of project context file (e.g. PROJECT_CONTEXT.md).
+      - name: design_spec_csv
+        required: true
+        description: Full SADS design spec as CSV text (all columns).
+      - name: manual_resolution_file
+        required: true
+        description: Storage path for manual resolution artifacts.
+      - name: run_summary_file
+        required: true
+        description: Storage path for run summary artifacts.
+      - name: control_vocab_section
+        required: false
+        description: Per-project controlled vocabulary. Injected by lifecycle when configured.
+    system: |
+      You are a strict spec ambiguity detector.
+      Your output JSON must validate against {{output_schema_file}} without exception.
+      Return JSON only. Do not include markdown fences.
+      Scan every row's requirement and acceptance_criteria for vague or unmeasurable language.
+      For each issue found, emit one manual_resolution_item with:
+        - item_id: unique identifier (e.g. AMB-001)
+        - spec_id: the affected spec row
+        - field: "requirement" or "acceptance_criteria"
+        - vague_phrases: exact phrases that are vague
+        - suggested_improvement: complete rewrite of the field with specific, measurable language
+        - options: exactly three options — accept_suggestion, let_agent_edit, skip
+      An empty manual_resolution_items array means no ambiguities were found (non-blocking).
+    user: |
+      Project Context:
+      {{project_context}}
+      {{control_vocab_section}}
+
+      Design Spec (CSV):
+      {{design_spec_csv}}
+
+      Manual Resolution File:
+      {{manual_resolution_file}}
+
+      Run Summary File:
+      {{run_summary_file}}
+
+  spec_testability_auditor:
+    description: Scan SADS acceptance_criteria fields for criteria that cannot be directly automated as tests and emit manual_resolution_items.
+    output_schema_file: schemas/agent_outputs/spec_testability_auditor_output.schema.json
+    template_variables:
+      - name: output_schema_file
+        required: true
+        description: Schema file path that this prompt output must validate against.
+      - name: project_context
+        required: true
+        description: Content of project context file (e.g. PROJECT_CONTEXT.md).
+      - name: design_spec_csv
+        required: true
+        description: Full SADS design spec as CSV text (all columns).
+      - name: manual_resolution_file
+        required: true
+        description: Storage path for manual resolution artifacts.
+      - name: run_summary_file
+        required: true
+        description: Storage path for run summary artifacts.
+      - name: control_vocab_section
+        required: false
+        description: Per-project controlled vocabulary. Injected by lifecycle when configured.
+    system: |
+      You are a strict spec testability auditor.
+      Your output JSON must validate against {{output_schema_file}} without exception.
+      Return JSON only. Do not include markdown fences.
+      Scan every row's acceptance_criteria for criteria that cannot be directly automated as tests.
+      For each untestable criterion, emit one manual_resolution_item with:
+        - item_id: unique identifier (e.g. TEST-001)
+        - spec_id: the affected spec row
+        - field: always "acceptance_criteria"
+        - untestable_reason: why the criterion cannot be automated
+        - suggested_improvement: rewrite in automatable form
+        - suggested_test_type: unit | integration | e2e | manual
+        - options: exactly three options — accept_suggestion, let_agent_edit, skip
+      An empty manual_resolution_items array means all criteria are testable (non-blocking).
+    user: |
+      Project Context:
+      {{project_context}}
+      {{control_vocab_section}}
+
+      Design Spec (CSV):
+      {{design_spec_csv}}
+
+      Manual Resolution File:
+      {{manual_resolution_file}}
+
+      Run Summary File:
+      {{run_summary_file}}
+
+  spec_editor:
+    description: Produce a field-level or structural edit for a single spec issue identified during refine.
+    output_schema_file: schemas/agent_outputs/spec_editor_output.schema.json
+    template_variables:
+      - name: output_schema_file
+        required: true
+        description: Schema file path that this prompt output must validate against.
+      - name: project_context
+        required: true
+        description: Content of project context file (e.g. PROJECT_CONTEXT.md).
+      - name: issue_kind
+        required: true
+        description: '"field" for ambiguity/testability items; "structural" for decomposition items.'
+      - name: spec_id
+        required: true
+        description: spec_id of the primary spec row being edited.
+      - name: field
+        required: false
+        description: Field name to rewrite (field mode only — "requirement" or "acceptance_criteria").
+      - name: affected_spec_ids
+        required: false
+        description: Comma-separated spec_ids involved (structural mode — split/merge candidates).
+      - name: current_text
+        required: true
+        description: Current text of the field being edited (field mode) or empty string (structural mode).
+      - name: issue_description
+        required: true
+        description: Description of the quality issue to address.
+      - name: suggested_improvement
+        required: false
+        description: Agent-suggested improvement from the detector (may be empty for structural mode).
+      - name: full_spec_csv
+        required: true
+        description: Full SADS design spec as CSV text for context.
+    system: |
+      You are a strict spec editor. Produce ONE edit only.
+      Your output JSON must validate against {{output_schema_file}} without exception.
+      Return JSON only. Do not include markdown fences.
+      Issue kind: {{issue_kind}}
+      - If issue_kind is "field": produce a field-level edit with edit_type="field".
+        Set field to the exact column name, new_text to the complete replacement text, rationale to why it improves the spec.
+      - If issue_kind is "structural": produce a structural edit with edit_type="structural".
+        Use add/update/delete actions on spec rows. row_data must include all required SADS columns.
+        rationale must explain why the split or merge is correct.
+      Do not include both field and structural keys. Use the oneOf branch that matches issue_kind.
+    user: |
+      Project Context:
+      {{project_context}}
+
+      Issue Kind: {{issue_kind}}
+      Spec ID: {{spec_id}}
+      Field: {{field}}
+      Affected Spec IDs: {{affected_spec_ids}}
+
+      Current Text:
+      {{current_text}}
+
+      Issue Description:
+      {{issue_description}}
+
+      Suggested Improvement:
+      {{suggested_improvement}}
+
+      Full Design Spec (CSV):
+      {{full_spec_csv}}
 
   resolve_issues_with_diffs:
     description: Propose code diffs, optional issue notes, and required follow_up_uncertainties for selected issues.

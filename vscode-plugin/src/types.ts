@@ -1,76 +1,175 @@
-/**
- * Represents one row from the imported design specification table.
- */
-export interface DesignSpecRow {
+// ---------------------------------------------------------------------------
+// Shared extension-host types
+// ---------------------------------------------------------------------------
+
+/** Snapshot of pika config.yaml values used to pre-fill forms. */
+export interface PikaConfigSnapshot {
+  designSpecPath?: string;
+  codebaseDir?: string;
+  projectContextPath?: string;
+  skipMapped?: boolean;
+  maxSpecsPerSubunit?: number;
+  minConfidenceThreshold?: number;
+  verificationCommands?: string[];
+}
+
+/** Spec status counts from reading DESIGN-SPEC.csv. */
+export interface SpecStats {
+  total: number;
+  mapped: number;
+  partial: number;
+  blocked: number;
+  unmapped: number;
+  implemented: number;
+  pending: number;
+}
+
+/** A single entry in the run history sidebar section. */
+export interface RunHistoryEntry {
+  runId: string;
+  command: "map" | "implement";
+  /** ISO string */
+  timestamp: string;
+  status: "success" | "failed" | "unknown";
+  elapsedSec?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Webview message types  (extension ↔ webview)
+// ---------------------------------------------------------------------------
+
+/** Messages the extension sends to sidebar webview. */
+export type SidebarIncomingMessage =
+  | { type: "specStats"; data: SpecStats }
+  | { type: "runHistory"; entries: RunHistoryEntry[] }
+  | { type: "activeRun"; command: "map" | "implement" | null };
+
+/** Messages the sidebar webview sends to extension. */
+export type SidebarOutgoingMessage =
+  | { type: "openPanel"; command: "map" | "implement"; dryRun?: boolean }
+  | { type: "refresh" };
+
+/** Messages the extension sends to a command panel (map or implement). */
+export type PanelIncomingMessage =
+  | { type: "init"; command: "map" | "implement"; config: PikaConfigSnapshot; workset?: WorksetInfo }
+  | { type: "stream"; text: string; elapsed: number; tokens?: number }
+  | { type: "progress"; data: ProgressData }
+  | { type: "manualResolution"; items: ManualResolutionItem[] }
+  | { type: "complete"; results: MapResults | ImplementResults }
+  | { type: "failed"; message: string; exitCode?: number };
+
+/** Messages a command panel sends to extension. */
+export type PanelOutgoingMessage =
+  | { type: "runMap"; options: MapRunOptions }
+  | { type: "runImplement"; options: ImplementRunOptions }
+  | { type: "cancelRun" }
+  | { type: "resolveItems"; resolutions: ManualResolution[] }
+  | { type: "openFile"; path: string; line?: number }
+  | { type: "browseFile"; field: string }
+  | { type: "browseDir"; field: string };
+
+// ---------------------------------------------------------------------------
+// Run options
+// ---------------------------------------------------------------------------
+
+export interface MapRunOptions {
+  designSpecPath: string;
+  codebaseDir: string;
+  projectContextPath?: string;
+  skipMapped: boolean;
+  maxSpecsPerSubunit: number;
+  minConfidenceThreshold: number;
+  extraInstructions?: string;
+  dryRun?: boolean;
+}
+
+export interface ImplementRunOptions {
+  designSpecPath: string;
+  codebaseDir: string;
+  projectContextPath?: string;
+  dryRun?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Progress & results
+// ---------------------------------------------------------------------------
+
+export interface WorksetInfo {
+  total: number;
+  byModule?: Record<string, number>;
+  warnings?: string[];
+}
+
+export type ProgressData =
+  | { type: "subunitStart"; subunit: string; specCount: number }
+  | { type: "subunitComplete"; subunit: string; mapped: number; partial: number }
+  | { type: "phaseChange"; phase: string; phaseIndex: number }
+  | { type: "batchStart"; batchId: number; totalBatches: number; specIds: string[]; module?: string }
+  | { type: "batchComplete"; batchId: number; filesChanged: number; testsPassed?: boolean }
+  | { type: "tokens"; total: number };
+
+export interface ManualResolutionItem {
   id: string;
-  title: string;
-  requirement: string;
-  acceptanceCriteria: string;
-  status: string;
-  original: Record<string, string>;
+  entityType: string;
+  entityId: string;
+  reason: string;
+  details?: string;
+  suggestions?: string[];
 }
 
-/**
- * Represents a code location associated with a design specification.
- */
-export interface CodeReference {
-  filePath: string;
-  symbol: string;
-  lineStart: number;
-  lineEnd: number;
+export interface ManualResolution {
+  id: string;
+  note: string;
+  suggestedValue?: string;
 }
 
-/**
- * Represents spec-to-code mapping output.
- */
-export interface SpecCodeMapping {
+// Map results
+export interface MapSpecResult {
   specId: string;
-  references: CodeReference[];
-  confidence: number;
-  source: "dummy" | "placeholder";
+  title: string;
+  status: "mapped" | "partial" | "unmapped" | "blocked";
+  confidence?: number;
+  symbols?: string;
+  problems?: string;
 }
 
-/**
- * Represents code-to-spec mapping output for a single file.
- */
-export interface CodeToSpecMapping {
-  filePath: string;
-  matchedSpecs: Array<{
-    specId: string;
-    title?: string;
-    requirement?: string;
-    acceptanceCriteria?: string;
-    reason: string;
-    confidence: number;
-  }>;
-  source: "dummy" | "placeholder";
+export interface MapResults {
+  runId: string;
+  totalSpecs: number;
+  subunitCount: number;
+  elapsedSec: number;
+  tokens: number;
+  mapped: number;
+  partial: number;
+  blocked: number;
+  unmapped: number;
+  specs: MapSpecResult[];
 }
 
-/**
- * Represents current cursor symbol context with mapped spec details.
- */
-export interface CursorSpecContext {
-  filePath: string;
-  symbolName: string;
-  symbolKind: "function" | "class" | "method" | "constructor" | "unknown";
-  matchedSpecs: Array<{
-    specId: string;
-    title: string;
-    requirement: string;
-    acceptanceCriteria: string;
-    reason: string;
-    confidence: number;
-  }>;
-  source: "dummy" | "placeholder";
-  message?: string;
+// Implement results
+export interface BatchResult {
+  batchId: number;
+  specIds: string[];
+  module?: string;
+  filesChanged: number;
+  testsPassed?: boolean;
+  testOutput?: string;
 }
 
-/**
- * Represents extension-managed in-memory state for imported data and mappings.
- */
-export interface ExtensionState {
-  importedFilePath?: string;
-  importedPreviewPath?: string;
-  rows: DesignSpecRow[];
-  specToCodeMappings: SpecCodeMapping[];
+export interface ChangedFile {
+  path: string;
+  added: number;
+  removed: number;
+}
+
+export interface ImplementResults {
+  runId: string;
+  totalSpecs: number;
+  implementedSpecs: number;
+  failedSpecs: number;
+  elapsedSec: number;
+  tokens: number;
+  batches: BatchResult[];
+  filesChanged: ChangedFile[];
+  moduleBreakdown?: Record<string, number>;
 }

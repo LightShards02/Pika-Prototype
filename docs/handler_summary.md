@@ -86,11 +86,11 @@ This document summarizes the input, translation, and output mechanism of each co
 | Aspect | Details |
 |-------|---------|
 | **Input** | CLI `--design-spec` or `commands.implement.inputs.design_spec_path` or `project.state.design_spec_path` → Formatted SADS; `--project-context` → project context file (fallback: project root / `inputs.project_context_filename`) |
-| **Preprocessing** | Deterministic workset selection, module catalog build, per-module anchor planning, global linking, link-plan validation, batch planning, batch-plan validation, and brief generation |
-| **Agent output** | Planner/linker outputs (`anchor_planner_*`, `anchor_linker`) and per-batch spec-keyed implement outputs (`{spec_id}.diffs`, mappings); or `manual_resolution_items` only (blocking) |
-| **Schema** | `schemas/agent_outputs/implement_anchor_planner_output.schema.json`, `schemas/agent_outputs/implement_anchor_linker_output.schema.json`, `schemas/agent_outputs/implement_output.schema.json` |
+| **Preprocessing** | Deterministic workset selection, module catalog build, unified planner run (with semantic retry), unified plan validation, batch planning, batch-plan validation, and brief generation |
+| **Agent output** | Unified planner output (`unified_plan.json` with `module_plans`, `spec_dependencies`, `shared_contracts`) and per-batch spec-keyed implement outputs (`{spec_id}.diffs`, mappings); or `manual_resolution_items` only (blocking) |
+| **Schema** | `schemas/agent_outputs/implement_unified_planner_output.schema.json`, `schemas/agent_outputs/implement_output.schema.json` |
 | **Translation** | Applies validated diffs to code; updates `mapped_code_symbols`/`mapped_test_cases`; writes trace and verification artifacts |
-| **Output** | Code changes; Design Spec mapping updates; test spec updates; run artifacts (`link_plan`, `batch_plan`, `batch_plan_validation`, `batch_briefs`) |
+| **Output** | Code changes; Design Spec mapping updates; test spec updates; run artifacts (`unified_plan`, `batch_plan`, `batch_plan_validation`, `batch_briefs`) |
 
 **Output paths:** Run workspace → `out/agent_runs/implement/{run_id}/`; artifacts → `out/agent_artifacts/implement/{run_id}/`; test spec (optional) → `out/state/test_spec.csv`.
 

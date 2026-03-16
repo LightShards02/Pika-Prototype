@@ -106,6 +106,17 @@
           "minimum": 1,
           "description": "Timeout (seconds) for local provider subprocess executions. Overrides pika local.exec_timeout_sec for this workspace."
         },
+        "local_model": {
+          "oneOf": [
+            { "type": "string", "minLength": 1 },
+            {
+              "type": "object",
+              "additionalProperties": { "type": "string", "minLength": 1 },
+              "description": "Per-prompt model ID. Keys: prompt_name (map_spec_to_code, implement_unified_planner, implement_from_specs) or default."
+            }
+          ],
+          "description": "Codex model ID when provider is local. String = same for all prompts. Object = per-prompt overrides. Overrides pika local.model."
+        },
         "api_key_env": {
           "type": "string",
           "minLength": 1,
@@ -128,7 +139,7 @@
             "enum": ["low", "medium", "high", "xhigh"],
             "description": "Codex model_reasoning_effort: low, medium, high, or xhigh."
           },
-          "description": "Per-prompt reasoning effort for Codex (provider=local). Keys: prompt_name (e.g. map_spec_to_code, implement_anchor_planner, implement_anchor_linker, implement_from_specs) or 'default'. Values: low, medium, high, xhigh. Map and anchor agents default to medium; implementer to high."
+          "description": "Per-prompt reasoning effort for Codex (provider=local). Keys: prompt_name (e.g. map_spec_to_code, implement_unified_planner, implement_from_specs) or 'default'. Values: low, medium, high, xhigh. Map and planner default to medium; implementer to high."
         }
       }
     },
@@ -166,7 +177,16 @@
           "required": ["enabled", "prompt_name"],
           "properties": {
             "enabled": { "type": "boolean" },
-            "prompt_name": { "type": "string", "minLength": 1 },
+            "prompt_name": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Deprecated alias of implement.implementer.prompt_name."
+            },
+            "unified_planner_prompt_name": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Deprecated alias of implement.unified_planner.prompt_name."
+            },
             "inputs": {
               "type": "object",
               "additionalProperties": false,
@@ -309,13 +329,30 @@
               "type": "integer",
               "minimum": 0,
               "description": "Truncate acceptance_criteria at invocation (0 = unlimited)."
+            },
+            "max_specs_per_subunit": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Max rows per subunit agent call. Larger subunits are split into consecutive sub-batches."
+            },
+            "min_remapping_confidence_threshold": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Re-map 'mapped' rows whose max confidence falls below this threshold. Default 0.0 (disabled)."
+            },
+            "max_problem_threshold": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Inject into prompt: agents must only populate problems when confidence OR consistency_score < threshold. Default 1.0."
             }
           }
         },
         "implement": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["enabled", "prompt_name"],
+          "required": ["enabled"],
           "properties": {
             "enabled": { "type": "boolean" },
             "prompt_name": { "type": "string", "minLength": 1 },
@@ -346,6 +383,114 @@
               "additionalProperties": false,
               "properties": { "implement_output": { "type": "string", "minLength": 1 } }
             },
+            "unified_planner": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "prompt_name": { "type": "string", "minLength": 1 },
+                "disallowed_link_kinds_by_required_role": {
+                  "$ref": "#/properties/commands/properties/implement/properties/disallowed_link_kinds_by_required_role"
+                },
+                "leaf_dependency_roles": {
+                  "$ref": "#/properties/commands/properties/implement/properties/leaf_dependency_roles"
+                },
+                "leaf_dependency_policy": {
+                  "$ref": "#/properties/commands/properties/implement/properties/leaf_dependency_policy"
+                },
+                "contract_kind_definitions": {
+                  "$ref": "#/properties/commands/properties/implement/properties/contract_kind_definitions"
+                },
+                "type_shape_match": {
+                  "$ref": "#/properties/commands/properties/implement/properties/type_shape_match"
+                },
+                "min_confidence_threshold": {
+                  "$ref": "#/properties/commands/properties/implement/properties/min_confidence_threshold"
+                }
+              }
+            },
+            "implementer": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "prompt_name": { "type": "string", "minLength": 1 }
+              }
+            },
+            "workset_schema_validation": { "$ref": "#/$defs/implement_step_toggle" },
+            "module_catalog_validation": { "$ref": "#/$defs/implement_step_toggle" },
+            "planner_path_contract_prep": { "$ref": "#/$defs/implement_step_toggle" },
+            "planner_semantic_validation": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "semantic_validation_retries": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Step-level retries for planner semantic validation."
+                }
+              }
+            },
+            "planner_manual_resolution_gate": { "$ref": "#/$defs/implement_step_toggle" },
+            "dependency_gap_escalation": { "$ref": "#/$defs/implement_step_toggle" },
+            "unified_plan_validation": { "$ref": "#/$defs/implement_step_toggle" },
+            "intra_spec_conflict_validation": { "$ref": "#/$defs/implement_step_toggle" },
+            "contract_field_consistency_validation": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "field_match_score_threshold": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "Step-level normalized similarity threshold (0..1) for contract/spec high-match pairs."
+                },
+                "field_match_distance_threshold": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "Deprecated alias of field_match_score_threshold for this step."
+                }
+              }
+            },
+            "required_field_coverage_validation": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "providerless_contract_allowlist": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "Contract IDs intentionally exempt from the providerless manual-block check (always skipped)."
+                }
+              }
+            },
+            "match_ambiguity_validation": { "$ref": "#/$defs/implement_step_toggle" },
+            "batch_plan_construction": { "$ref": "#/$defs/implement_step_toggle" },
+            "batch_plan_dependency_validation": { "$ref": "#/$defs/implement_step_toggle" },
+            "batch_brief_build": { "$ref": "#/$defs/implement_step_toggle" },
+            "batch_brief_scope_validation": { "$ref": "#/$defs/implement_step_toggle" },
+            "dependency_context_edge_validation": { "$ref": "#/$defs/implement_step_toggle" },
+            "batch_runtime_path_contract_prep": { "$ref": "#/$defs/implement_step_toggle" },
+            "implement_semantic_validation": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "semantic_validation_retries": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Step-level retries for implement output semantic validation."
+                }
+              }
+            },
+            "implement_output_structure_validation": { "$ref": "#/$defs/implement_step_toggle" },
+            "patch_constraints_validation": { "$ref": "#/$defs/implement_step_toggle" },
+            "verification_command_resolution": { "$ref": "#/$defs/implement_step_toggle" },
+            "patch_normalization": { "$ref": "#/$defs/implement_step_toggle" },
+            "patch_apply_gate": { "$ref": "#/$defs/implement_step_toggle" },
+            "contract_schema_conformance_check": { "$ref": "#/$defs/implement_step_toggle" },
+            "verification_execution": { "$ref": "#/$defs/implement_step_toggle" },
             "type_placement_path": {
               "type": "string",
               "minLength": 1,
@@ -415,7 +560,7 @@
             "contract_kind_definitions": {
               "type": "object",
               "additionalProperties": false,
-              "description": "Canonical semantic definitions for contract kinds, injected into planner/linker prompts.",
+              "description": "Canonical semantic definitions for contract kinds, injected into planner prompts.",
               "properties": {
                 "api_endpoint": {
                   "type": "object",
@@ -484,7 +629,7 @@
               "type": "number",
               "minimum": 0,
               "maximum": 1,
-              "description": "Minimum normalized Damerau-Levenshtein similarity score (0..1) used by implement contract-field validation. Only pairs at or above this threshold are treated as high matches and emitted as manual resolution items."
+              "description": "Deprecated top-level alias of implement.contract_field_consistency_validation.field_match_score_threshold."
             },
             "field_match_distance_threshold": {
               "type": "number",
@@ -510,7 +655,7 @@
             "semantic_validation_retries": {
               "type": "integer",
               "minimum": 0,
-              "description": "Additional retries when semantic contract validation fails after schema validation (0 = disabled)."
+              "description": "Deprecated top-level alias used as fallback for planner_semantic_validation.semantic_validation_retries and implement_semantic_validation.semantic_validation_retries."
             },
             "forbidden_paths": {
               "type": "array",
@@ -571,6 +716,61 @@
             "map_prompt_name": { "type": "string", "minLength": 1 },
             "resolve_prompt_name": { "type": "string", "minLength": 1 }
           }
+        },
+        "refine": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "ambiguity_detector": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "prompt_name": { "type": "string", "minLength": 1 }
+              }
+            },
+            "testability_auditor": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "prompt_name": { "type": "string", "minLength": 1 }
+              }
+            },
+            "spec_editor": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "prompt_name": { "type": "string", "minLength": 1 }
+              }
+            },
+            "decomposition": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "blocking": { "type": "boolean" },
+                "similarity_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
+                "variance_threshold": { "type": "number", "minimum": 0 }
+              }
+            },
+            "inputs": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "design_spec_path": { "type": "string", "minLength": 1 },
+                "project_context_filename": { "type": "string", "minLength": 1 }
+              }
+            },
+            "outputs": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "root_dir": { "$ref": "#/$defs/output_target" },
+                "design_spec_path": { "$ref": "#/$defs/output_target" },
+                "agent_runs_dir": { "$ref": "#/$defs/output_target" }
+              }
+            }
+          }
         }
       }
     },
@@ -607,8 +807,8 @@
           "properties": {
             "add_if_missing": {
               "type": "array",
-              "minItems": 10,
-              "maxItems": 10,
+              "minItems": 11,
+              "maxItems": 11,
               "uniqueItems": true,
               "items": {
                 "type": "string",
@@ -622,7 +822,8 @@
                   "mapped_problems",
                   "map_status",
                   "map_assumptions",
-                  "mapped_at"
+                  "mapped_at",
+                  "map_run_id"
                 ]
               },
               "allOf": [
@@ -635,7 +836,8 @@
                 { "contains": { "const": "mapped_problems" } },
                 { "contains": { "const": "map_status" } },
                 { "contains": { "const": "map_assumptions" } },
-                { "contains": { "const": "mapped_at" } }
+                { "contains": { "const": "mapped_at" } },
+                { "contains": { "const": "map_run_id" } }
               ]
             }
           }
@@ -700,6 +902,13 @@
     }
   },
   "$defs": {
+    "implement_step_toggle": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" }
+      }
+    },
     "output_target": {
       "type": "object",
       "additionalProperties": false,

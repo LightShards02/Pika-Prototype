@@ -39,6 +39,7 @@ def _get_handlers() -> dict[str, Handler]:
     from handlers.implement import run_implement
     from handlers.resolve_plan import run_resolve_plan
     from handlers.resolve import run_resolve
+    from handlers.refine import run_refine
 
     return {
         "plan": run_plan,
@@ -48,6 +49,7 @@ def _get_handlers() -> dict[str, Handler]:
         "implement": run_implement,
         "resolve_plan": run_resolve_plan,
         "resolve": run_resolve,
+        "refine": run_refine,
     }
 
 

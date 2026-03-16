@@ -20,6 +20,7 @@ from handlers.map import (
     run_map,
     sanitize_subunit_for_filename,
     translate_map,
+    validate_code_ref_paths,
     validate_map_output_contract,
     validate_spec_id_unique,
     validate_subunit_column,
@@ -42,6 +43,7 @@ _MAP_TEST_CSV_CONTRACTS = {
                 "map_status",
                 "map_assumptions",
                 "mapped_at",
+                "map_run_id",
             ]
         }
     }
@@ -273,8 +275,8 @@ class MapOutputContractTests(unittest.TestCase):
         self.assertEqual(refs[0]["problems"], "Semantics differ from spec.")
         self.assertEqual(output["mappings"]["A1"]["assumptions"], "Partial match.")
 
-    def testvalidate_map_output_contract_accepts_legacy_notes_as_problems(self) -> None:
-        """Legacy code_ref.notes is normalized to problems for backward compatibility."""
+    def testvalidate_map_output_contract_notes_not_aliased_to_problems(self) -> None:
+        """code_ref.notes is no longer aliased to problems; problems stays empty string."""
         output = {
             "mappings": {
                 "A1": {
@@ -286,7 +288,7 @@ class MapOutputContractTests(unittest.TestCase):
                             "symbol_type": "class",
                             "confidence": 0.7,
                             "consistency_score": 0.5,
-                            "notes": "Legacy field.",  # legacy for problems
+                            "notes": "Should be ignored.",
                         }
                     ],
                     "assumptions": "",
@@ -294,7 +296,55 @@ class MapOutputContractTests(unittest.TestCase):
             }
         }
         validate_map_output_contract(output)
-        self.assertEqual(output["mappings"]["A1"]["code_refs"][0]["problems"], "Legacy field.")
+        self.assertEqual(output["mappings"]["A1"]["code_refs"][0]["problems"], "")
+
+    def testvalidate_map_output_contract_demotes_mapped_to_partial_below_threshold(self) -> None:
+        """mapped status is demoted to partial when max confidence < min_remapping_confidence_threshold."""
+        output = {
+            "mappings": {
+                "A1": {
+                    "status": "mapped",
+                    "code_refs": [
+                        {"path": "src/Foo.cs", "symbol_name": "Foo", "symbol_type": "class", "confidence": 0.4},
+                    ],
+                    "assumptions": "",
+                }
+            }
+        }
+        validate_map_output_contract(output, min_remapping_confidence_threshold=0.7)
+        self.assertEqual(output["mappings"]["A1"]["status"], "partial")
+
+    def testvalidate_map_output_contract_no_demotion_above_threshold(self) -> None:
+        """mapped status stays mapped when max confidence >= min_remapping_confidence_threshold."""
+        output = {
+            "mappings": {
+                "A1": {
+                    "status": "mapped",
+                    "code_refs": [
+                        {"path": "src/Foo.cs", "symbol_name": "Foo", "symbol_type": "class", "confidence": 0.9},
+                    ],
+                    "assumptions": "",
+                }
+            }
+        }
+        validate_map_output_contract(output, min_remapping_confidence_threshold=0.7)
+        self.assertEqual(output["mappings"]["A1"]["status"], "mapped")
+
+    def testvalidate_map_output_contract_no_demotion_of_partial(self) -> None:
+        """partial status is never promoted or changed by threshold demotion pass."""
+        output = {
+            "mappings": {
+                "A1": {
+                    "status": "partial",
+                    "code_refs": [
+                        {"path": "src/Foo.cs", "symbol_name": "Foo", "symbol_type": "class", "confidence": 0.9},
+                    ],
+                    "assumptions": "",
+                }
+            }
+        }
+        validate_map_output_contract(output, min_remapping_confidence_threshold=0.5)
+        self.assertEqual(output["mappings"]["A1"]["status"], "partial")
 
 
 class MapTranslateTests(unittest.TestCase):
@@ -356,7 +406,7 @@ class MapTranslateTests(unittest.TestCase):
         translate_map(config, ctx, output, inputs)
 
         content = design_csv.read_text(encoding="utf-8")
-        self.assertIn("Foo.DoFoo,Bar.Helper", content)
+        self.assertIn("src/Foo.cs::Foo.DoFoo,src/Bar.cs::Bar.Helper", content)
         self.assertIn("Implementation found in Foo and Bar.", content)
         self.assertIn("No code reference found.", content)
         # mapped_at normalized to YYYY-MM-DDTHH:MM:SS UTC+X
@@ -447,10 +497,130 @@ class MapTranslateTests(unittest.TestCase):
         translate_map(config, ctx, output, inputs)
 
         content = design_csv.read_text(encoding="utf-8")
-        self.assertIn("Foo.Bar,Baz.Quux", content)
+        self.assertIn("src/Foo.cs::Foo.Bar,src/Baz.cs::Baz.Quux", content)
         self.assertIn("0.85,0.90", content)
         self.assertIn("0.70,0.95", content)
         self.assertIn("Semantics differ from spec.", content)
+
+    def testtranslate_map_writes_map_run_id(self) -> None:
+        """Translate writes run_id[:8] into map_run_id column."""
+        root = _TEST_DATA_DIR / "test_run_id"
+        root.mkdir(parents=True, exist_ok=True)
+        design_csv = root / "design_spec.csv"
+        design_csv.write_text(
+            "spec_id,subunit,title,map_status,map_run_id\n"
+            "A1,S1,Foo,unmapped,\n",
+            encoding="utf-8",
+        )
+        (root / "out" / "backups").mkdir(parents=True, exist_ok=True)
+
+        config = _map_test_config(root, design_spec_path=design_csv)
+        ctx = RuntimeContext(
+            command="map",
+            dry_run=False,
+            verbose=False,
+            command_only_validation=False,
+            run_id="runabcdef1234",
+            project_root=str(root),
+            config_path=str(root / "config.yaml"),
+        )
+        output = {
+            "mappings": {"A1": {"status": "mapped", "code_refs": [], "assumptions": ""}},
+            "created_at": "2026-02-21T12:00:00Z",
+        }
+        inputs = {"design_spec_path": design_csv}
+
+        translate_map(config, ctx, output, inputs)
+
+        content = design_csv.read_text(encoding="utf-8")
+        self.assertIn("runabcd", content)  # run_id[:8]
+
+    def testtranslate_map_symbol_name_only_when_path_empty(self) -> None:
+        """When code_ref has no path, only symbol_name is written (no :: prefix)."""
+        root = _TEST_DATA_DIR / "test_no_path"
+        root.mkdir(parents=True, exist_ok=True)
+        design_csv = root / "design_spec.csv"
+        design_csv.write_text(
+            "spec_id,subunit,title,mapped_code_symbols,map_status\n"
+            "A1,S1,Foo,,unmapped\n",
+            encoding="utf-8",
+        )
+        (root / "out" / "backups").mkdir(parents=True, exist_ok=True)
+
+        config = _map_test_config(root, design_spec_path=design_csv)
+        ctx = RuntimeContext(
+            command="map",
+            dry_run=False,
+            verbose=False,
+            command_only_validation=False,
+            run_id="run-nopath",
+            project_root=str(root),
+            config_path=str(root / "config.yaml"),
+        )
+        output = {
+            "mappings": {
+                "A1": {
+                    "status": "mapped",
+                    "code_refs": [{"symbol_name": "MySymbol", "symbol_type": "function"}],
+                    "assumptions": "",
+                }
+            },
+            "created_at": "2026-02-21T12:00:00Z",
+        }
+        inputs = {"design_spec_path": design_csv}
+
+        translate_map(config, ctx, output, inputs)
+
+        content = design_csv.read_text(encoding="utf-8")
+        self.assertIn("MySymbol", content)
+        self.assertNotIn("::", content)
+
+    def testtranslate_map_notes_field_not_written_to_problems(self) -> None:
+        """code_ref.notes is ignored; only problems field populates mapped_problems."""
+        root = _TEST_DATA_DIR / "test_notes_ignored"
+        root.mkdir(parents=True, exist_ok=True)
+        design_csv = root / "design_spec.csv"
+        design_csv.write_text(
+            "spec_id,subunit,title,mapped_code_symbols,mapped_problems,map_status\n"
+            "A1,S1,Foo,,, unmapped\n",
+            encoding="utf-8",
+        )
+        (root / "out" / "backups").mkdir(parents=True, exist_ok=True)
+
+        config = _map_test_config(root, design_spec_path=design_csv)
+        ctx = RuntimeContext(
+            command="map",
+            dry_run=False,
+            verbose=False,
+            command_only_validation=False,
+            run_id="run-notes",
+            project_root=str(root),
+            config_path=str(root / "config.yaml"),
+        )
+        output = {
+            "mappings": {
+                "A1": {
+                    "status": "partial",
+                    "code_refs": [
+                        {
+                            "path": "src/Foo.cs",
+                            "symbol_name": "Foo",
+                            "symbol_type": "class",
+                            "confidence": 0.5,
+                            "notes": "legacy text",  # should be ignored
+                        }
+                    ],
+                    "assumptions": "",
+                }
+            },
+            "created_at": "2026-02-21T12:00:00Z",
+        }
+        inputs = {"design_spec_path": design_csv}
+
+        translate_map(config, ctx, output, inputs)
+
+        content = design_csv.read_text(encoding="utf-8")
+        self.assertNotIn("legacy text", content)
 
     def testtranslate_map_raises_when_backups_dir_missing(self) -> None:
         """Translate raises when backups_dir is not configured."""
@@ -593,6 +763,42 @@ class MapFilterAndGroupTests(unittest.TestCase):
         filtered = filter_rows_for_mapping(headers, rows, skip_mapped=False)
         self.assertEqual(len(filtered), 2)
 
+    def test_filter_rows_includes_mapped_row_below_threshold(self) -> None:
+        """Mapped row with max confidence below threshold is re-included for remapping."""
+        headers = ["spec_id", "map_status", "mapped_confidence"]
+        rows = [
+            {"spec_id": "A1", "map_status": "mapped", "mapped_confidence": "0.4,0.3"},
+            {"spec_id": "A2", "map_status": "unmapped", "mapped_confidence": ""},
+        ]
+        filtered = filter_rows_for_mapping(
+            headers, rows, skip_mapped=True, min_remapping_confidence_threshold=0.7
+        )
+        spec_ids = [r["spec_id"] for r in filtered]
+        self.assertIn("A1", spec_ids)
+        self.assertIn("A2", spec_ids)
+
+    def test_filter_rows_excludes_mapped_row_above_threshold(self) -> None:
+        """Mapped row with max confidence at or above threshold is not re-included."""
+        headers = ["spec_id", "map_status", "mapped_confidence"]
+        rows = [
+            {"spec_id": "A1", "map_status": "mapped", "mapped_confidence": "0.9"},
+        ]
+        filtered = filter_rows_for_mapping(
+            headers, rows, skip_mapped=True, min_remapping_confidence_threshold=0.7
+        )
+        self.assertEqual(len(filtered), 0)
+
+    def test_filter_rows_threshold_zero_disables_remapping_check(self) -> None:
+        """threshold=0.0 (default) means mapped rows are always skipped when skip_mapped=True."""
+        headers = ["spec_id", "map_status", "mapped_confidence"]
+        rows = [
+            {"spec_id": "A1", "map_status": "mapped", "mapped_confidence": "0.1"},
+        ]
+        filtered = filter_rows_for_mapping(
+            headers, rows, skip_mapped=True, min_remapping_confidence_threshold=0.0
+        )
+        self.assertEqual(len(filtered), 0)
+
     def testgroup_by_subunit_groups_correctly(self) -> None:
         """Rows are grouped by subunit value."""
         headers = ["spec_id", "subunit"]
@@ -640,6 +846,44 @@ class MapFilterAndGroupTests(unittest.TestCase):
             merge_subunit_results(batch_outputs)
         self.assertIn("Duplicate spec_id", str(ctx.exception))
         self.assertIn("A1", str(ctx.exception))
+
+    def testmerge_subunit_results_aggregate_status_blocked_wins(self) -> None:
+        """Aggregated run_summary status is blocked when any subunit is blocked."""
+        batch_outputs = [
+            {"mappings": {"A1": {}}, "manual_resolution_items": [], "run_summary": {"status": "success", "summary": "ok"}, "created_at": ""},
+            {"mappings": {"A2": {}}, "manual_resolution_items": [], "run_summary": {"status": "blocked", "summary": "needs review"}, "created_at": ""},
+        ]
+        merged = merge_subunit_results(batch_outputs)
+        self.assertEqual(merged["run_summary"]["status"], "blocked")
+
+    def testmerge_subunit_results_aggregate_status_partial_wins_over_success(self) -> None:
+        """Aggregated run_summary status is partial when partial and success subunits."""
+        batch_outputs = [
+            {"mappings": {"A1": {}}, "manual_resolution_items": [], "run_summary": {"status": "success", "summary": "ok"}, "created_at": ""},
+            {"mappings": {"A2": {}}, "manual_resolution_items": [], "run_summary": {"status": "partial", "summary": "low conf"}, "created_at": ""},
+        ]
+        merged = merge_subunit_results(batch_outputs)
+        self.assertEqual(merged["run_summary"]["status"], "partial")
+
+    def testmerge_subunit_results_blocking_items_summed(self) -> None:
+        """Aggregated run_summary sums blocking_items from all subunits."""
+        batch_outputs = [
+            {"mappings": {"A1": {}}, "manual_resolution_items": [], "run_summary": {"status": "partial", "blocking_items": 2}, "created_at": ""},
+            {"mappings": {"A2": {}}, "manual_resolution_items": [], "run_summary": {"status": "partial", "blocking_items": 3}, "created_at": ""},
+        ]
+        merged = merge_subunit_results(batch_outputs)
+        self.assertEqual(merged["run_summary"]["blocking_items"], 5)
+
+    def testmerge_subunit_results_summary_joined_with_semicolon(self) -> None:
+        """Aggregated run_summary.summary joins all non-empty summaries with '; '."""
+        batch_outputs = [
+            {"mappings": {"A1": {}}, "manual_resolution_items": [], "run_summary": {"status": "success", "summary": "part one"}, "created_at": ""},
+            {"mappings": {"A2": {}}, "manual_resolution_items": [], "run_summary": {"status": "success", "summary": "part two"}, "created_at": ""},
+        ]
+        merged = merge_subunit_results(batch_outputs)
+        self.assertIn("part one", merged["run_summary"]["summary"])
+        self.assertIn("part two", merged["run_summary"]["summary"])
+        self.assertIn("; ", merged["run_summary"]["summary"])
 
 
 class LoadOutputsFromDirectoryTests(unittest.TestCase):
@@ -708,6 +952,75 @@ class SanitizeSubunitForFilenameTests(unittest.TestCase):
         """Alphanumeric and hyphen are preserved."""
         self.assertEqual(sanitize_subunit_for_filename("SRV-CM"), "SRV-CM")
         self.assertEqual(sanitize_subunit_for_filename("Subunit1"), "Subunit1")
+
+
+class ValidateCodeRefPathsTests(unittest.TestCase):
+    """Tests for validate_code_ref_paths."""
+
+    def setUp(self) -> None:
+        self.tmp = _TEST_DATA_DIR / "code_ref_paths"
+        self.tmp.mkdir(parents=True, exist_ok=True)
+        (self.tmp / "src").mkdir(exist_ok=True)
+        (self.tmp / "src" / "Foo.cs").write_text("// Foo", encoding="utf-8")
+
+    def tearDown(self) -> None:
+        if self.tmp.exists():
+            shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_all_paths_exist_returns_empty_list(self) -> None:
+        """No invalid entries when all code_ref paths exist under codebase_dir."""
+        output = {
+            "mappings": {
+                "A1": {
+                    "status": "mapped",
+                    "code_refs": [{"path": "src/Foo.cs", "symbol_name": "Foo", "symbol_type": "class"}],
+                    "assumptions": "",
+                }
+            }
+        }
+        result = validate_code_ref_paths(output, self.tmp)
+        self.assertEqual(result, [])
+
+    def test_missing_path_returns_entry(self) -> None:
+        """Missing path returns entry with spec_id, path, symbol_name."""
+        output = {
+            "mappings": {
+                "A1": {
+                    "status": "mapped",
+                    "code_refs": [{"path": "src/Missing.cs", "symbol_name": "Missing", "symbol_type": "class"}],
+                    "assumptions": "",
+                }
+            }
+        }
+        result = validate_code_ref_paths(output, self.tmp)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["spec_id"], "A1")
+        self.assertEqual(result[0]["path"], "src/Missing.cs")
+        self.assertEqual(result[0]["symbol_name"], "Missing")
+
+    def test_empty_path_is_skipped(self) -> None:
+        """code_ref with empty path is silently skipped."""
+        output = {
+            "mappings": {
+                "A1": {
+                    "status": "partial",
+                    "code_refs": [{"path": "", "symbol_name": "Foo", "symbol_type": "class"}],
+                    "assumptions": "",
+                }
+            }
+        }
+        result = validate_code_ref_paths(output, self.tmp)
+        self.assertEqual(result, [])
+
+    def test_no_code_refs_returns_empty_list(self) -> None:
+        """Mappings without code_refs return empty list."""
+        output = {
+            "mappings": {
+                "A1": {"status": "unmapped", "code_refs": [], "assumptions": ""},
+            }
+        }
+        result = validate_code_ref_paths(output, self.tmp)
+        self.assertEqual(result, [])
 
 
 class RunMapApplyExistingOutputsTests(unittest.TestCase):
@@ -786,6 +1099,76 @@ class RunMapApplyExistingOutputsTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertIn("not an existing directory", result["reason"])
 
+    def test_apply_existing_outputs_latest_resolves_newest_dir(self) -> None:
+        """apply_existing_outputs=latest resolves to most recently modified subdir."""
+        intermediate_dir = self.root / "out" / "intermediate" / "map"
+        older_dir = intermediate_dir / "run-older"
+        newer_dir = intermediate_dir / "run-newer"
+        older_dir.mkdir(parents=True, exist_ok=True)
+        import time
+        time.sleep(0.01)
+        newer_dir.mkdir(parents=True, exist_ok=True)
+        (newer_dir / "map_S1.json").write_text(
+            json.dumps({
+                "manual_resolution_items": [],
+                "run_summary": {},
+                "created_at": "2026-02-21T12:00:00Z",
+                "mappings": {
+                    "A1": {"status": "mapped", "code_refs": [], "assumptions": ""},
+                    "A2": {"status": "unmapped", "code_refs": [], "assumptions": ""},
+                },
+            }),
+            encoding="utf-8",
+        )
+        config = _map_test_config(
+            self.root,
+            design_spec_path=self.design_csv,
+            outputs={
+                "intermediate_map_dir": {"path": str(intermediate_dir), "no_overwrite": False},
+                "agent_runs_dir": {"path": str(self.root / "out" / "agent_runs"), "no_overwrite": False},
+            },
+        )
+        ctx = RuntimeContext(
+            command="map",
+            dry_run=False,
+            verbose=False,
+            command_only_validation=False,
+            run_id="run-latest",
+            project_root=str(self.root),
+            config_path=str(self.root / "config.yaml"),
+            input_overrides={"design_spec_path": str(self.design_csv), "apply_existing_outputs": "latest"},
+        )
+        with patch("handlers.map.invoke_agent_with_schema_retry") as mock_invoke:
+            result = run_map(config, ctx)
+        mock_invoke.assert_not_called()
+        self.assertEqual(result["status"], "completed")
+
+    def test_apply_existing_outputs_latest_empty_returns_failed(self) -> None:
+        """apply_existing_outputs=latest with no prior runs returns failed."""
+        intermediate_dir = self.root / "out" / "intermediate" / "map"
+        intermediate_dir.mkdir(parents=True, exist_ok=True)
+        config = _map_test_config(
+            self.root,
+            design_spec_path=self.design_csv,
+            outputs={
+                "intermediate_map_dir": {"path": str(intermediate_dir), "no_overwrite": False},
+                "agent_runs_dir": {"path": str(self.root / "out" / "agent_runs"), "no_overwrite": False},
+            },
+        )
+        ctx = RuntimeContext(
+            command="map",
+            dry_run=False,
+            verbose=False,
+            command_only_validation=False,
+            run_id="run-latest-empty",
+            project_root=str(self.root),
+            config_path=str(self.root / "config.yaml"),
+            input_overrides={"design_spec_path": str(self.design_csv), "apply_existing_outputs": "latest"},
+        )
+        result = run_map(config, ctx)
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("no prior run directories", result["reason"])
+
 
 class RunMapPerSubunitPersistenceTests(unittest.TestCase):
     """Tests for per-subunit output persistence during normal map run."""
@@ -858,6 +1241,198 @@ class RunMapPerSubunitPersistenceTests(unittest.TestCase):
             all_mappings.update(data["mappings"])
         self.assertIn("A1", all_mappings)
         self.assertIn("A2", all_mappings)
+
+
+class RunMapSubunitFilterAndBatchingTests(unittest.TestCase):
+    """Tests for subunit_filter, max_specs_per_subunit, stats artifact, and per-subunit blocking."""
+
+    def setUp(self) -> None:
+        self.root = _TEST_DATA_DIR / "subunit_filter"
+        self.root.mkdir(parents=True, exist_ok=True)
+        (self.root / "PROJECT_CONTEXT.md").write_text("# Test\n", encoding="utf-8")
+        self.design_csv = self.root / "design_spec.csv"
+        self.design_csv.write_text(
+            "spec_id,subunit,title,mapped_code_symbols,map_status,map_assumptions,mapped_at\n"
+            "A1,S1,Foo,,unmapped,,\n"
+            "A2,S2,Bar,,unmapped,,\n"
+            "A3,S3,Baz,,unmapped,,\n",
+            encoding="utf-8",
+        )
+        (self.root / "out" / "backups" / "map").mkdir(parents=True, exist_ok=True)
+        self.intermediate_dir = self.root / "out" / "intermediate" / "map"
+        self.intermediate_dir.mkdir(parents=True, exist_ok=True)
+        self.agent_runs_dir = self.root / "out" / "agent_runs"
+
+    def tearDown(self) -> None:
+        if self.root.exists():
+            shutil.rmtree(self.root, ignore_errors=True)
+
+    def _base_config(self) -> dict[str, Any]:
+        return _map_test_config(
+            self.root,
+            design_spec_path=self.design_csv,
+            outputs={
+                "intermediate_map_dir": {"path": str(self.intermediate_dir), "no_overwrite": False},
+                "agent_runs_dir": {"path": str(self.agent_runs_dir), "no_overwrite": False},
+            },
+        )
+
+    def _fake_invoke(self, spec_ids: list[str]) -> dict[str, Any]:
+        """Return a stub output for given spec_ids."""
+        return {
+            "manual_resolution_items": [],
+            "run_summary": {"status": "success"},
+            "created_at": "2026-02-21T12:00:00Z",
+            "mappings": {sid: {"status": "unmapped", "code_refs": [], "assumptions": ""} for sid in spec_ids},
+        }
+
+    def test_subunit_filter_processes_only_matching_subunits(self) -> None:
+        """When subunit_filter is set, only those subunits are invoked."""
+        config = self._base_config()
+        invoked_csv: list[str] = []
+
+        def fake_invoke(prompt_name: str, template_vars: dict, **kwargs: Any) -> dict:
+            invoked_csv.append(template_vars.get("design_spec_rows_csv", ""))
+            csv_content = template_vars.get("design_spec_rows_csv", "")
+            spec_ids = [r.split(",")[0] for r in csv_content.strip().splitlines()[1:] if r.strip()]
+            return self._fake_invoke(spec_ids)
+
+        ctx = RuntimeContext(
+            command="map", dry_run=False, verbose=False, command_only_validation=False,
+            run_id="run-filter", project_root=str(self.root), config_path=str(self.root / "config.yaml"),
+            input_overrides={"design_spec_path": str(self.design_csv), "subunit_filter": "S1"},
+        )
+        with patch("handlers.map.invoke_agent_with_schema_retry", side_effect=fake_invoke):
+            result = run_map(config, ctx)
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(len(invoked_csv), 1)
+        self.assertIn("A1", invoked_csv[0])
+        self.assertNotIn("A2", invoked_csv[0])
+
+    def test_subunit_filter_no_match_returns_skipped(self) -> None:
+        """When subunit_filter matches no subunit, result is skipped."""
+        config = self._base_config()
+        ctx = RuntimeContext(
+            command="map", dry_run=False, verbose=False, command_only_validation=False,
+            run_id="run-nofilt", project_root=str(self.root), config_path=str(self.root / "config.yaml"),
+            input_overrides={"design_spec_path": str(self.design_csv), "subunit_filter": "NONEXISTENT"},
+        )
+        with patch("handlers.map.invoke_agent_with_schema_retry") as mock_invoke:
+            result = run_map(config, ctx)
+        mock_invoke.assert_not_called()
+        self.assertEqual(result["status"], "skipped")
+        self.assertIn("subunit_filter", result["reason"])
+
+    def test_max_specs_per_subunit_splits_invocations(self) -> None:
+        """max_specs_per_subunit splits large subunit into multiple agent invocations."""
+        # Put 3 specs in same subunit
+        self.design_csv.write_text(
+            "spec_id,subunit,title,mapped_code_symbols,map_status,map_assumptions,mapped_at\n"
+            "A1,S1,Foo,,unmapped,,\n"
+            "A2,S1,Bar,,unmapped,,\n"
+            "A3,S1,Baz,,unmapped,,\n",
+            encoding="utf-8",
+        )
+        config = self._base_config()
+        config["commands"]["map"]["max_specs_per_subunit"] = 2
+        invocation_count: list[int] = []
+
+        def fake_invoke(prompt_name: str, template_vars: dict, **kwargs: Any) -> dict:
+            csv_content = template_vars.get("design_spec_rows_csv", "")
+            spec_ids = [r.split(",")[0] for r in csv_content.strip().splitlines()[1:] if r.strip()]
+            invocation_count.append(len(spec_ids))
+            return self._fake_invoke(spec_ids)
+
+        ctx = RuntimeContext(
+            command="map", dry_run=False, verbose=False, command_only_validation=False,
+            run_id="run-split", project_root=str(self.root), config_path=str(self.root / "config.yaml"),
+            input_overrides={"design_spec_path": str(self.design_csv)},
+        )
+        with patch("handlers.map.invoke_agent_with_schema_retry", side_effect=fake_invoke):
+            result = run_map(config, ctx)
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(len(invocation_count), 2)
+        self.assertLessEqual(max(invocation_count), 2)
+
+    def test_stats_json_artifact_written(self) -> None:
+        """After a successful map run, a stats JSON file is written to agent_runs/map/."""
+        config = self._base_config()
+
+        def fake_invoke(prompt_name: str, template_vars: dict, **kwargs: Any) -> dict:
+            csv_content = template_vars.get("design_spec_rows_csv", "")
+            spec_ids = [r.split(",")[0] for r in csv_content.strip().splitlines()[1:] if r.strip()]
+            return self._fake_invoke(spec_ids)
+
+        ctx = RuntimeContext(
+            command="map", dry_run=False, verbose=False, command_only_validation=False,
+            run_id="run-stats-123", project_root=str(self.root), config_path=str(self.root / "config.yaml"),
+            input_overrides={"design_spec_path": str(self.design_csv)},
+        )
+        with patch("handlers.map.invoke_agent_with_schema_retry", side_effect=fake_invoke):
+            result = run_map(config, ctx)
+
+        self.assertIn(result["status"], ("completed", "partial"))
+        stats_file = self.agent_runs_dir / "map" / "run-stats-123_stats.json"
+        self.assertTrue(stats_file.exists(), f"Expected stats file: {stats_file}")
+        stats = json.loads(stats_file.read_text(encoding="utf-8"))
+        self.assertIn("total", stats)
+        self.assertIn("mapped", stats)
+        self.assertIn("run_id", stats)
+
+    def test_partial_block_applies_clean_subunits(self) -> None:
+        """When some subunits are blocked and some are clean, clean subunits are applied."""
+        self.design_csv.write_text(
+            "spec_id,subunit,title,mapped_code_symbols,map_status,map_assumptions,mapped_at\n"
+            "A1,S1,Foo,,unmapped,,\n"
+            "A2,S2,Bar,,unmapped,,\n",
+            encoding="utf-8",
+        )
+        clean_output = {
+            "manual_resolution_items": [],
+            "run_summary": {"status": "success"},
+            "created_at": "2026-02-21T12:00:00Z",
+            "mappings": {"A1": {"status": "mapped", "code_refs": [], "assumptions": "clean"}},
+        }
+        blocked_output = {
+            "manual_resolution_items": [
+                {
+                    "item_id": "MR-1", "title": "Ambiguous", "question": "Which?",
+                    "options": [{"option_id": "a", "label": "A", "effect": "use A"}],
+                    "required": True, "blocking_reason": "ambiguous",
+                }
+            ],
+            "mappings": {},
+            "run_summary": {"status": "blocked"},
+            "created_at": "2026-02-21T12:00:00Z",
+        }
+
+        call_count = [0]
+
+        def fake_invoke(prompt_name: str, template_vars: dict, **kwargs: Any) -> dict:
+            csv_content = template_vars.get("design_spec_rows_csv", "")
+            call_count[0] += 1
+            if "A1" in csv_content:
+                return clean_output
+            return blocked_output
+
+        config = self._base_config()
+        ctx = RuntimeContext(
+            command="map", dry_run=False, verbose=False, command_only_validation=False,
+            run_id="run-partial-block", project_root=str(self.root), config_path=str(self.root / "config.yaml"),
+            input_overrides={"design_spec_path": str(self.design_csv)},
+        )
+        with patch("handlers.map.invoke_agent_with_schema_retry", side_effect=fake_invoke):
+            result = run_map(config, ctx)
+
+        self.assertEqual(result["status"], "blocked")
+        # Clean mappings were applied
+        self.assertIn("clean_mappings_applied", result)
+        self.assertGreater(result["clean_mappings_applied"], 0)
+        # CSV updated for clean subunit
+        content = self.design_csv.read_text(encoding="utf-8")
+        self.assertIn("mapped", content)
 
 
 class RunMapManualResolutionPersistenceTests(unittest.TestCase):
@@ -969,8 +1544,8 @@ class CodebaseContentProviderTests(unittest.TestCase):
         self.assertIn("# Codebase Snapshot", content)
         self.assertIn("main.py", content)
 
-    def test_codebase_content_populated_when_provider_local(self) -> None:
-        """When provider is local, codebase_content is non-empty (isolated temp workspace)."""
+    def test_codebase_content_empty_when_provider_local(self) -> None:
+        """When provider is local, codebase_content is empty (model explores files directly)."""
         config = _map_test_config(self.root)
         config["agent"] = {"provider": "local"}
         ctx = RuntimeContext(
@@ -984,11 +1559,7 @@ class CodebaseContentProviderTests(unittest.TestCase):
         )
         inputs = {"agent_view_content": "spec_id,title\nA1,Foo\n"}
         vars_ = build_template_vars(config, self.root, ctx, inputs)
-        self.assertIn("codebase_content", vars_)
-        content = vars_["codebase_content"]
-        self.assertNotEqual(content, "")
-        self.assertIn("# Codebase Snapshot", content)
-        self.assertIn("main.py", content)
+        self.assertEqual(vars_.get("codebase_content", ""), "")
 
     def test_codebase_content_empty_when_provider_stub(self) -> None:
         """When provider is stub, codebase_content is empty."""

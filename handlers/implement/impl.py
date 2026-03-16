@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import json
 import re
+import tempfile
+import threading
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor
+from concurrent.futures import wait as futures_wait
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +56,11 @@ from handlers.implement.semantic_guard import (
 )
 from handlers.implement.spec_update import _update_design_and_test_spec
 from handlers.implement.validation import (
+    _escalate_dependency_gap_issues,
+    _validate_dependency_context_edges,
+    _validate_intra_spec_behavior_conflicts,
+    _validate_match_ambiguity,
+    _validate_required_field_coverage,
     _validate_batch_plan_dependencies,
     _validate_brief_scoping,
     _validate_contract_field_consistency,
@@ -95,6 +104,251 @@ def _ensure_batch_module_dirs(codebase_dir: Path, brief: dict[str, Any]) -> list
     return created
 
 
+def _step_enabled(impl: dict[str, Any], step_name: str) -> bool:
+    """Return whether a deterministic implement step is enabled."""
+    steps = impl.get("steps", {}) if isinstance(impl.get("steps", {}), dict) else {}
+    step_cfg = steps.get(step_name, {}) if isinstance(steps.get(step_name, {}), dict) else {}
+    enabled = step_cfg.get("enabled")
+    return enabled if isinstance(enabled, bool) else True
+
+
+def _step_value(impl: dict[str, Any], step_name: str, field_name: str, default: Any) -> Any:
+    """Return step-scoped field value with fallback."""
+    steps = impl.get("steps", {}) if isinstance(impl.get("steps", {}), dict) else {}
+    step_cfg = steps.get(step_name, {}) if isinstance(steps.get(step_name, {}), dict) else {}
+    value = step_cfg.get(field_name, default)
+    return default if value is None else value
+
+
+def _select_workset_relaxed(headers: list[str], rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Select workset without raising on missing required columns/values."""
+    spec_col = _find_col(headers, "spec_id")
+    tag_col = _find_col(headers, "module_tag")
+    role_col = _find_col(headers, "module_role")
+    status_col = _find_col(headers, "implementation_status")
+    selected: list[dict[str, str]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        status = (row.get(status_col, "") if status_col else "").strip().lower()
+        if status == ImplementStatus.COMPLETED:
+            continue
+        spec_id = str(row.get(spec_col, "") if spec_col else row.get("spec_id", "")).strip()
+        module_tag = str(row.get(tag_col, "") if tag_col else row.get("module_tag", "")).strip()
+        module_role = str(row.get(role_col, "") if role_col else row.get("module_role", "")).strip().lower()
+        if not spec_id or not module_tag or not module_role:
+            continue
+        normalized = dict(row)
+        normalized["spec_id"] = spec_id
+        normalized["module_tag"] = module_tag
+        normalized["module_role"] = module_role
+        selected.append(normalized)
+    return selected
+
+
+def _build_module_catalog_relaxed(
+    rows: list[dict[str, str]],
+    allowed_roles: set[str],
+    codebase_dir: Path,
+) -> dict[str, Any]:
+    """Build module catalog by normalizing inconsistent/unknown roles deterministically."""
+    fallback_role = sorted(allowed_roles)[0] if allowed_roles else "shared"
+    role_by_module: dict[str, str] = {}
+    normalized_rows: list[dict[str, str]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        module_tag = str(row.get("module_tag", "")).strip()
+        spec_id = str(row.get("spec_id", "")).strip()
+        if not module_tag or not spec_id:
+            continue
+        raw_role = str(row.get("module_role", "")).strip().lower()
+        chosen_role = role_by_module.get(module_tag)
+        if chosen_role is None:
+            chosen_role = raw_role if raw_role in allowed_roles else fallback_role
+            role_by_module[module_tag] = chosen_role
+        updated = dict(row)
+        updated["module_role"] = chosen_role
+        normalized_rows.append(updated)
+    return _build_module_catalog(normalized_rows, allowed_roles, codebase_dir)
+
+
+def _execute_briefs_concurrently(
+    briefs: list[dict[str, Any]],
+    max_parallel: int,
+    *,
+    config: dict[str, Any],
+    ctx: RuntimeContext,
+    impl: dict[str, Any],
+    schemas: dict[str, Any],
+    root: Path,
+    context_text: str,
+    paths: dict[str, Path],
+    headers: list[str],
+    base_stages: list[str],
+    resume_blocked: bool,
+    completed_stages_set: set[str],
+    codebase_dir: Path,
+    shared_local_workspace: Path | None,
+    provider: str,
+) -> dict[str, Any]:
+    """Execute briefs with DAG-aware parallel dispatch (up to max_parallel concurrent LLM calls).
+
+    Returns:
+        On success: {"spec_outputs": dict[str, dict]}
+        On failure: {"status": ImplementStatus, "reason": str, "batch_id": str}
+    """
+    from handlers.implement.execution import _collect_spec_output
+
+    bid_to_brief = {b["batch_id"]: b for b in briefs}
+    deps: dict[str, set[str]] = {
+        b["batch_id"]: set(b.get("depends_on_batches", []))
+        for b in briefs
+    }
+
+    completed: set[str] = set()
+    pending: set[str] = set(bid_to_brief)
+    spec_outputs: dict[str, dict[str, Any]] = {}
+
+    # Handle resume: mark cached batches as pre-completed before dispatching.
+    for brief in briefs:
+        bid = brief["batch_id"]
+        execute_stage = f"execute_{bid}"
+        if resume_blocked and execute_stage in completed_stages_set:
+            cached_path = paths["agent_outputs"] / f"implement_{bid}.json"
+            if cached_path.exists():
+                try:
+                    cached_output = json.loads(cached_path.read_text(encoding="utf-8"))
+                    if cached_output and not cached_output.get("manual_resolution_items"):
+                        parsed = _collect_spec_output(cached_output)
+                        spec_outputs.update(parsed)
+                        completed.add(bid)
+                        pending.discard(bid)
+                        _report_implement_phase("Execute", "skipped", f"{bid} (resume: cached)")
+                        log_lifecycle_event(
+                            "lifecycle_batch_executed",
+                            command="implement",
+                            run_id=ctx.run_id,
+                            extra={"batch_id": bid, "spec_count": len(parsed), "resumed": True},
+                        )
+                except Exception:
+                    pass
+
+    if not pending:
+        return {"spec_outputs": spec_outputs}
+
+    patch_lock = threading.Lock()
+    failure: dict[str, Any] | None = None
+    batch_workspaces: dict[str, Path | None] = {}
+
+    with ThreadPoolExecutor(max_workers=max_parallel) as executor:
+        in_flight: dict[Any, str] = {}  # future -> batch_id
+
+        def _ready() -> list[str]:
+            in_flight_bids = set(in_flight.values())
+            return sorted([
+                bid for bid in pending
+                if bid not in in_flight_bids
+                and all(d in completed for d in deps[bid])
+            ])
+
+        def _submit_ready() -> None:
+            available = max_parallel - len(in_flight)
+            for bid in _ready()[:available]:
+                brief = bid_to_brief[bid]
+                _ensure_batch_module_dirs(codebase_dir, brief)
+
+                # Isolate workspace per batch for local provider.
+                batch_ws: Path | None = None
+                if provider == "local" and shared_local_workspace is not None:
+                    ws_dir = tempfile.mkdtemp(
+                        prefix=f"pika_batch_{bid}_",
+                        dir=shared_local_workspace.parent,
+                    )
+                    batch_ws = Path(ws_dir)
+                batch_workspaces[bid] = batch_ws
+
+                _report_implement_phase("Execute", "running", f"{bid} (parallel)")
+                future = executor.submit(
+                    _execute_batch,
+                    config,
+                    ctx,
+                    impl,
+                    schemas["implementer"],
+                    root,
+                    context_text,
+                    paths,
+                    headers,
+                    brief,
+                    completed_stages=base_stages,
+                    local_workspace_override=batch_ws,
+                    patch_apply_lock=patch_lock,
+                )
+                in_flight[future] = bid
+
+        _submit_ready()
+        while in_flight:
+            done, _ = futures_wait(in_flight, return_when=FIRST_COMPLETED)
+            for f in done:
+                bid = in_flight.pop(f)
+                batch_ws = batch_workspaces.pop(bid, None)
+                if batch_ws is not None:
+                    cleanup_local_agent_temp_workspace(batch_ws)
+
+                if failure is not None:
+                    # Already failed; drain remaining without starting new batches.
+                    continue
+
+                try:
+                    result = f.result()
+                except Exception as exc:
+                    failure = {
+                        "status": ImplementStatus.FAILED,
+                        "reason": f"execute_exception_{bid}",
+                        "batch_id": bid,
+                        "details": str(exc),
+                    }
+                    continue
+
+                if result["status"] == ImplementStatus.BLOCKED:
+                    failure = {
+                        "status": ImplementStatus.BLOCKED,
+                        "reason": result.get("reason", "batch_blocked"),
+                        "batch_id": bid,
+                    }
+                elif result["status"] != ImplementStatus.COMPLETED:
+                    failure = {
+                        "status": result["status"],
+                        "reason": result.get("reason", "batch_failed"),
+                        "batch_id": bid,
+                    }
+                else:
+                    completed.add(bid)
+                    pending.discard(bid)
+                    spec_outputs.update(result.get("spec_outputs", {}))
+                    log_lifecycle_event(
+                        "lifecycle_batch_executed",
+                        command="implement",
+                        run_id=ctx.run_id,
+                        extra={
+                            "batch_id": bid,
+                            "spec_count": len(bid_to_brief[bid].get("spec_rows", [])),
+                        },
+                    )
+
+                if failure is None:
+                    _submit_ready()
+
+    # Clean up any workspaces that were not yet freed (e.g., after a failure drain).
+    for ws in batch_workspaces.values():
+        if ws is not None:
+            cleanup_local_agent_temp_workspace(ws)
+
+    if failure is not None:
+        return failure
+    return {"spec_outputs": spec_outputs}
+
+
 def run_implement(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
     """Run implement workflow: deterministic prep, unified planning, batching, execution, translation."""
     root = Path(ctx.project_root)
@@ -116,7 +370,15 @@ def run_implement(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]
         }
 
     headers, rows = load_sads_csv_or_xlsx(design_path)
-    selected = _select_workset(headers, rows)
+    if _step_enabled(impl, "workset_schema_validation"):
+        selected = _select_workset(headers, rows)
+    else:
+        selected = _select_workset_relaxed(headers, rows)
+        _report_implement_phase(
+            "Load",
+            "warning",
+            "workset_schema_validation disabled; invalid rows are skipped",
+        )
     log_lifecycle_event(
         "lifecycle_workset_selected",
         command="implement",
@@ -185,7 +447,19 @@ def run_implement(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]
         return {"command": "implement", "status": ImplementStatus.COMPLETED, "dry_run": ctx.dry_run}
 
     codebase_dir = resolve_codebase_dir_path(config, root, ctx)
-    module_catalog = _build_module_catalog(selected, impl["allowed_module_roles"], codebase_dir)
+    if _step_enabled(impl, "module_catalog_validation"):
+        module_catalog = _build_module_catalog(selected, impl["allowed_module_roles"], codebase_dir)
+    else:
+        module_catalog = _build_module_catalog_relaxed(
+            selected,
+            impl["allowed_module_roles"],
+            codebase_dir,
+        )
+        _report_implement_phase(
+            "Catalog",
+            "warning",
+            "module_catalog_validation disabled; invalid roles are normalized",
+        )
     _write_json(paths["run"] / "module_catalog.json", module_catalog)
     log_lifecycle_event(
         "lifecycle_module_catalog_built",
@@ -244,11 +518,25 @@ def run_implement(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]
             if shared_local_workspace is not None
             else codebase_dir.resolve()
         )
-        planner_path_contract = build_planner_path_contract(
-            module_catalog,
-            impl["type_placement_path"],
-            impl["forbidden_paths"],
+        planner_path_contract = (
+            build_planner_path_contract(
+                module_catalog,
+                impl["type_placement_path"],
+                impl["forbidden_paths"],
+            )
+            if _step_enabled(impl, "planner_path_contract_prep")
+            else {
+                "module_root_prefixes_by_tag": {},
+                "shared_contract_prefix": "",
+                "forbidden_path_prefixes": [],
+            }
         )
+        if not _step_enabled(impl, "planner_path_contract_prep"):
+            _report_implement_phase(
+                "Planner path contract",
+                "warning",
+                "planner_path_contract_prep disabled",
+            )
         template_vars: dict[str, Any] = {
             "output_schema_file": str(schemas["unified_planner"]),
             "project_context": context_text,
@@ -281,6 +569,12 @@ def run_implement(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]
             template_vars["directory_tree_snapshot"] = build_directory_tree_snapshot(
                 shared_local_workspace.resolve()
             )
+        if not _step_enabled(impl, "planner_semantic_validation"):
+            _report_implement_phase(
+                "Planner semantic validation",
+                "warning",
+                "planner_semantic_validation disabled",
+            )
         try:
             planner_output = invoke_with_semantic_retry(
                 prompt_name=impl["unified_planner_prompt_name"],
@@ -288,11 +582,19 @@ def run_implement(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]
                 schema_path=schemas["unified_planner"],
                 config=config,
                 ctx=ctx,
-                semantic_validator=lambda output: validate_unified_plan_semantics(
-                    output,
-                    planner_path_contract,
+                semantic_validator=(
+                    (lambda output: validate_unified_plan_semantics(output, planner_path_contract))
+                    if _step_enabled(impl, "planner_semantic_validation")
+                    else (lambda _output: [])
                 ),
-                semantic_validation_retries=impl["semantic_validation_retries"],
+                semantic_validation_retries=int(
+                    _step_value(
+                        impl,
+                        "planner_semantic_validation",
+                        "semantic_validation_retries",
+                        impl.get("semantic_validation_retries", 2),
+                    )
+                ),
                 validation_label="implement_unified_planner",
                 local_workspace_override=shared_local_workspace,
             )
@@ -325,33 +627,91 @@ def run_implement(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]
         extra={"phase": "unified_planner"},
     )
 
-    if _manual_block(
-        planner_output,
-        paths["manual"],
-        "unified_planner",
-        run_dir=paths["run"],
-        command="implement",
-        run_id=ctx.run_id,
-        completed_stages=["load", "catalog"],
-    ):
-        n = len(planner_output.get("manual_resolution_items", []))
-        _report_implement_phase("Planner", "blocked", f"{n} manual resolution items")
-        _cleanup_shared_local_workspace()
-        return {
-            "command": "implement",
-            "status": ImplementStatus.BLOCKED,
-            "blocking_items": n,
-        }
+    if _step_enabled(impl, "planner_manual_resolution_gate"):
+        if _manual_block(
+            planner_output,
+            paths["manual"],
+            "unified_planner",
+            run_dir=paths["run"],
+            command="implement",
+            run_id=ctx.run_id,
+            completed_stages=["load", "catalog"],
+        ):
+            n = len(planner_output.get("manual_resolution_items", []))
+            _report_implement_phase("Planner", "blocked", f"{n} manual resolution items")
+            _cleanup_shared_local_workspace()
+            return {
+                "command": "implement",
+                "status": ImplementStatus.BLOCKED,
+                "blocking_items": n,
+            }
+    else:
+        _report_implement_phase(
+            "Planner manual gate",
+            "warning",
+            "planner_manual_resolution_gate disabled",
+        )
 
     module_plans = planner_output.get("module_plans", [])
     spec_dependencies = planner_output.get("spec_dependencies", [])
     shared_contracts = planner_output.get("shared_contracts", [])
 
+    # --- Extract and surface spec consistency issues (Phase 0 warnings) ---
+    spec_issues: list[dict[str, Any]] = planner_output.get("spec_issues", [])
+    if spec_issues:
+        for issue in spec_issues:
+            issue_id = issue.get("issue_id", "?")
+            kind = issue.get("kind", "?")
+            affected = ", ".join(issue.get("affected_spec_ids", []))
+            description = issue.get("description", "")
+            _report_implement_phase(
+                "Spec issue",
+                "warning",
+                f"[{issue_id}] {kind} — {affected}: {description}",
+            )
+    _write_json(paths["run"] / "spec_issues.json", {"spec_issues": spec_issues})
+    if spec_issues:
+        _report_implement_phase(
+            "Spec consistency", "warning", f"{len(spec_issues)} issue(s) — see spec_issues.json",
+        )
+
+    # --- Phase 8: Gate multi-module dependency_gap spec issues ---
+    if _step_enabled(impl, "dependency_gap_escalation"):
+        dep_gap_items = _escalate_dependency_gap_issues(spec_issues, selected)
+        if dep_gap_items:
+            _manual_block(
+                None,
+                paths["manual"],
+                "spec_issue_dependency_gap",
+                run_dir=paths["run"],
+                command="implement",
+                run_id=ctx.run_id,
+                completed_stages=["load", "catalog", "unified_planner"],
+                source=RESOLUTION_SOURCE_VALIDATION,
+                items=dep_gap_items,
+            )
+            _report_implement_phase(
+                "Spec dependency gap",
+                "blocked",
+                f"{len(dep_gap_items)} cross-module gap(s) require resolution",
+            )
+            _cleanup_shared_local_workspace()
+            return {
+                "command": "implement",
+                "status": ImplementStatus.BLOCKED,
+                "blocking_items": len(dep_gap_items),
+            }
+    else:
+        _report_implement_phase(
+            "Spec dependency gap", "warning", "dependency_gap_escalation disabled",
+        )
+
     n_anchors = sum(len(mp.get("planned_anchors", [])) for mp in module_plans)
     _report_implement_phase(
         "Planner", "ok",
         f"{len(module_plans)} modules, {n_anchors} anchors, "
-        f"{len(spec_dependencies)} cross-deps, {len(shared_contracts)} contracts",
+        f"{len(spec_dependencies)} cross-deps, {len(shared_contracts)} contracts"
+        + (f", {len(spec_issues)} spec issue(s)" if spec_issues else ""),
     )
 
     # Write per-module plans for debugging
@@ -360,26 +720,64 @@ def run_implement(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]
         _write_json(paths["module_plans"] / f"{tag}.json", mp)
 
     # --- Validate unified plan ---
-    all_spec_ids = {row["spec_id"] for row in selected}
-    plan_validation = _validate_unified_plan(
-        planner_output, all_spec_ids, module_catalog,
-    )
-    _write_json(paths["run"] / "plan_validation.json", plan_validation)
-
-    if plan_validation["status"] != ImplementStatus.PASSED:
-        reasons = plan_validation.get("reasons", [])
-        _report_implement_phase("Plan validation", "failed", "; ".join(reasons[:3]))
-        _write_json(
-            paths["run"] / "summary.json",
-            {"status": ImplementStatus.FAILED, "reason": "plan_validation_failed", "details": reasons},
+    if _step_enabled(impl, "unified_plan_validation"):
+        all_spec_ids = {row["spec_id"] for row in selected}
+        plan_validation = _validate_unified_plan(
+            planner_output, all_spec_ids, module_catalog,
         )
-        _cleanup_shared_local_workspace()
-        return {
-            "command": "implement",
-            "status": ImplementStatus.FAILED,
-            "reason": "plan_validation_failed",
-        }
-    _report_implement_phase("Plan validation", "ok", "DAG valid, all specs covered")
+        _write_json(paths["run"] / "plan_validation.json", plan_validation)
+
+        if plan_validation["status"] != ImplementStatus.PASSED:
+            reasons = plan_validation.get("reasons", [])
+            _report_implement_phase("Plan validation", "failed", "; ".join(reasons[:3]))
+            _write_json(
+                paths["run"] / "summary.json",
+                {"status": ImplementStatus.FAILED, "reason": "plan_validation_failed", "details": reasons},
+            )
+            _cleanup_shared_local_workspace()
+            return {
+                "command": "implement",
+                "status": ImplementStatus.FAILED,
+                "reason": "plan_validation_failed",
+            }
+        _report_implement_phase("Plan validation", "ok", "DAG valid, all specs covered")
+    else:
+        _report_implement_phase("Plan validation", "warning", "unified_plan_validation disabled")
+        _write_json(
+            paths["run"] / "plan_validation.json",
+            {"status": "skipped", "reason": "unified_plan_validation disabled"},
+        )
+
+    if _step_enabled(impl, "intra_spec_conflict_validation"):
+        intra_spec_validation = _validate_intra_spec_behavior_conflicts(
+            spec_dependencies,
+            selected,
+            headers,
+        )
+        _write_json(paths["run"] / "intra_spec_conflict_validation.json", intra_spec_validation)
+        if intra_spec_validation["status"] != ImplementStatus.PASSED:
+            reasons = intra_spec_validation.get("reasons", [])
+            _report_implement_phase("Intra-spec conflict check", "failed", "; ".join(reasons[:3]))
+            _write_json(
+                paths["run"] / "summary.json",
+                {
+                    "status": ImplementStatus.FAILED,
+                    "reason": "intra_spec_conflict_validation_failed",
+                    "details": reasons,
+                },
+            )
+            _cleanup_shared_local_workspace()
+            return {
+                "command": "implement",
+                "status": ImplementStatus.FAILED,
+                "reason": "intra_spec_conflict_validation_failed",
+            }
+        _report_implement_phase("Intra-spec conflict check", "ok", "linked specs are behavior-consistent")
+    else:
+        _write_json(
+            paths["run"] / "intra_spec_conflict_validation.json",
+            {"status": "skipped", "reason": "intra_spec_conflict_validation disabled"},
+        )
 
     # --- Contract field consistency check ---
     resolution_items: list[dict[str, Any]] = []
@@ -388,47 +786,192 @@ def run_implement(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]
         res_data = load_resolution_file(paths["run"])
         if res_data:
             resolution_items = res_data.get("items") or []
-    contract_validation = _validate_contract_field_consistency(
-        shared_contracts, selected, headers,
-        resolutions=resolution_items if resolution_items else None,
-        match_score_threshold=impl["field_match_score_threshold"],
-    )
-    patched_contracts = contract_validation.get("shared_contracts")
-    if isinstance(patched_contracts, list):
-        shared_contracts = patched_contracts
-    _write_json(paths["run"] / "contract_field_validation.json", contract_validation)
-    if contract_validation["status"] != ImplementStatus.PASSED:
-        items = contract_validation.get("manual_resolution_items", [])
-        _manual_block(
-            None,
-            paths["manual"],
-            "contract_field_consistency",
-            run_dir=paths["run"],
-            command="implement",
-            run_id=ctx.run_id,
-            completed_stages=[
-                "load",
-                "catalog",
-                "unified_planner",
-                "plan_validation",
-            ],
-            source=RESOLUTION_SOURCE_VALIDATION,
-            items=items,
-            spec_rows=selected,
-            headers=headers,
-            shared_contracts=shared_contracts,
+    if _step_enabled(impl, "contract_field_consistency_validation"):
+        contract_validation = _validate_contract_field_consistency(
+            shared_contracts, selected, headers,
+            resolutions=resolution_items if resolution_items else None,
+            match_score_threshold=float(
+                _step_value(
+                    impl,
+                    "contract_field_consistency_validation",
+                    "field_match_score_threshold",
+                    impl.get("field_match_score_threshold", 0.8),
+                )
+            ),
         )
+        patched_contracts = contract_validation.get("shared_contracts")
+        if isinstance(patched_contracts, list):
+            shared_contracts = patched_contracts
+        _write_json(paths["run"] / "contract_field_validation.json", contract_validation)
+        if contract_validation["status"] != ImplementStatus.PASSED:
+            items = contract_validation.get("manual_resolution_items", [])
+            _manual_block(
+                None,
+                paths["manual"],
+                "contract_field_consistency",
+                run_dir=paths["run"],
+                command="implement",
+                run_id=ctx.run_id,
+                completed_stages=[
+                    "load",
+                    "catalog",
+                    "unified_planner",
+                    "plan_validation",
+                ],
+                source=RESOLUTION_SOURCE_VALIDATION,
+                items=items,
+                spec_rows=selected,
+                headers=headers,
+                shared_contracts=shared_contracts,
+            )
+            _report_implement_phase(
+                "Contract field check", "blocked",
+                f"{len(items)} field mismatch(es) require manual resolution",
+            )
+            _cleanup_shared_local_workspace()
+            return {
+                "command": "implement",
+                "status": ImplementStatus.BLOCKED,
+                "blocking_items": len(items),
+            }
+        _report_implement_phase("Contract field check", "ok", "all contract fields consistent")
+    else:
         _report_implement_phase(
-            "Contract field check", "blocked",
-            f"{len(items)} field mismatch(es) require manual resolution",
+            "Contract field check",
+            "warning",
+            "contract_field_consistency_validation disabled",
         )
-        _cleanup_shared_local_workspace()
-        return {
-            "command": "implement",
-            "status": ImplementStatus.BLOCKED,
-            "blocking_items": len(items),
-        }
-    _report_implement_phase("Contract field check", "ok", "all contract fields consistent")
+        _write_json(
+            paths["run"] / "contract_field_validation.json",
+            {"status": "skipped", "reason": "contract_field_consistency_validation disabled"},
+        )
+
+    if _step_enabled(impl, "required_field_coverage_validation"):
+        coverage_step = impl.get("steps", {}).get("required_field_coverage_validation", {})
+        required_field_coverage_validation = _validate_required_field_coverage(
+            shared_contracts,
+            selected,
+            headers,
+            providerless_contract_allowlist=set(
+                coverage_step.get("providerless_contract_allowlist", [])
+            ),
+        )
+        _write_json(
+            paths["run"] / "required_field_coverage_validation.json",
+            required_field_coverage_validation,
+        )
+        if required_field_coverage_validation["status"] != ImplementStatus.PASSED:
+            block_items = required_field_coverage_validation.get("manual_resolution_items", [])
+            if block_items:
+                _manual_block(
+                    None,
+                    paths["manual"],
+                    "required_field_coverage_validation",
+                    run_dir=paths["run"],
+                    command="implement",
+                    run_id=ctx.run_id,
+                    completed_stages=[
+                        "load",
+                        "catalog",
+                        "unified_planner",
+                        "plan_validation",
+                        "contract_field_consistency",
+                    ],
+                    source=RESOLUTION_SOURCE_VALIDATION,
+                    items=block_items,
+                    spec_rows=selected,
+                    headers=headers,
+                    shared_contracts=shared_contracts,
+                )
+                _report_implement_phase(
+                    "Required field coverage check", "blocked",
+                    f"{len(block_items)} providerless contract(s) require manual resolution",
+                )
+                _cleanup_shared_local_workspace()
+                return {
+                    "command": "implement",
+                    "status": ImplementStatus.BLOCKED,
+                    "reason": "required_field_coverage_validation_manual_block",
+                }
+            reasons = required_field_coverage_validation.get("reasons", [])
+            _report_implement_phase("Required field coverage check", "failed", "; ".join(reasons[:3]))
+            _write_json(
+                paths["run"] / "summary.json",
+                {
+                    "status": ImplementStatus.FAILED,
+                    "reason": "required_field_coverage_validation_failed",
+                    "details": reasons,
+                },
+            )
+            _cleanup_shared_local_workspace()
+            return {
+                "command": "implement",
+                "status": ImplementStatus.FAILED,
+                "reason": "required_field_coverage_validation_failed",
+            }
+        _report_implement_phase("Required field coverage check", "ok", "contract fields are covered")
+    else:
+        _write_json(
+            paths["run"] / "required_field_coverage_validation.json",
+            {"status": "skipped", "reason": "required_field_coverage_validation disabled"},
+        )
+
+    if _step_enabled(impl, "match_ambiguity_validation"):
+        match_ambiguity_validation = _validate_match_ambiguity(
+            shared_contracts,
+            selected,
+            headers,
+            match_score_threshold=float(
+                _step_value(
+                    impl,
+                    "contract_field_consistency_validation",
+                    "field_match_score_threshold",
+                    impl.get("field_match_score_threshold", 0.8),
+                )
+            ),
+        )
+        _write_json(paths["run"] / "match_ambiguity_validation.json", match_ambiguity_validation)
+        if match_ambiguity_validation["status"] != ImplementStatus.PASSED:
+            items = match_ambiguity_validation.get("manual_resolution_items", [])
+            _manual_block(
+                None,
+                paths["manual"],
+                "match_ambiguity_validation",
+                run_dir=paths["run"],
+                command="implement",
+                run_id=ctx.run_id,
+                completed_stages=[
+                    "load",
+                    "catalog",
+                    "unified_planner",
+                    "plan_validation",
+                    "intra_spec_conflict_validation",
+                    "contract_field_consistency",
+                    "required_field_coverage_validation",
+                ],
+                source=RESOLUTION_SOURCE_VALIDATION,
+                items=items,
+                spec_rows=selected,
+                headers=headers,
+                shared_contracts=shared_contracts,
+            )
+            _report_implement_phase(
+                "Match ambiguity check",
+                "blocked",
+                f"{len(items)} ambiguity item(s) require manual resolution",
+            )
+            _cleanup_shared_local_workspace()
+            return {
+                "command": "implement",
+                "status": ImplementStatus.BLOCKED,
+                "blocking_items": len(items),
+            }
+        _report_implement_phase("Match ambiguity check", "ok", "no ambiguity conflicts")
+    else:
+        _write_json(
+            paths["run"] / "match_ambiguity_validation.json",
+            {"status": "skipped", "reason": "match_ambiguity_validation disabled"},
+        )
 
     # --- Build batches from spec dependency graph ---
     anchor_plans_by_module = {
@@ -436,17 +979,55 @@ def run_implement(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]
         for mp in module_plans
         if isinstance(mp, dict) and mp.get("module_tag")
     }
-    batch_plan = _build_batches(
-        selected,
-        spec_dependencies,
-        impl["budgets"],
-        anchor_plans=anchor_plans_by_module,
-        module_plans=module_plans,
-    )
+    if _step_enabled(impl, "batch_plan_construction"):
+        batch_plan = _build_batches(
+            selected,
+            spec_dependencies,
+            impl["budgets"],
+            anchor_plans=anchor_plans_by_module,
+            module_plans=module_plans,
+        )
+    else:
+        _report_implement_phase(
+            "Batch plan",
+            "warning",
+            "batch_plan_construction disabled; using single deterministic batch",
+        )
+        batch_plan = {
+            "batches": [
+                {
+                    "batch_id": "B0",
+                    "kind": "module_impl",
+                    "spec_ids": [str(row.get("spec_id", "")).strip() for row in selected if str(row.get("spec_id", "")).strip()],
+                    "module_tags": sorted(
+                        {
+                            str(row.get("module_tag", "")).strip()
+                            for row in selected
+                            if str(row.get("module_tag", "")).strip()
+                        }
+                    ),
+                    "depends_on_batches": [],
+                    "rationale": "batch_plan_construction disabled",
+                    "budgets_applied": impl["budgets"],
+                }
+            ]
+        }
     _write_json(paths["run"] / "batch_plan.json", batch_plan)
-    batch_plan_validation = _validate_batch_plan_dependencies(
-        batch_plan, spec_dependencies,
-    )
+    if _step_enabled(impl, "batch_plan_dependency_validation"):
+        batch_plan_validation = _validate_batch_plan_dependencies(
+            batch_plan, spec_dependencies,
+        )
+    else:
+        batch_plan_validation = {
+            "status": ImplementStatus.PASSED,
+            "checks": [],
+            "reasons": ["batch_plan_dependency_validation disabled"],
+        }
+        _report_implement_phase(
+            "Batch plan validation",
+            "warning",
+            "batch_plan_dependency_validation disabled",
+        )
     _write_json(paths["run"] / "batch_plan_validation.json", batch_plan_validation)
     log_lifecycle_event(
         "lifecycle_batch_plan_validated",
@@ -484,14 +1065,49 @@ def run_implement(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]
     _report_implement_phase("Batch plan", "ok", f"{n_batches} batches")
 
     # --- Build briefs ---
-    briefs = _build_briefs(
-        selected,
-        anchor_plans_by_module,
-        spec_dependencies,
-        shared_contracts,
-        batch_plan,
-        impl,
-    )
+    if _step_enabled(impl, "batch_brief_build"):
+        briefs = _build_briefs(
+            selected,
+            anchor_plans_by_module,
+            spec_dependencies,
+            shared_contracts,
+            batch_plan,
+            impl,
+        )
+    else:
+        _report_implement_phase(
+            "Briefs",
+            "warning",
+            "batch_brief_build disabled; using minimal brief projection",
+        )
+        selected_by_spec = {
+            str(row.get("spec_id", "")).strip(): row
+            for row in selected
+            if isinstance(row, dict) and str(row.get("spec_id", "")).strip()
+        }
+        briefs = []
+        for batch in batch_plan.get("batches", []):
+            if not isinstance(batch, dict):
+                continue
+            spec_ids = [
+                str(spec_id).strip()
+                for spec_id in batch.get("spec_ids", [])
+                if str(spec_id).strip()
+            ]
+            brief = {
+                "batch_id": str(batch.get("batch_id", "")).strip() or "B0",
+                "spec_rows": [selected_by_spec[sid] for sid in spec_ids if sid in selected_by_spec],
+                "planned_anchors": [],
+                "shared_contracts": [],
+                "spec_dependency_context": [],
+                "constraints": {
+                    "forbidden_paths": impl["forbidden_paths"],
+                    "budgets_applied": impl["budgets"],
+                    "verification_commands": impl["verification_commands"],
+                    "traceability_rules": {"require_spec_ids_per_diff": True},
+                },
+            }
+            briefs.append(brief)
     for brief in briefs:
         _write_json(paths["briefs"] / f"{brief['batch_id']}.json", brief)
     log_lifecycle_event(
@@ -503,7 +1119,19 @@ def run_implement(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]
     _report_implement_phase("Briefs", "ok", f"{len(briefs)} batch briefs")
 
     # --- Validate brief scoping ---
-    brief_validation = _validate_brief_scoping(briefs)
+    if _step_enabled(impl, "batch_brief_scope_validation"):
+        brief_validation = _validate_brief_scoping(briefs)
+    else:
+        brief_validation = {
+            "status": ImplementStatus.PASSED,
+            "checks": [],
+            "reasons": ["batch_brief_scope_validation disabled"],
+        }
+        _report_implement_phase(
+            "Brief validation",
+            "warning",
+            "batch_brief_scope_validation disabled",
+        )
     _write_json(paths["run"] / "brief_validation.json", brief_validation)
     if brief_validation["status"] != ImplementStatus.PASSED:
         _update_run_meta_state(
@@ -532,6 +1160,38 @@ def run_implement(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]
             "reason": "brief_validation_failed",
         }
     _report_implement_phase("Brief validation", "ok", "all briefs batch-scoped")
+    if _step_enabled(impl, "dependency_context_edge_validation"):
+        dependency_context_edge_validation = _validate_dependency_context_edges(
+            briefs,
+            spec_dependencies,
+        )
+        _write_json(
+            paths["run"] / "dependency_context_edge_validation.json",
+            dependency_context_edge_validation,
+        )
+        if dependency_context_edge_validation["status"] != ImplementStatus.PASSED:
+            reasons = dependency_context_edge_validation.get("reasons", [])
+            _report_implement_phase("Dependency context edge check", "failed", "; ".join(reasons[:3]))
+            _write_json(
+                paths["run"] / "summary.json",
+                {
+                    "status": ImplementStatus.FAILED,
+                    "reason": "dependency_context_edge_validation_failed",
+                    "details": reasons,
+                },
+            )
+            _cleanup_shared_local_workspace()
+            return {
+                "command": "implement",
+                "status": ImplementStatus.FAILED,
+                "reason": "dependency_context_edge_validation_failed",
+            }
+        _report_implement_phase("Dependency context edge check", "ok", "dependency context matches planner")
+    else:
+        _write_json(
+            paths["run"] / "dependency_context_edge_validation.json",
+            {"status": "skipped", "reason": "dependency_context_edge_validation disabled"},
+        )
 
     # --- Execute batches ---
     if ctx.dry_run:
@@ -564,128 +1224,192 @@ def run_implement(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]
         "briefs",
         "brief_validation",
     ]
-    spec_outputs: dict[str, dict[str, Any]] = {}
-    for idx, brief in enumerate(briefs, start=1):
-        batch_id = brief["batch_id"]
-        execute_stage = f"execute_{batch_id}"
-        completed_stages = base_stages + [
-            f"execute_{b['batch_id']}" for b in briefs[: idx - 1]
-        ]
-        if resume_blocked and execute_stage in completed_stages_set:
-            cached_path = paths["agent_outputs"] / f"implement_{batch_id}.json"
-            if cached_path.exists():
-                try:
-                    cached_output = json.loads(cached_path.read_text(encoding="utf-8"))
-                except Exception:
-                    cached_output = None
-                if cached_output and not cached_output.get("manual_resolution_items"):
-                    from handlers.implement.execution import _collect_spec_output
-                    try:
-                        parsed = _collect_spec_output(cached_output)
-                        spec_outputs.update(parsed)
-                        _report_implement_phase("Execute", "skipped", f"{batch_id} (resume: cached)")
-                        log_lifecycle_event(
-                            "lifecycle_batch_executed",
-                            command="implement",
-                            run_id=ctx.run_id,
-                            extra={"batch_id": batch_id, "spec_count": len(parsed), "resumed": True},
-                        )
-                        continue
-                    except Exception:
-                        pass
-        _report_implement_phase("Execute", "running", f"{batch_id} ({idx}/{len(briefs)})")
-        try:
-            created_dirs = _ensure_batch_module_dirs(codebase_dir, brief)
-            log_lifecycle_event(
-                "lifecycle_batch_module_dirs_created",
-                command="implement",
-                run_id=ctx.run_id,
-                extra={
-                    "batch_id": batch_id,
-                    "created_count": len(created_dirs),
-                    "created_dirs": json.dumps(created_dirs),
-                },
-            )
-            if shared_local_workspace is not None:
-                sync_local_agent_workspace(codebase_dir, shared_local_workspace)
-                log_lifecycle_event(
-                    "lifecycle_local_shared_workspace_resynced",
-                    command="implement",
-                    run_id=ctx.run_id,
-                    extra={
-                        "source_dir": str(codebase_dir),
-                        "workspace_dir": str(shared_local_workspace),
-                        "phase": "batch_pre_execute_dir_sync",
-                        "batch_id": batch_id,
-                    },
-                )
-            result = _execute_batch(
-                config,
-                ctx,
-                impl,
-                schemas["implementer"],
-                root,
-                context_text,
-                paths,
-                headers,
-                brief,
-                completed_stages=completed_stages,
-                local_workspace_override=shared_local_workspace,
-            )
-        except Exception as exc:
+    max_parallel_batches = int(impl.get("budgets", {}).get("max_parallel_batches", 1))
+    if max_parallel_batches > 1:
+        parallel_result = _execute_briefs_concurrently(
+            briefs,
+            max_parallel_batches,
+            config=config,
+            ctx=ctx,
+            impl=impl,
+            schemas=schemas,
+            root=root,
+            context_text=context_text,
+            paths=paths,
+            headers=headers,
+            base_stages=base_stages,
+            resume_blocked=resume_blocked,
+            completed_stages_set=completed_stages_set,
+            codebase_dir=codebase_dir,
+            shared_local_workspace=shared_local_workspace,
+            provider=provider,
+        )
+        if "status" in parallel_result:
+            failure_status = parallel_result["status"]
+            failure_reason = parallel_result.get("reason", "batch_failed")
+            failure_details = str(parallel_result.get("details", "")).strip()
             _update_run_meta_state(
                 run_meta_path,
-                completed_stages=completed_stages,
-                failed_at_stage=execute_stage,
+                completed_stages=base_stages,
+                failed_at_stage=f"execute_{parallel_result.get('batch_id', 'unknown')}",
             )
-            _report_implement_phase("Execute", "failed", f"{execute_stage}: {exc}")
+            _report_implement_phase("Execute", "failed", failure_reason)
             _write_json(
                 paths["run"] / "summary.json",
-                {
-                    "status": ImplementStatus.FAILED,
-                    "reason": f"execute_exception_{batch_id}",
-                    "details": str(exc),
-                },
+                (
+                    {
+                        "status": failure_status,
+                        "reason": failure_reason,
+                        "details": failure_details,
+                    }
+                    if failure_details
+                    else {"status": failure_status, "reason": failure_reason}
+                ),
             )
             _cleanup_shared_local_workspace()
             return {
                 "command": "implement",
-                "status": ImplementStatus.FAILED,
-                "reason": f"execute_exception_{batch_id}",
+                "status": failure_status,
+                "reason": failure_reason,
+                **({"details": failure_details} if failure_details else {}),
             }
-        if result["status"] != ImplementStatus.COMPLETED:
-            reason = result.get("reason", "batch_failed")
-            if result.get("status") == ImplementStatus.BLOCKED:
-                _report_implement_phase("Execute", "blocked", f"{brief['batch_id']} manual resolution")
-            else:
+        spec_outputs: dict[str, dict[str, Any]] = parallel_result["spec_outputs"]
+        _report_implement_phase("Execute", "ok", f"{len(briefs)} batches completed (parallel)")
+    else:
+        spec_outputs: dict[str, dict[str, Any]] = {}
+        for idx, brief in enumerate(briefs, start=1):
+            batch_id = brief["batch_id"]
+            execute_stage = f"execute_{batch_id}"
+            completed_stages = base_stages + [
+                f"execute_{b['batch_id']}" for b in briefs[: idx - 1]
+            ]
+            if resume_blocked and execute_stage in completed_stages_set:
+                cached_path = paths["agent_outputs"] / f"implement_{batch_id}.json"
+                if cached_path.exists():
+                    try:
+                        cached_output = json.loads(cached_path.read_text(encoding="utf-8"))
+                    except Exception:
+                        cached_output = None
+                    if cached_output and not cached_output.get("manual_resolution_items"):
+                        from handlers.implement.execution import _collect_spec_output
+                        try:
+                            parsed = _collect_spec_output(cached_output)
+                            spec_outputs.update(parsed)
+                            _report_implement_phase("Execute", "skipped", f"{batch_id} (resume: cached)")
+                            log_lifecycle_event(
+                                "lifecycle_batch_executed",
+                                command="implement",
+                                run_id=ctx.run_id,
+                                extra={"batch_id": batch_id, "spec_count": len(parsed), "resumed": True},
+                            )
+                            continue
+                        except Exception:
+                            pass
+            _report_implement_phase("Execute", "running", f"{batch_id} ({idx}/{len(briefs)})")
+            try:
+                created_dirs = _ensure_batch_module_dirs(codebase_dir, brief)
+                log_lifecycle_event(
+                    "lifecycle_batch_module_dirs_created",
+                    command="implement",
+                    run_id=ctx.run_id,
+                    extra={
+                        "batch_id": batch_id,
+                        "created_count": len(created_dirs),
+                        "created_dirs": json.dumps(created_dirs),
+                    },
+                )
+                if shared_local_workspace is not None:
+                    sync_local_agent_workspace(codebase_dir, shared_local_workspace)
+                    log_lifecycle_event(
+                        "lifecycle_local_shared_workspace_resynced",
+                        command="implement",
+                        run_id=ctx.run_id,
+                        extra={
+                            "source_dir": str(codebase_dir),
+                            "workspace_dir": str(shared_local_workspace),
+                            "phase": "batch_pre_execute_dir_sync",
+                            "batch_id": batch_id,
+                        },
+                    )
+                result = _execute_batch(
+                    config,
+                    ctx,
+                    impl,
+                    schemas["implementer"],
+                    root,
+                    context_text,
+                    paths,
+                    headers,
+                    brief,
+                    completed_stages=completed_stages,
+                    local_workspace_override=shared_local_workspace,
+                )
+            except Exception as exc:
                 _update_run_meta_state(
                     run_meta_path,
                     completed_stages=completed_stages,
                     failed_at_stage=execute_stage,
                 )
-                _report_implement_phase("Execute", "failed", reason)
-            _write_json(
-                paths["run"] / "summary.json",
-                {
+                _report_implement_phase("Execute", "failed", f"{execute_stage}: {exc}")
+                _write_json(
+                    paths["run"] / "summary.json",
+                    {
+                        "status": ImplementStatus.FAILED,
+                        "reason": f"execute_exception_{batch_id}",
+                        "details": str(exc),
+                    },
+                )
+                _cleanup_shared_local_workspace()
+                return {
+                    "command": "implement",
+                    "status": ImplementStatus.FAILED,
+                    "reason": f"execute_exception_{batch_id}",
+                }
+            if result["status"] != ImplementStatus.COMPLETED:
+                reason = result.get("reason", "batch_failed")
+                if result.get("status") == ImplementStatus.BLOCKED:
+                    _report_implement_phase("Execute", "blocked", f"{brief['batch_id']} manual resolution")
+                else:
+                    _update_run_meta_state(
+                        run_meta_path,
+                        completed_stages=completed_stages,
+                        failed_at_stage=execute_stage,
+                    )
+                    _report_implement_phase("Execute", "failed", reason)
+                _write_json(
+                    paths["run"] / "summary.json",
+                    (
+                        {
+                            "status": result["status"],
+                            "reason": reason,
+                            "details": str(result.get("details", "")),
+                        }
+                        if str(result.get("details", "")).strip()
+                        else {
+                            "status": result["status"],
+                            "reason": reason,
+                        }
+                    ),
+                )
+                _cleanup_shared_local_workspace()
+                return {
+                    "command": "implement",
                     "status": result["status"],
                     "reason": reason,
-                },
+                    **(
+                        {"details": str(result.get("details", ""))}
+                        if str(result.get("details", "")).strip()
+                        else {}
+                    ),
+                }
+            spec_outputs.update(result.get("spec_outputs", {}))
+            log_lifecycle_event(
+                "lifecycle_batch_executed",
+                command="implement",
+                run_id=ctx.run_id,
+                extra={"batch_id": brief["batch_id"], "spec_count": len(brief.get("spec_rows", []))},
             )
-            _cleanup_shared_local_workspace()
-            return {
-                "command": "implement",
-                "status": result["status"],
-                "reason": reason,
-            }
-        spec_outputs.update(result.get("spec_outputs", {}))
-        log_lifecycle_event(
-            "lifecycle_batch_executed",
-            command="implement",
-            run_id=ctx.run_id,
-            extra={"batch_id": brief["batch_id"], "spec_count": len(brief.get("spec_rows", []))},
-        )
-
-    _report_implement_phase("Execute", "ok", f"{len(briefs)} batches completed")
+        _report_implement_phase("Execute", "ok", f"{len(briefs)} batches completed")
 
     try:
         _update_design_and_test_spec(config, ctx, impl, design_path, spec_outputs)

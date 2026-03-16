@@ -1,41 +1,58 @@
 {
-  "name": "design-spec-mapper-mvp",
-  "displayName": "Design Spec Mapper MVP",
-  "version": "0.0.1",
-  "description": "React-based VS Code plugin MVP for design-spec and code mapping.",
+  "name": "pika",
+  "displayName": "PIKA",
+  "version": "0.1.0",
+  "description": "PIKA – Design Spec to Code Workflow. Run map and implement commands from VS Code.",
   "main": "./dist/extension.js",
   "engines": {
     "vscode": "^1.90.0"
   },
-  "categories": [
-    "Other"
-  ],
-  "activationEvents": [
-    "onCommand:designSpecMapper.openPreview",
-    "onView:designSpecMapper.previewView"
-  ],
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
   "contributes": {
     "commands": [
       {
-        "command": "designSpecMapper.openPreview",
-        "title": "Design Spec Mapper: Open Preview"
+        "command": "pika.openMap",
+        "title": "PIKA: Open Map Panel"
+      },
+      {
+        "command": "pika.openImplement",
+        "title": "PIKA: Open Implement Panel"
+      },
+      {
+        "command": "pika.refreshSidebar",
+        "title": "PIKA: Refresh Sidebar"
       }
     ],
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "designSpecMapper",
-          "title": "Design Spec Mapper",
-          "icon": "$(list-tree)"
+          "id": "pika",
+          "title": "PIKA",
+          "icon": "$(circuit-board)"
         }
       ]
     },
     "views": {
-      "designSpecMapper": [
+      "pika": [
         {
-          "id": "designSpecMapper.previewView",
-          "name": "Spec Preview",
+          "id": "pika.sidebar",
+          "name": "PIKA",
           "type": "webview"
+        }
+      ]
+    },
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "pika.openMap",
+          "when": "resourceFilename == DESIGN-SPEC.csv",
+          "group": "pika"
+        },
+        {
+          "command": "pika.openImplement",
+          "when": "resourceFilename == DESIGN-SPEC.csv",
+          "group": "pika"
         }
       ]
     }
@@ -48,20 +65,17 @@
     "test": "vitest run",
     "package": "npm run build && npm run typecheck"
   },
-  "keywords": [
-    "vscode",
-    "extension",
-    "react",
-    "design-spec"
-  ],
+  "keywords": ["vscode", "extension", "react", "pika", "design-spec"],
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "js-yaml": "^4.1.0",
     "papaparse": "^5.5.3",
     "react": "^19.2.4",
     "react-dom": "^19.2.4"
   },
   "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.4.0",
     "@types/papaparse": "^5.5.2",
     "@types/react": "^19.2.14",

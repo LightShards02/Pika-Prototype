@@ -15,6 +15,9 @@ from core.lifecycle import invoke_agent_with_schema_retry, log_lifecycle_event
 
 _DRIVE_PREFIX = re.compile(r"^[A-Za-z]:/")
 _UNIFIED_HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@")
+_UNIFIED_HUNK_HEADER_CAPTURE = re.compile(
+    r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*?)(\r?\n?)$"
+)
 
 
 def _normalize_rel_path(path_value: Any) -> str:
@@ -106,6 +109,68 @@ def _normalize_dir_arg(path: str) -> str:
     return value
 
 
+def _insert_git_apply_flag(command: list[str], flag: str) -> list[str]:
+    """Insert git-apply flag directly after `apply` when not already present."""
+    if flag in command:
+        return list(command)
+    try:
+        apply_idx = command.index("apply")
+    except ValueError:
+        return list(command)
+    updated = list(command)
+    updated.insert(apply_idx + 1, flag)
+    return updated
+
+
+def _run_git_apply_check_with_whitespace_fallback(
+    command: list[str],
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    """Run git apply check command and retry with --ignore-space-change on failure."""
+    primary = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if primary.returncode == 0:
+        return primary, command
+    fallback_cmd = _insert_git_apply_flag(command, "--ignore-space-change")
+    if fallback_cmd == command:
+        return primary, command
+    fallback = subprocess.run(
+        fallback_cmd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if fallback.returncode == 0:
+        return fallback, fallback_cmd
+
+    stderr = (primary.stderr or "").strip()
+    fallback_stderr = (fallback.stderr or "").strip()
+    if fallback_stderr:
+        stderr = (
+            f"{stderr}\n[fallback --ignore-space-change]\n{fallback_stderr}"
+            if stderr
+            else fallback_stderr
+        )
+    stdout = (primary.stdout or "").strip()
+    fallback_stdout = (fallback.stdout or "").strip()
+    if fallback_stdout:
+        stdout = (
+            f"{stdout}\n[fallback --ignore-space-change]\n{fallback_stdout}"
+            if stdout
+            else fallback_stdout
+        )
+    merged = subprocess.CompletedProcess(
+        args=command,
+        returncode=primary.returncode,
+        stdout=stdout,
+        stderr=stderr,
+    )
+    return merged, command
+
+
 def _patch_check_directory_candidates(
     *,
     git_prefix: str,
@@ -132,6 +197,203 @@ def _patch_check_directory_candidates(
     return deduped
 
 
+def _format_hunk_range(start: int, count: int) -> str:
+    """Format one unified-diff hunk range preserving explicit zero counts."""
+    if count == 1:
+        return str(start)
+    return f"{start},{count}"
+
+
+def _strip_blank_context_lines_from_unified_hunks(patch_text: str) -> tuple[str, int]:
+    """Strip whitespace-only context lines from hunks and recompute hunk counts."""
+    if not patch_text:
+        return patch_text, 0
+    lines = patch_text.splitlines(keepends=True)
+    normalized: list[str] = []
+    changed_hunks = 0
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        match = _UNIFIED_HUNK_HEADER_CAPTURE.match(line)
+        if not match:
+            normalized.append(line)
+            i += 1
+            continue
+
+        old_start = int(match.group(1))
+        new_start = int(match.group(3))
+        trailer = match.group(5) or ""
+        newline = match.group(6) or ""
+
+        j = i + 1
+        body: list[str] = []
+        while j < len(lines):
+            body_line = lines[j]
+            if body_line.startswith("@@ ") or body_line.startswith("diff --git "):
+                break
+            if body_line.startswith("--- ") or body_line.startswith("+++ "):
+                break
+            body.append(body_line)
+            j += 1
+
+        filtered: list[str] = []
+        removed_blank_context = 0
+        for body_line in body:
+            if body_line.startswith(" "):
+                context = body_line[1:]
+                if not context.strip():
+                    removed_blank_context += 1
+                    continue
+            filtered.append(body_line)
+
+        if removed_blank_context > 0:
+            changed_hunks += 1
+
+        old_count = 0
+        new_count = 0
+        for body_line in filtered:
+            if body_line.startswith("\\ No newline at end of file"):
+                continue
+            marker = body_line[:1]
+            if marker == " ":
+                old_count += 1
+                new_count += 1
+            elif marker == "-":
+                old_count += 1
+            elif marker == "+":
+                new_count += 1
+
+        normalized.append(
+            f"@@ -{_format_hunk_range(old_start, old_count)} "
+            f"+{_format_hunk_range(new_start, new_count)} @@{trailer}{newline}"
+        )
+        normalized.extend(filtered)
+        i = j
+
+    if changed_hunks <= 0:
+        return patch_text, 0
+    return "".join(normalized), changed_hunks
+
+
+def _run_git_apply_check_for_candidates(
+    *,
+    git_root: Path,
+    resolved_diff_path: Path,
+    candidates: list[str],
+) -> list[str]:
+    """Run git apply --check across candidate directories and collect failures."""
+    failures: list[str] = []
+    for directory in candidates:
+        cmd = ["git", "-C", str(git_root), "apply", "--check"]
+        if directory:
+            cmd.extend(["--directory", directory])
+        cmd.append(str(resolved_diff_path))
+        proc, _ = _run_git_apply_check_with_whitespace_fallback(cmd)
+        if proc.returncode == 0:
+            return []
+
+        reverse_cmd = _insert_git_apply_flag(cmd, "--reverse")
+        reverse, _ = _run_git_apply_check_with_whitespace_fallback(reverse_cmd)
+        if reverse.returncode == 0:
+            return []
+
+        stderr = (proc.stderr or "").strip()
+        reverse_stderr = (reverse.stderr or "").strip()
+        if reverse_stderr:
+            stderr = (
+                f"{stderr}\n[reverse --check]\n{reverse_stderr}"
+                if stderr
+                else reverse_stderr
+            )
+        failures.append(stderr or f"non-zero exit ({proc.returncode})")
+    return failures
+
+
+def _trim_unified_hunk_context(
+    patch_text: str,
+    *,
+    keep: str,
+) -> tuple[str, int]:
+    """Trim one side of hunk context lines while preserving all +/- lines."""
+    if keep not in {"leading", "trailing"}:
+        raise ValueError("keep must be 'leading' or 'trailing'")
+    if not patch_text:
+        return patch_text, 0
+    lines = patch_text.splitlines(keepends=True)
+    normalized: list[str] = []
+    changed_hunks = 0
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        match = _UNIFIED_HUNK_HEADER_CAPTURE.match(line)
+        if not match:
+            normalized.append(line)
+            i += 1
+            continue
+
+        old_start = int(match.group(1))
+        new_start = int(match.group(3))
+        trailer = match.group(5) or ""
+        newline = match.group(6) or ""
+        j = i + 1
+        body: list[str] = []
+        while j < len(lines):
+            body_line = lines[j]
+            if body_line.startswith("@@ ") or body_line.startswith("diff --git "):
+                break
+            if body_line.startswith("--- ") or body_line.startswith("+++ "):
+                break
+            body.append(body_line)
+            j += 1
+
+        change_indices = [
+            idx for idx, body_line in enumerate(body) if body_line[:1] in {"+", "-"}
+        ]
+        if not change_indices:
+            normalized.append(line)
+            normalized.extend(body)
+            i = j
+            continue
+
+        first_change = min(change_indices)
+        last_change = max(change_indices)
+        filtered: list[str] = []
+        for idx, body_line in enumerate(body):
+            marker = body_line[:1]
+            if marker != " ":
+                filtered.append(body_line)
+                continue
+            if keep == "leading" and idx <= first_change:
+                filtered.append(body_line)
+            elif keep == "trailing" and idx >= last_change:
+                filtered.append(body_line)
+        if len(filtered) != len(body):
+            changed_hunks += 1
+
+        old_count = 0
+        new_count = 0
+        for body_line in filtered:
+            if body_line.startswith("\\ No newline at end of file"):
+                continue
+            marker = body_line[:1]
+            if marker == " ":
+                old_count += 1
+                new_count += 1
+            elif marker == "-":
+                old_count += 1
+            elif marker == "+":
+                new_count += 1
+        normalized.append(
+            f"@@ -{_format_hunk_range(old_start, old_count)} "
+            f"+{_format_hunk_range(new_start, new_count)} @@{trailer}{newline}"
+        )
+        normalized.extend(filtered)
+        i = j
+    if changed_hunks <= 0:
+        return patch_text, 0
+    return "".join(normalized), changed_hunks
+
+
 def _validate_diff_patch_applies(
     diff_path: str,
     project_root: Path,
@@ -150,25 +412,66 @@ def _validate_diff_patch_applies(
         git_prefix=git_prefix,
         codebase_prefix_rel=codebase_prefix_rel,
     )
-    failures: list[str] = []
-    for directory in candidates:
-        cmd = ["git", "-C", str(git_root), "apply", "--check"]
-        if directory:
-            cmd.extend(["--directory", directory])
-        cmd.append(str(resolved))
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if proc.returncode == 0:
-            return None
-        stderr = (proc.stderr or "").strip()
-        failures.append(stderr or f"non-zero exit ({proc.returncode})")
+    failures = _run_git_apply_check_for_candidates(
+        git_root=git_root,
+        resolved_diff_path=resolved,
+        candidates=candidates,
+    )
+    if not failures:
+        return None
 
-    detail = failures[0] if failures else "patch check failed"
-    return f"git apply --check failed for {resolved}: {detail}"
+    detail = failures[0]
+    try:
+        original_text = resolved.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return f"git apply --check failed for {resolved}: {detail}"
+    normalized_text, changed_hunks = _strip_blank_context_lines_from_unified_hunks(original_text)
+    if changed_hunks <= 0:
+        return f"git apply --check failed for {resolved}: {detail}"
+
+    recovery_candidates: list[tuple[str, str]] = [("blank_context_strip", normalized_text)]
+    leading_text, leading_changes = _trim_unified_hunk_context(normalized_text, keep="leading")
+    if leading_changes > 0:
+        recovery_candidates.append(("leading_context_trim", leading_text))
+    trailing_text, trailing_changes = _trim_unified_hunk_context(normalized_text, keep="trailing")
+    if trailing_changes > 0:
+        recovery_candidates.append(("trailing_context_trim", trailing_text))
+
+    deduped_candidates: list[tuple[str, str]] = []
+    seen_texts: set[str] = set()
+    for label, candidate_text in recovery_candidates:
+        if candidate_text in seen_texts:
+            continue
+        seen_texts.add(candidate_text)
+        deduped_candidates.append((label, candidate_text))
+
+    normalized_detail = "patch check failed"
+    successful_rewrite = False
+    for _, candidate_text in deduped_candidates:
+        try:
+            resolved.write_text(candidate_text, encoding="utf-8")
+        except OSError:
+            continue
+        normalized_failures = _run_git_apply_check_for_candidates(
+            git_root=git_root,
+            resolved_diff_path=resolved,
+            candidates=candidates,
+        )
+        if not normalized_failures:
+            successful_rewrite = True
+            break
+        normalized_detail = normalized_failures[0]
+    if successful_rewrite:
+        return None
+
+    try:
+        resolved.write_text(original_text, encoding="utf-8")
+    except OSError:
+        pass
+    return (
+        f"git apply --check failed for {resolved}: {detail} "
+        f"(after_blank_context_normalization: {normalized_detail})"
+    )
 
 
 def build_directory_tree_snapshot(
@@ -609,6 +912,7 @@ def invoke_with_semantic_retry(
     validation_label: str,
     local_workspace_override: Path | None = None,
     pre_attempt_hook: Callable[[int, dict[str, Any]], None] | None = None,
+    post_invoke_hook: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Invoke agent with schema + semantic retry loops."""
     attempts = max(1, int(semantic_validation_retries) + 1)
@@ -627,6 +931,8 @@ def invoke_with_semantic_retry(
             ctx=ctx,
             local_workspace_override=local_workspace_override,
         )
+        if post_invoke_hook is not None:
+            post_invoke_hook(output)
         manual_items = output.get("manual_resolution_items")
         if isinstance(manual_items, list) and manual_items:
             return output

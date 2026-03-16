@@ -26,3 +26,20 @@
   Rule: In implement execution, resolve patch apply directory from both repo-prefix and `codebase_dir` relative path so unprefixed paths land under the effective codebase root.
 - Pattern: User corrected debug-loop expectations to require explicit bug/solution reporting and bounded reruns.
   Rule: When debugging `implement`, cap total command runs to 3 per request and always include a per-bug `Bug`, `Solution`, and `Verification` entry in the final report.
+
+- Pattern: User asks for improvements/solutions after analyzing a dataset run, and responses drift into dataset-specific fixes instead of platform fixes.
+  Rule: Treat these requests as PIKA architecture/workflow improvements by default (planner, validators, contracts, gates, orchestration), unless the user explicitly asks for dataset-level remediation.
+
+- Pattern: Architectural proposals included vague mechanics and non-existent fields, reducing trust.
+  Rule: For PIKA architecture proposals, tie each change to existing pipeline stages/files, define deterministic algorithms and thresholds explicitly, and remove any part that cannot be specified concretely.
+
+- Pattern: Improvement proposals for PIKA commands suggested API-provider-specific features (e.g. codebase snapshot enhancements for API providers) without knowing that the "api" provider is not supported.
+  Rule: All PIKA commands currently only support the "stub" and "local" providers. The "api" provider option is not implemented. Do not propose improvements or flag gaps specific to the "api" provider path.
+
+- Pattern: Planner output analysis revealed that the planner under-declares shared_contracts for secondary workflow boundaries, even though its own spec_dependency rationales name the missing shapes ("paginated envelope contract", "export link response", etc.).
+  Rule: When analyzing planner output gaps, check whether spec_dependency rationales contain contract/DTO/envelope keywords that don't correspond to any declared shared_contract entry — this is the primary signal of a contract coverage gap. Three improvements follow from this: (1) a post-planner "contract boundary coverage" validator that scans spec_dependency rationales for contract-language and checks coverage; (2) a planner prompt self-check pass requiring explicit enumeration of every named cross-module data shape; (3) auto-escalation of dependency_gap spec_issues spanning multiple modules into blocking manual_resolution_items.
+
+- Pattern: Implement command work was done without consulting the phase-index doc.
+  Rule: For any request touching the implement command (new validators, prompt changes, gate changes, new config flags), always reference docs/implement-checks-execution-order.md phase numbers. Name new phases with their proposed insertion point and [vX.X.X] tag.
+- Pattern: User asked for schema-instance links, but I returned two schema files and missed the concrete artifact instance.
+  Rule: When asked for schema-instance relationship, always provide one schema definition path and one concrete runtime/document instance path for the same object type, with exact line anchors.
