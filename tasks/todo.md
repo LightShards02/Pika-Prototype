@@ -965,3 +965,27 @@
   - `npm run typecheck` -> pass
   - `npm test` -> `8 passed`
   - Manual GUI walkthrough with recording + screenshot confirmed all five requested behaviors.
+
+## Current Task: Fix desktop-app dependency startup failure
+
+- [x] Reproduce the dependency/startup error in `desktop-app`.
+- [x] Identify the smallest viable dependency/config change to fix startup.
+- [x] Apply minimal patch and avoid unrelated code changes.
+- [x] Reinstall/sync dependencies and run desktop app until startup succeeds.
+- [x] Document root cause, fix, and verification.
+
+## Current Task Review: Fix desktop-app dependency startup failure
+
+- Root causes found:
+  - `@vitejs/plugin-react@6` is incompatible with `vite@6` and caused `ERR_PACKAGE_PATH_NOT_EXPORTED`.
+  - Electron startup scripts were treated as ESM under `"type": "module"` and initially failed on CommonJS `require`.
+  - Shell-level `ELECTRON_RUN_AS_NODE=1` forced Electron to run as Node, causing `app.whenReady` to be undefined.
+  - CSS import ordering triggered a Vite/PostCSS startup error.
+- Minimal fixes applied in `desktop-app`:
+  - Pinned `@vitejs/plugin-react` to `^5.1.0` (compatible with `vite@6`).
+  - Switched Electron entry files to CommonJS (`main.cjs`, `preload.cjs`) and updated references.
+  - Added `scripts/electron-dev.cjs` to spawn Electron with `ELECTRON_RUN_AS_NODE` removed from env.
+  - Reordered imports in `src/index.css` so Google Fonts `@import` precedes Tailwind import.
+- Verification:
+  - `npm install` completed successfully and lockfile updated.
+  - `npm run electron:dev` stays running with Vite ready and no prior dependency/runtime startup errors; run was intentionally terminated after verification window.

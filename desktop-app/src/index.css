@@ -1,0 +1,103 @@
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #0db7d9;
+  --color-secondary: #666666;
+  --color-accent: #0db7d9;
+  --color-success: #16a34a;
+  --color-warning: #f0a800;
+  --color-error: #e05555;
+
+  --color-bg-primary: #FFFFFF;
+  --color-bg-panel: #FAFAFA;
+  --color-bg-elevated: #F5F5F5;
+  --color-bg-gate-active: #FFFDF5;
+  --color-bg-highlighted-row: #E8F9FD;
+
+  --color-border-subtle: #E8E8E8;
+  --color-border-medium: #D0D0D0;
+
+  --color-indigo-dark: #1e3a5f;
+  --color-indigo-mid: #2d5a8e;
+  --color-indigo-light: #dbeafe;
+}
+
+:root {
+  /* Primary Palette */
+  --bg-primary: #FFFFFF;
+  --bg-panel: #FAFAFA;
+  --bg-elevated: #F5F5F5;
+  --bg-gate-active: #FFFDF5;
+  --bg-highlighted-row: #E8F9FD;
+
+  /* Borders */
+  --border-subtle: #E8E8E8;
+  --border-medium: #D0D0D0;
+
+  /* Text */
+  --text-primary: #111111;
+  --text-secondary: #666666;
+  --text-tertiary: #999999;
+
+  /* Accent Colors */
+  --accent-primary: #0db7d9;
+  --accent-light: #99e1f0;
+  --accent-deep: #0891b2;
+
+  /* Indigo Palette */
+  --indigo-dark: #1e3a5f;
+  --indigo-mid: #2d5a8e;
+  --indigo-light: #dbeafe;
+
+  /* Status */
+  --success: #16a34a;
+  --warning: #f0a800;
+  --error: #e05555;
+
+  font-family: 'Fira Sans', system-ui, -apple-system, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+
+  color-scheme: light;
+  color: var(--text-primary);
+  background-color: var(--bg-primary);
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+}
+
+#root {
+  width: 100%;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.font-mono {
+  font-family: 'Fira Code', monospace;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-panel);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-medium);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+}
