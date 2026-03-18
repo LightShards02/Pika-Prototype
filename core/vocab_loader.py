@@ -10,12 +10,9 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from core.errors import PromptParseError
+import yaml
 
-try:
-    import yaml
-except ImportError:  # pragma: no cover - environment dependency
-    yaml = None
+from core.errors import PromptParseError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -33,11 +30,6 @@ def load_control_vocab(path: Path) -> dict[str, Any]:
     Raises:
         PromptParseError: When YAML is malformed or structure is invalid.
     """
-    if yaml is None:
-        raise PromptParseError(
-            "Missing dependency 'pyyaml'. Install it with: pip install pyyaml"
-        )
-
     if not path.exists() or not path.is_file():
         raise PromptParseError(f"Control vocab file not found: {path}")
 

@@ -93,10 +93,10 @@ class CliResumeValidationTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def _write_validation_edit_spec_resolutions_yaml(self, run_dir: Path, *, acknowledged: bool) -> None:
+    def _write_validation_edit_spec_resolutions_yaml(self, run_dir: Path, *, manual_edit: bool) -> None:
         manual_dir = run_dir / "manual_resolution"
         manual_dir.mkdir(parents=True, exist_ok=True)
-        ack = "true" if acknowledged else "false"
+        edit_text = '"Updated requirement text"' if manual_edit else ""
         (manual_dir / "resolutions.yaml").write_text(
             (
                 'run_id: "run"\n'
@@ -109,8 +109,10 @@ class CliResumeValidationTests(unittest.TestCase):
                 "    required: true\n"
                 '    resolution_mode: "edit_spec"\n'
                 "    options: []\n"
-                "    chosen_option_id:\n"
-                f"    acknowledged: {ack}\n"
+                f"    chosen_option_id: {('manual_edit' if manual_edit else '')}\n"
+                f"    manual_edit_text: {edit_text}\n"
+                '    manual_edit_spec_id: "A1"\n'
+                '    manual_edit_field: "requirement"\n'
             ),
             encoding="utf-8",
         )
@@ -195,7 +197,7 @@ class CliResumeValidationTests(unittest.TestCase):
     @patch("cli.validate_command_preconditions")
     @patch("cli.load_and_validate_config")
     @patch("cli.typer.secho")
-    def test_resume_passes_for_validation_edit_spec_acknowledged(
+    def test_resume_passes_for_validation_edit_spec_with_manual_edit(
         self,
         mock_secho,
         mock_load_config,
@@ -204,14 +206,14 @@ class CliResumeValidationTests(unittest.TestCase):
         mock_dispatch,
         mock_emit_summary,
     ) -> None:
-        """CLI resume accepts validation edit-spec items when acknowledged."""
+        """CLI resume accepts validation edit-spec items when manual_edit_text is set."""
         _ = mock_validate_preconditions, mock_init_logger, mock_emit_summary
         mock_load_config.return_value = self.config_data
         mock_dispatch.return_value = {"status": "completed"}
 
         run_id = "run-edit-spec-ack"
         run_dir = self._write_run_meta(run_id, blocked_at_stage="contract_field_consistency")
-        self._write_validation_edit_spec_resolutions_yaml(run_dir, acknowledged=True)
+        self._write_validation_edit_spec_resolutions_yaml(run_dir, manual_edit=True)
 
         _execute_command(
             "plan",
@@ -226,7 +228,7 @@ class CliResumeValidationTests(unittest.TestCase):
         self.assertTrue(mock_dispatch.called)
         self.assertTrue(mock_secho.called)
         warning = mock_secho.call_args.args[0] if mock_secho.call_args and mock_secho.call_args.args else ""
-        self.assertIn("marked DONE", warning)
+        self.assertIn("manual spec edits", warning)
 
 
 if __name__ == "__main__":

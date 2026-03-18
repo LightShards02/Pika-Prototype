@@ -4,17 +4,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from core.errors import (
     PromptFileNotFoundError,
     PromptNotFoundError,
     PromptParseError,
     PromptValidationError,
 )
-
-try:
-    import yaml
-except ImportError:  # pragma: no cover - environment dependency
-    yaml = None
+from core.pika_paths import resolve_path_from_pika_root, resolve_prompts_path
 
 
 @dataclass(frozen=True)
@@ -38,7 +36,6 @@ class PromptRegistry:
 
     def __init__(self, prompt_file: str | Path) -> None:
         """Initialize prompt registry. prompt_file is resolved from PIKA root."""
-        from core.pika_paths import resolve_prompts_path
         self._prompt_file = resolve_prompts_path(str(prompt_file))
         self._specs: dict[str, PromptSpec] = {}
         self._schema_paths: dict[str, Path] = {}
@@ -95,11 +92,6 @@ class PromptRegistry:
 
     def _load(self) -> None:
         """Return load."""
-        if yaml is None:
-            raise PromptParseError(
-                "Missing dependency 'pyyaml'. Install it with: pip install pyyaml"
-            )
-
         if not self._prompt_file.exists() or not self._prompt_file.is_file():
             raise PromptFileNotFoundError(
                 f"Prompt file not found: {self._prompt_file}"
@@ -256,5 +248,4 @@ class PromptRegistry:
 
     def _resolve_schema_path(self, path_value: str | Path) -> Path:
         """Resolve schema path from PIKA root (project-independent)."""
-        from core.pika_paths import resolve_path_from_pika_root
         return resolve_path_from_pika_root(path_value)

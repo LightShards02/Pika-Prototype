@@ -125,16 +125,16 @@ class ValidateResolutionsTests(unittest.TestCase):
                     "resolution_mode": "edit_spec",
                     "options": [],
                     "chosen_option_id": None,
-                    "acknowledged": False,
+                    "manual_edit_text": None,
                 },
             ],
         }
         valid, errors = validate_resolutions(template)
         self.assertFalse(valid)
-        self.assertIn("acknowledged", errors[0])
+        self.assertIn("manual_edit", errors[0])
 
-    def test_validation_edit_spec_accepts_acknowledged(self) -> None:
-        """Validation edit_spec items pass when acknowledged."""
+    def test_validation_edit_spec_accepts_manual_edit(self) -> None:
+        """Validation edit_spec items pass when manual_edit_text is set."""
         template = {
             "items": [
                 {
@@ -144,7 +144,7 @@ class ValidateResolutionsTests(unittest.TestCase):
                     "resolution_mode": "edit_spec",
                     "options": [],
                     "chosen_option_id": None,
-                    "acknowledged": True,
+                    "manual_edit_text": "Updated requirement text",
                 },
             ],
         }
@@ -229,8 +229,8 @@ class UpdateResolutionItemTests(unittest.TestCase):
             loaded = yaml.safe_load(path.read_text())
             self.assertEqual(loaded["items"][0]["chosen_option_id"], "opt_a")
 
-    def test_updates_acknowledged_for_edit_spec_item(self) -> None:
-        """update_resolution_item can set acknowledged=True for edit-spec items."""
+    def test_updates_manual_edit_for_edit_spec_item(self) -> None:
+        """update_resolution_item can set manual_edit_text for edit-spec items."""
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "resolutions.yaml"
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -245,15 +245,24 @@ class UpdateResolutionItemTests(unittest.TestCase):
                         "resolution_mode": "edit_spec",
                         "options": [],
                         "chosen_option_id": None,
-                        "acknowledged": False,
+                        "manual_edit_text": None,
+                        "manual_edit_spec_id": None,
+                        "manual_edit_field": None,
                     },
                 ],
             }
             path.write_text(yaml.dump(data), encoding="utf-8")
-            update_resolution_item(path, 0, None, None, acknowledged=True)
+            update_resolution_item(
+                path, 0, None, None,
+                manual_edit_text="Fixed requirement",
+                manual_edit_spec_id="SPEC-001",
+                manual_edit_field="requirement",
+            )
             loaded = yaml.safe_load(path.read_text())
-            self.assertTrue(loaded["items"][0]["acknowledged"])
+            self.assertEqual(loaded["items"][0]["manual_edit_text"], "Fixed requirement")
+            self.assertEqual(loaded["items"][0]["manual_edit_spec_id"], "SPEC-001")
+            self.assertEqual(loaded["items"][0]["chosen_option_id"], "manual_edit")
 
             clear_resolution_item(path, 0)
             loaded = yaml.safe_load(path.read_text())
-            self.assertFalse(loaded["items"][0]["acknowledged"])
+            self.assertIsNone(loaded["items"][0]["manual_edit_text"])

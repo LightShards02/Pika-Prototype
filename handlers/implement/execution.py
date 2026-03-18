@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import contextlib
 import difflib
 import json
 import re
 import shlex
 import shutil
 import subprocess
+import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from core.codebase_snapshot import build_codebase_snapshot
 from core.constants import ImplementStatus
@@ -35,58 +37,80 @@ from handlers.implement.semantic_guard import (
 )
 
 
-def _collect_spec_output(output: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def _collect_spec_output(
+    output: dict[str, Any],
+    *,
+    strict: bool = True,
+) -> dict[str, dict[str, Any]]:
     """Validate and normalize spec-keyed implement output entries.
 
     Required mode:
     - top-level `diff_plan[]` + per-spec `diff_refs[]`
     """
-    if not isinstance(output.get("run_summary"), dict):
+    if strict and not isinstance(output.get("run_summary"), dict):
         raise ValueError("Implement output must include run_summary for non-manual responses")
-    diff_plan_by_id = _collect_diff_plan_by_id(output)
+    diff_plan_by_id = _collect_diff_plan_by_id(output, strict=strict)
     parsed: dict[str, dict[str, Any]] = {}
     for key, value in output.items():
         if key in {"run_summary", "diff_plan"}:
             continue
-        if not re.fullmatch(r"[A-Za-z][0-9]+", str(key)):
+        if strict and not re.fullmatch(r"[A-Za-z][0-9]+", str(key)):
             raise ValueError(f"Invalid implement output key: {key}")
         if not isinstance(value, dict):
+            if not strict:
+                continue
             raise ValueError(f"Spec entry for {key} must be an object")
         normalized = dict(value)
-        diffs = _resolve_spec_diffs(str(key), normalized, diff_plan_by_id)
+        diffs = _resolve_spec_diffs(str(key), normalized, diff_plan_by_id, strict=strict)
         normalized["diffs"] = diffs
         parsed[str(key)] = normalized
     return parsed
 
 
-def _collect_diff_plan_by_id(output: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def _collect_diff_plan_by_id(
+    output: dict[str, Any],
+    *,
+    strict: bool = True,
+) -> dict[str, dict[str, Any]]:
     """Validate top-level diff_plan and return a diff_id -> diff payload map."""
     raw_plan = output.get("diff_plan", [])
     if not isinstance(raw_plan, list):
+        if not strict:
+            return {}
         raise ValueError("diff_plan must be an array")
     if not raw_plan:
         has_spec_payload = any(
             key not in {"run_summary", "diff_plan"} and isinstance(payload, dict)
             for key, payload in output.items()
         )
-        if has_spec_payload:
+        if strict and has_spec_payload:
             raise ValueError("diff_plan must not be empty when spec results are present")
         return {}
 
     collected: dict[str, dict[str, Any]] = {}
     for idx, item in enumerate(raw_plan, start=1):
         if not isinstance(item, dict):
+            if not strict:
+                continue
             raise ValueError(f"diff_plan[{idx}] must be an object")
         diff_id = str(item.get("diff_id", "")).strip()
         if not diff_id:
+            if not strict:
+                continue
             raise ValueError(f"diff_plan[{idx}] missing diff_id")
         if diff_id in collected:
+            if not strict:
+                continue
             raise ValueError(f"diff_plan has duplicate diff_id: {diff_id}")
         diff_path = str(item.get("diff_path", "")).strip()
         if not diff_path:
+            if not strict:
+                continue
             raise ValueError(f"diff_plan[{idx}] missing diff_path")
         touched = item.get("touched_files", [])
         if not isinstance(touched, list) or not [str(p).strip() for p in touched if str(p).strip()]:
+            if not strict:
+                continue
             raise ValueError(f"diff_plan[{idx}] missing touched_files")
         normalized = dict(item)
         normalized["diff_id"] = diff_id
@@ -101,21 +125,32 @@ def _resolve_spec_diffs(
     spec_id: str,
     payload: dict[str, Any],
     diff_plan_by_id: dict[str, dict[str, Any]],
+    *,
+    strict: bool = True,
 ) -> list[dict[str, Any]]:
     """Resolve effective per-spec diffs from diff_refs[] against top-level diff_plan[]."""
     raw_refs = payload.get("diff_refs")
     if not isinstance(raw_refs, list):
+        if not strict:
+            legacy_diffs = payload.get("diffs")
+            return legacy_diffs if isinstance(legacy_diffs, list) else []
         raise ValueError(f"Spec entry for {spec_id} must include diff_refs[]")
     refs = [str(ref).strip() for ref in raw_refs if str(ref).strip()]
     if not refs:
+        if not strict:
+            return []
         raise ValueError(f"Spec entry for {spec_id} diff_refs[] is empty")
     if not diff_plan_by_id:
+        if not strict:
+            return []
         raise ValueError(f"Spec entry for {spec_id} uses diff_refs[] but diff_plan is missing")
 
     resolved: list[dict[str, Any]] = []
     for ref in refs:
         item = diff_plan_by_id.get(ref)
         if item is None:
+            if not strict:
+                continue
             raise ValueError(f"Spec entry for {spec_id} references unknown diff_id: {ref}")
         resolved.append(dict(item))
     return resolved
@@ -127,6 +162,8 @@ def _collect_and_copy_patches(
     batch_id: str,
     parsed: dict[str, dict[str, Any]],
     constraints: dict[str, Any],
+    *,
+    enforce_constraints: bool = True,
 ) -> tuple[list[str], list[str]]:
     """Validate/copy patch files and enforce forbidden-path + budget constraints."""
     forbidden = (
@@ -155,18 +192,18 @@ def _collect_and_copy_patches(
             touched = [str(p).replace("\\", "/") for p in diff.get("touched_files", []) if str(p).strip()]
             if not touched:
                 raise ValueError(f"Diff {diff_id} for {spec_id} missing touched_files")
-            if len(set(touched)) > max_files:
+            if enforce_constraints and len(set(touched)) > max_files:
                 raise ValueError(f"Diff {diff_id} exceeds max_files budget")
             for path in touched:
                 for prefix in forbidden:
-                    if prefix and path.strip("/").lower().startswith(prefix.lower()):
+                    if enforce_constraints and prefix and path.strip("/").lower().startswith(prefix.lower()):
                         raise ValueError(f"Diff {diff_id} touches forbidden path {path}")
             line_count = sum(
                 1
                 for line in source.read_text(encoding="utf-8", errors="replace").splitlines()
                 if line.startswith("+") or line.startswith("-")
             )
-            if line_count > max_lines:
+            if enforce_constraints and line_count > max_lines:
                 raise ValueError(f"Diff {diff_id} exceeds max_lines_changed budget")
 
             patch_hash = _sha256(source.read_bytes())
@@ -389,6 +426,76 @@ def _contains_skipped_patch_output(proc: subprocess.CompletedProcess[str]) -> bo
     """Return True when git apply output indicates the patch was skipped/no-op."""
     output = f"{proc.stdout}\n{proc.stderr}".lower()
     return "skipped patch" in output
+
+
+def _insert_git_apply_flag(command: list[str], flag: str) -> list[str]:
+    """Insert git-apply flag directly after `apply` when not already present."""
+    if flag in command:
+        return list(command)
+    try:
+        apply_idx = command.index("apply")
+    except ValueError:
+        return list(command)
+    updated = list(command)
+    updated.insert(apply_idx + 1, flag)
+    return updated
+
+
+def _run_git_apply_with_whitespace_fallback(
+    run_fn: Callable[[list[str]], subprocess.CompletedProcess[str]],
+    command: list[str],
+) -> tuple[subprocess.CompletedProcess[str], list[str], bool]:
+    """Run git apply command and retry with --ignore-space-change on failure."""
+    primary = run_fn(command)
+    if primary.returncode == 0:
+        return primary, command, False
+    fallback_cmd = _insert_git_apply_flag(command, "--ignore-space-change")
+    if fallback_cmd == command:
+        return primary, command, False
+    fallback = run_fn(fallback_cmd)
+    if fallback.returncode == 0:
+        return fallback, fallback_cmd, True
+
+    stderr = (primary.stderr or "").strip()
+    fallback_stderr = (fallback.stderr or "").strip()
+    if fallback_stderr:
+        stderr = (
+            f"{stderr}\n[fallback --ignore-space-change]\n{fallback_stderr}"
+            if stderr
+            else fallback_stderr
+        )
+    stdout = (primary.stdout or "").strip()
+    fallback_stdout = (fallback.stdout or "").strip()
+    if fallback_stdout:
+        stdout = (
+            f"{stdout}\n[fallback --ignore-space-change]\n{fallback_stdout}"
+            if stdout
+            else fallback_stdout
+        )
+    merged = subprocess.CompletedProcess(
+        args=command,
+        returncode=primary.returncode,
+        stdout=stdout,
+        stderr=stderr,
+    )
+    return merged, command, False
+
+
+def _is_patch_already_applied_from_check(
+    run_fn: Callable[[list[str]], subprocess.CompletedProcess[str]],
+    check_command: list[str],
+) -> tuple[bool, list[str], subprocess.CompletedProcess[str]]:
+    """Return True when reverse check succeeds, indicating patch is already applied."""
+    reverse_check_cmd = _insert_git_apply_flag(check_command, "--reverse")
+    reverse_check, used_reverse_check_cmd, _ = _run_git_apply_with_whitespace_fallback(
+        run_fn,
+        reverse_check_cmd,
+    )
+    return (
+        reverse_check.returncode == 0,
+        used_reverse_check_cmd,
+        reverse_check,
+    )
 
 
 def _extract_new_file_desired_content(section: str) -> tuple[str | None, str | None, str | None]:
@@ -686,6 +793,37 @@ def _ensure_patch_terminal_newline(patch_text: str) -> tuple[str, bool]:
     return f"{patch_text}\n", True
 
 
+def _normalize_output_patches_inplace(output: dict[str, Any], project_root: Path) -> None:
+    """Normalize patch files referenced in output in-place before semantic validation.
+
+    Applies deterministic hunk-count corrections, concatenated-marker splits, and
+    terminal-newline fixes so that git apply --check in the semantic validator
+    does not fail on fixable formatting issues (avoiding unnecessary LLM retries).
+    """
+    raw_plan = output.get("diff_plan", [])
+    if not isinstance(raw_plan, list):
+        return
+    for item in raw_plan:
+        if not isinstance(item, dict):
+            continue
+        diff_path = str(item.get("diff_path", "")).strip()
+        if not diff_path:
+            continue
+        resolved = Path(diff_path)
+        if not resolved.is_absolute():
+            resolved = (project_root / diff_path).resolve()
+        if not resolved.exists() or not resolved.is_file():
+            continue
+        try:
+            text = resolved.read_text(encoding="utf-8", errors="replace")
+            text, _ = _split_concatenated_hunk_markers(text)
+            text, _ = _normalize_unified_hunk_headers(text)
+            text, _ = _ensure_patch_terminal_newline(text)
+            resolved.write_text(text, encoding="utf-8")
+        except OSError:
+            pass
+
+
 def _prepare_patch_files_for_apply(
     root: Path,
     batch_id: str,
@@ -893,6 +1031,118 @@ def _prepare_patch_files_for_apply(
     return {"success": True, "patch_files": prepared, "records": records, "git_root": str(git_root)}
 
 
+def _schema_allows_null(prop_schema: dict[str, Any]) -> bool:
+    """Return True if a JSON Schema property definition allows null values."""
+    if not isinstance(prop_schema, dict):
+        return False
+    type_val = prop_schema.get("type")
+    if isinstance(type_val, list) and "null" in type_val:
+        return True
+    if type_val == "null":
+        return True
+    for sub in prop_schema.get("anyOf", []) + prop_schema.get("oneOf", []):
+        if isinstance(sub, dict) and sub.get("type") == "null":
+            return True
+    return False
+
+
+def _check_contract_schema_conformance(
+    brief: dict[str, Any],
+    worktree_root: Path,
+) -> dict[str, Any]:
+    """Check touched shared-contract JSON Schema files satisfy required-all + nullable policy.
+
+    For each shared contract in the brief:
+    - If planned_file_path does not exist under worktree_root, skip (file may not be generated yet).
+    - Load the JSON Schema file and check:
+      1. Every key in 'properties' appears in 'required'.
+      2. Each field with nullable=true in the brief allows null in its schema type.
+      3. Each field with nullable=false in the brief does not allow null.
+
+    Returns dict with 'status' ('passed'/'failed'), 'violations', 'checks'.
+    """
+    violations: list[dict[str, Any]] = []
+    checks: list[str] = []
+
+    for contract in brief.get("shared_contracts", []):
+        if not isinstance(contract, dict):
+            continue
+        contract_id = str(contract.get("contract_id", "")).strip()
+        planned_path = str(contract.get("planned_file_path", "")).strip()
+        if not contract_id or not planned_path:
+            continue
+        schema_path = worktree_root / planned_path
+        if not schema_path.exists():
+            checks.append(f"{contract_id}:file_not_found_skipped")
+            continue
+
+        try:
+            with schema_path.open(encoding="utf-8") as fh:
+                schema = json.load(fh)
+        except Exception as exc:
+            violations.append({
+                "contract_id": contract_id,
+                "kind": "schema_parse_error",
+                "detail": str(exc),
+            })
+            continue
+
+        if not isinstance(schema, dict):
+            violations.append({
+                "contract_id": contract_id,
+                "kind": "schema_not_object",
+                "detail": "Top-level schema is not a JSON object.",
+            })
+            continue
+
+        properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+        required_in_schema: set[str] = set(schema.get("required") or [])
+
+        missing_from_required = sorted(set(properties) - required_in_schema)
+        if missing_from_required:
+            violations.append({
+                "contract_id": contract_id,
+                "kind": "fields_not_in_required",
+                "missing_from_required": missing_from_required,
+                "detail": f"Schema properties not in required: {missing_from_required}",
+            })
+
+        field_nullable_map = {
+            str(f.get("name", "")).strip(): f.get("nullable")
+            for f in (contract.get("fields") or [])
+            if isinstance(f, dict) and isinstance(f.get("nullable"), bool)
+        }
+        for field_name, nullable in field_nullable_map.items():
+            prop_schema = properties.get(field_name)
+            if prop_schema is None:
+                continue
+            allows_null = _schema_allows_null(prop_schema)
+            if nullable and not allows_null:
+                violations.append({
+                    "contract_id": contract_id,
+                    "kind": "nullable_true_but_no_null_type",
+                    "field": field_name,
+                    "detail": (
+                        f"Field {field_name!r} has nullable=true but schema does not allow null."
+                    ),
+                })
+            elif not nullable and allows_null:
+                violations.append({
+                    "contract_id": contract_id,
+                    "kind": "nullable_false_but_null_type",
+                    "field": field_name,
+                    "detail": (
+                        f"Field {field_name!r} has nullable=false but schema allows null."
+                    ),
+                })
+
+        if not any(v["contract_id"] == contract_id for v in violations):
+            checks.append(f"{contract_id}:conformant")
+
+    status = "passed" if not violations else "failed"
+    return {"status": status, "violations": violations, "checks": checks}
+
+
 def _apply_and_verify(
     root: Path,
     batch_id: str,
@@ -901,6 +1151,12 @@ def _apply_and_verify(
     verification_dir: Path,
     *,
     codebase_dir: Path | None = None,
+    normalize_patches: bool = True,
+    enforce_apply_check: bool = True,
+    run_contract_schema_conformance: bool = True,
+    brief: dict[str, Any] | None = None,
+    conformance_out_dir: Path | None = None,
+    run_verification_commands: bool = True,
 ) -> dict[str, Any]:
     """Apply patch files and run verification commands in a detached git worktree."""
     records: list[dict[str, Any]] = []
@@ -942,18 +1198,20 @@ def _apply_and_verify(
             }
         )
 
-    prepared = _prepare_patch_files_for_apply(
-        root,
-        batch_id,
-        patch_files,
-        verification_dir,
-        codebase_prefix_rel=codebase_prefix_rel,
-    )
-    records.extend(prepared.get("records", []))
-    if not prepared.get("success"):
-        return {"success": False, "records": records, "applied_patch_files": []}
-
-    effective_patches = [str(p) for p in prepared.get("patch_files", []) if str(p).strip()]
+    if normalize_patches:
+        prepared = _prepare_patch_files_for_apply(
+            root,
+            batch_id,
+            patch_files,
+            verification_dir,
+            codebase_prefix_rel=codebase_prefix_rel,
+        )
+        records.extend(prepared.get("records", []))
+        if not prepared.get("success"):
+            return {"success": False, "records": records, "applied_patch_files": []}
+        effective_patches = [str(p) for p in prepared.get("patch_files", []) if str(p).strip()]
+    else:
+        effective_patches = [str(p) for p in patch_files if str(p).strip()]
     if not effective_patches:
         return {"success": True, "records": records, "applied_patch_files": []}
 
@@ -970,18 +1228,25 @@ def _apply_and_verify(
             else worktree
         )
         if not worktree_project_root.is_dir():
-            missing_proc = subprocess.CompletedProcess(
-                args=["worktree_project_root_missing"],
-                returncode=1,
-                stdout="",
-                stderr=f"Worktree project root not found: {worktree_project_root}",
-            )
-            record_failure(
-                "worktree_project_root_missing",
-                ["test", "-d", str(worktree_project_root)],
-                missing_proc,
-            )
-            return {"success": False, "records": records, "applied_patch_files": []}
+            try:
+                # Detached worktree may not contain ignored/untracked project subpaths from HEAD.
+                worktree_project_root.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                missing_proc = subprocess.CompletedProcess(
+                    args=["worktree_project_root_bootstrap_failed"],
+                    returncode=1,
+                    stdout="",
+                    stderr=(
+                        "Failed to bootstrap worktree project root path "
+                        f"{worktree_project_root}: {exc}"
+                    ),
+                )
+                record_failure(
+                    "worktree_project_root_bootstrap_failed",
+                    ["mkdir", "-p", str(worktree_project_root)],
+                    missing_proc,
+                )
+                return {"success": False, "records": records, "applied_patch_files": []}
 
         try:
             sync_local_agent_workspace(root.resolve(), worktree_project_root.resolve())
@@ -1021,44 +1286,100 @@ def _apply_and_verify(
                 )
                 return {"success": False, "records": records, "applied_patch_files": []}
 
-            check_cmd = ["git", "-C", str(worktree), "apply", "--check", *directory_args, patch]
-            checked = run(check_cmd)
-            if checked.returncode != 0:
-                record_failure("patch_check_worktree", check_cmd, checked)
-                return {"success": False, "records": records, "applied_patch_files": []}
-            if _contains_skipped_patch_output(checked):
-                record_failure("patch_check_worktree_noop", check_cmd, checked)
-                return {"success": False, "records": records, "applied_patch_files": []}
+            worktree_ignore_space = False
+            worktree_patch_already_applied = False
+            if enforce_apply_check:
+                check_cmd = ["git", "-C", str(worktree), "apply", "--check", *directory_args, patch]
+                checked, used_check_cmd, worktree_ignore_space = _run_git_apply_with_whitespace_fallback(
+                    run,
+                    check_cmd,
+                )
+                if checked.returncode != 0:
+                    already_applied, used_reverse_cmd, reverse_checked = _is_patch_already_applied_from_check(
+                        run,
+                        check_cmd,
+                    )
+                    if already_applied:
+                        records.append(
+                            {
+                                "kind": "patch_already_applied_skip",
+                                "patch": patch,
+                                "phase": "worktree_check",
+                                "command": " ".join(shlex.quote(part) for part in used_reverse_cmd),
+                            }
+                        )
+                        worktree_patch_already_applied = True
+                    else:
+                        record_failure("patch_check_worktree", used_check_cmd, checked)
+                        record_failure("patch_reverse_check_worktree", used_reverse_cmd, reverse_checked)
+                        return {"success": False, "records": records, "applied_patch_files": []}
+                if not worktree_patch_already_applied and _contains_skipped_patch_output(checked):
+                    record_failure("patch_check_worktree", used_check_cmd, checked)
+                    return {"success": False, "records": records, "applied_patch_files": []}
+            if worktree_patch_already_applied:
+                continue
 
             apply_cmd = ["git", "-C", str(worktree), "apply", *directory_args, patch]
-            applied = run(apply_cmd)
+            if worktree_ignore_space:
+                apply_cmd = _insert_git_apply_flag(apply_cmd, "--ignore-space-change")
+            applied, used_apply_cmd, _ = _run_git_apply_with_whitespace_fallback(
+                run,
+                apply_cmd,
+            )
             if applied.returncode != 0:
-                record_failure("patch_apply_worktree", apply_cmd, applied)
+                record_failure("patch_apply_worktree", used_apply_cmd, applied)
                 return {"success": False, "records": records, "applied_patch_files": []}
             if _contains_skipped_patch_output(applied):
-                record_failure("patch_apply_worktree_noop", apply_cmd, applied)
+                record_failure("patch_apply_worktree_noop", used_apply_cmd, applied)
                 return {"success": False, "records": records, "applied_patch_files": []}
 
-        for idx, command in enumerate(commands, start=1):
-            argv = shlex.split(command) if isinstance(command, str) else list(command)
-            proc = subprocess.run(
-                argv,
-                cwd=str(worktree_project_root),
-                capture_output=True,
-                text=True,
-                shell=False,
-                check=False,
-            )
-            log = verification_dir / f"{batch_id}_verify_{idx}.log"
-            log.write_text(
-                f"$ {command}\n\nSTDOUT:\n{proc.stdout}\n\nSTDERR:\n{proc.stderr}\n",
-                encoding="utf-8",
-            )
-            records.append({"command": command, "exit_code": proc.returncode, "log_ref": str(log)})
-            if proc.returncode != 0:
+        if run_contract_schema_conformance and brief is not None:
+            conformance = _check_contract_schema_conformance(brief, worktree_project_root)
+            if conformance_out_dir is not None:
+                try:
+                    _write_json(
+                        conformance_out_dir / f"contract_schema_conformance_{batch_id}.json",
+                        conformance,
+                    )
+                except Exception:
+                    pass
+            if conformance["status"] != "passed":
+                violations = conformance.get("violations", [])
+                v_proc = subprocess.CompletedProcess(
+                    args=["contract_schema_conformance_check"],
+                    returncode=1,
+                    stdout="",
+                    stderr="\n".join(v.get("detail", "") for v in violations),
+                )
+                record_failure(
+                    "contract_schema_conformance_check",
+                    ["contract_schema_conformance_check"],
+                    v_proc,
+                )
                 return {"success": False, "records": records, "applied_patch_files": []}
+
+        if run_verification_commands:
+            for idx, command in enumerate(commands, start=1):
+                argv = shlex.split(command) if isinstance(command, str) else list(command)
+                proc = subprocess.run(
+                    argv,
+                    cwd=str(worktree_project_root),
+                    capture_output=True,
+                    text=True,
+                    shell=False,
+                    check=False,
+                )
+                log = verification_dir / f"{batch_id}_verify_{idx}.log"
+                log.write_text(
+                    f"$ {command}\n\nSTDOUT:\n{proc.stdout}\n\nSTDERR:\n{proc.stderr}\n",
+                    encoding="utf-8",
+                )
+                records.append({"command": command, "exit_code": proc.returncode, "log_ref": str(log)})
+                if proc.returncode != 0:
+                    return {"success": False, "records": records, "applied_patch_files": []}
 
         patch_apply_args: dict[str, list[str]] = {}
+        patch_apply_ignore_space: dict[str, bool] = {}
         for patch in effective_patches:
             directory_args, scope_error = _determine_patch_apply_directory_args(
                 root,
@@ -1080,36 +1401,89 @@ def _apply_and_verify(
                 )
                 return {"success": False, "records": records, "applied_patch_files": []}
             patch_apply_args[patch] = directory_args
-            pre_check_cmd = ["git", "-C", str(repo_root), "apply", "--check", *directory_args, patch]
-            pre_check = run(pre_check_cmd)
-            if pre_check.returncode != 0:
-                record_failure("patch_check_root", pre_check_cmd, pre_check)
-                return {"success": False, "records": records, "applied_patch_files": []}
-            if _contains_skipped_patch_output(pre_check):
-                record_failure("patch_check_root_noop", pre_check_cmd, pre_check)
-                return {"success": False, "records": records, "applied_patch_files": []}
+            patch_apply_ignore_space[patch] = False
+            if enforce_apply_check:
+                pre_check_cmd = ["git", "-C", str(repo_root), "apply", "--check", *directory_args, patch]
+                pre_check, used_pre_check_cmd, used_ignore_space = _run_git_apply_with_whitespace_fallback(
+                    run,
+                    pre_check_cmd,
+                )
+                if pre_check.returncode != 0:
+                    already_applied, used_reverse_cmd, reverse_pre_check = _is_patch_already_applied_from_check(
+                        run,
+                        pre_check_cmd,
+                    )
+                    if already_applied:
+                        records.append(
+                            {
+                                "kind": "patch_already_applied_skip",
+                                "patch": patch,
+                                "phase": "root_check",
+                                "command": " ".join(shlex.quote(part) for part in used_reverse_cmd),
+                            }
+                        )
+                        patch_apply_args.pop(patch, None)
+                        patch_apply_ignore_space.pop(patch, None)
+                        continue
+                    record_failure("patch_check_root", used_pre_check_cmd, pre_check)
+                    record_failure("patch_reverse_check_root", used_reverse_cmd, reverse_pre_check)
+                    return {"success": False, "records": records, "applied_patch_files": []}
+                if _contains_skipped_patch_output(pre_check):
+                    record_failure("patch_check_root_noop", used_pre_check_cmd, pre_check)
+                    return {"success": False, "records": records, "applied_patch_files": []}
+                patch_apply_ignore_space[patch] = used_ignore_space
 
-        applied_so_far: list[tuple[str, list[str]]] = []
+        applied_so_far: list[tuple[str, list[str], bool]] = []
         for patch in effective_patches:
-            directory_args = patch_apply_args.get(patch, [])
+            if patch not in patch_apply_args:
+                continue
+            directory_args = patch_apply_args[patch]
             main_apply_cmd = ["git", "-C", str(repo_root), "apply", *directory_args, patch]
-            main_apply = run(main_apply_cmd)
+            if patch_apply_ignore_space.get(patch, False):
+                main_apply_cmd = _insert_git_apply_flag(main_apply_cmd, "--ignore-space-change")
+            main_apply, used_main_apply_cmd, _ = _run_git_apply_with_whitespace_fallback(
+                run,
+                main_apply_cmd,
+            )
+            main_apply_used_ignore_space = "--ignore-space-change" in used_main_apply_cmd
             if main_apply.returncode != 0:
-                record_failure("patch_apply_root", main_apply_cmd, main_apply)
-                for applied_patch, applied_directory_args in reversed(applied_so_far):
-                    run(["git", "-C", str(repo_root), "apply", "--reverse", *applied_directory_args, applied_patch])
+                record_failure("patch_apply_root", used_main_apply_cmd, main_apply)
+                for applied_patch, applied_directory_args, applied_with_ignore_space in reversed(applied_so_far):
+                    reverse_cmd = [
+                        "git",
+                        "-C",
+                        str(repo_root),
+                        "apply",
+                        "--reverse",
+                        *applied_directory_args,
+                        applied_patch,
+                    ]
+                    if applied_with_ignore_space:
+                        reverse_cmd = _insert_git_apply_flag(reverse_cmd, "--ignore-space-change")
+                    run(reverse_cmd)
                 return {"success": False, "records": records, "applied_patch_files": []}
             if _contains_skipped_patch_output(main_apply):
-                record_failure("patch_apply_root_noop", main_apply_cmd, main_apply)
-                for applied_patch, applied_directory_args in reversed(applied_so_far):
-                    run(["git", "-C", str(repo_root), "apply", "--reverse", *applied_directory_args, applied_patch])
+                record_failure("patch_apply_root_noop", used_main_apply_cmd, main_apply)
+                for applied_patch, applied_directory_args, applied_with_ignore_space in reversed(applied_so_far):
+                    reverse_cmd = [
+                        "git",
+                        "-C",
+                        str(repo_root),
+                        "apply",
+                        "--reverse",
+                        *applied_directory_args,
+                        applied_patch,
+                    ]
+                    if applied_with_ignore_space:
+                        reverse_cmd = _insert_git_apply_flag(reverse_cmd, "--ignore-space-change")
+                    run(reverse_cmd)
                 return {"success": False, "records": records, "applied_patch_files": []}
-            applied_so_far.append((patch, directory_args))
+            applied_so_far.append((patch, directory_args, main_apply_used_ignore_space))
 
         return {
             "success": True,
             "records": records,
-            "applied_patch_files": list(effective_patches),
+            "applied_patch_files": [patch for patch in effective_patches if patch in patch_apply_args],
         }
     finally:
         run(["git", "-C", str(repo_root), "worktree", "remove", "--force", str(worktree)])
@@ -1168,8 +1542,21 @@ def _execute_batch(
     *,
     completed_stages: list[str],
     local_workspace_override: Path | None = None,
+    patch_apply_lock: threading.Lock | None = None,
 ) -> dict[str, Any]:
     """Execute implementer for one batch, apply/verify patches, and append trace records."""
+    steps = impl.get("steps", {}) if isinstance(impl.get("steps", {}), dict) else {}
+
+    def _step_enabled(step_name: str) -> bool:
+        step_cfg = steps.get(step_name, {}) if isinstance(steps.get(step_name, {}), dict) else {}
+        enabled = step_cfg.get("enabled")
+        return enabled if isinstance(enabled, bool) else True
+
+    def _step_value(step_name: str, field_name: str, default: Any) -> Any:
+        step_cfg = steps.get(step_name, {}) if isinstance(steps.get(step_name, {}), dict) else {}
+        value = step_cfg.get(field_name, default)
+        return default if value is None else value
+
     codebase = resolve_codebase_dir_path(config, root, ctx)
     provider = get_agent_provider(config)
     codebase_dir_for_prompt = codebase
@@ -1197,27 +1584,49 @@ def _execute_batch(
     csv_rows = [{h: (row.get(h, "") if isinstance(row, dict) else "") for h in design_headers} for row in spec_rows]
     specs_csv = rows_to_csv(design_headers, csv_rows)
 
-    artifacts = resolve_agent_artifacts_dir_for_command(config, root, "implement", ctx.run_id)
+    artifacts_root = resolve_agent_artifacts_dir_for_command(config, root, "implement", ctx.run_id)
+    raw_batch_id = str(brief.get("batch_id", "")).strip() or "batch"
+    safe_batch_id = re.sub(r"[^A-Za-z0-9._-]+", "_", raw_batch_id).strip("._-") or "batch"
+    artifacts = artifacts_root / safe_batch_id
     artifacts.mkdir(parents=True, exist_ok=True)
-    batch_path_contract = build_batch_path_contract(
-        brief,
-        impl.get("type_placement_path", ""),
-        impl.get("forbidden_paths", []),
-    )
+    if _step_enabled("batch_runtime_path_contract_prep"):
+        batch_path_contract = build_batch_path_contract(
+            brief,
+            impl.get("type_placement_path", ""),
+            impl.get("forbidden_paths", []),
+        )
+    else:
+        batch_path_contract = {
+            "allowed_prefixes": [],
+            "allowed_exact_paths": [],
+            "forbidden_path_prefixes": [],
+        }
+        runtime_file_facts = {}
+        log_lifecycle_event(
+            "lifecycle_step_disabled",
+            command="implement",
+            run_id=ctx.run_id,
+            extra={
+                "batch_id": brief.get("batch_id"),
+                "step": "batch_runtime_path_contract_prep",
+            },
+        )
 
     template_vars: dict[str, Any] = {
         "output_schema_file": str(schema_path),
         "project_context": context_text,
         "selected_specs_csv": specs_csv,
         "design_spec_column_definitions": get_design_spec_column_definitions(),
-        "indexed_mappings_csv": specs_csv,
         "codebase_dir": str(codebase_dir_for_prompt),
         "codebase_content": codebase_content,
         "runtime_file_facts_json": json.dumps(runtime_file_facts, indent=2),
         "manual_resolution_file": str(paths["manual"]),
         "run_summary_file": str(paths["run"] / "summary.json"),
         "agent_artifacts_dir": str(artifacts),
-        "batch_brief_json": json.dumps(brief, indent=2),
+        "batch_brief_json": json.dumps(
+            {k: v for k, v in brief.items() if k != "spec_rows"},
+            indent=2,
+        ),
         "allowed_paths_json": json.dumps(batch_path_contract, indent=2),
         "directory_tree_snapshot": build_directory_tree_snapshot(codebase_dir_for_prompt),
         "forbidden_path_patterns_json": json.dumps(
@@ -1253,93 +1662,151 @@ def _execute_batch(
                 },
             )
 
+    if not _step_enabled("implement_semantic_validation"):
+        log_lifecycle_event(
+            "lifecycle_step_disabled",
+            command="implement",
+            run_id=ctx.run_id,
+            extra={
+                "batch_id": brief.get("batch_id"),
+                "step": "implement_semantic_validation",
+            },
+        )
     output = invoke_with_semantic_retry(
         prompt_name=impl["prompt_name"],
         template_vars=template_vars,
         schema_path=schema_path,
         config=config,
         ctx=ctx,
-        semantic_validator=lambda result: validate_implement_output_semantics(
-            result,
-            batch_path_contract,
-            root,
-            codebase_prefix_rel=(
-                codebase.resolve().relative_to(root.resolve()).as_posix()
-                if codebase.resolve() != root.resolve()
-                else ""
-            ),
+        semantic_validator=(
+            (
+                lambda result: validate_implement_output_semantics(
+                    result,
+                    batch_path_contract,
+                    root,
+                    codebase_prefix_rel=(
+                        codebase.resolve().relative_to(root.resolve()).as_posix()
+                        if codebase.resolve() != root.resolve()
+                        else ""
+                    ),
+                )
+            )
+            if _step_enabled("implement_semantic_validation")
+            else (lambda _result: [])
         ),
-        semantic_validation_retries=impl.get("semantic_validation_retries", 2),
+        semantic_validation_retries=int(
+            _step_value(
+                "implement_semantic_validation",
+                "semantic_validation_retries",
+                impl.get("semantic_validation_retries", 2),
+            )
+        ),
         validation_label=f"implement_{brief['batch_id']}",
         local_workspace_override=local_workspace_override,
         pre_attempt_hook=_prepare_semantic_attempt,
+        post_invoke_hook=(
+            (lambda _output: _normalize_output_patches_inplace(_output, root))
+            if _step_enabled("patch_normalization")
+            else None
+        ),
     )
     _write_json(paths["agent_outputs"] / f"implement_{brief['batch_id']}.json", output)
-    if _manual_block(
-        output,
-        paths["manual"],
-        f"implement_{brief['batch_id']}",
-        run_dir=paths["run"],
-        command="implement",
-        run_id=ctx.run_id,
-        completed_stages=completed_stages,
-    ):
-        return {"status": ImplementStatus.BLOCKED, "blocking_items": len(output.get("manual_resolution_items", []))}
+    if _step_enabled("planner_manual_resolution_gate"):
+        if _manual_block(
+            output,
+            paths["manual"],
+            f"implement_{brief['batch_id']}",
+            run_dir=paths["run"],
+            command="implement",
+            run_id=ctx.run_id,
+            completed_stages=completed_stages,
+        ):
+            return {"status": ImplementStatus.BLOCKED, "blocking_items": len(output.get("manual_resolution_items", []))}
 
-    parsed = _collect_spec_output(output)
+    parsed = _collect_spec_output(
+        output,
+        strict=_step_enabled("implement_output_structure_validation"),
+    )
     patch_paths, touched_files = _collect_and_copy_patches(
         root,
         paths,
         brief["batch_id"],
         parsed,
         brief.get("constraints", {}),
+        enforce_constraints=_step_enabled("patch_constraints_validation"),
     )
     before = _hashes(root, touched_files)
     configured_verification_commands = brief.get("constraints", {}).get("verification_commands", [])
-    effective_verification_commands = default_verification_commands_for_batch(
-        root,
-        brief,
-        configured_verification_commands,
-    )
-    if not isinstance(configured_verification_commands, list) or not [
-        str(cmd).strip() for cmd in configured_verification_commands if str(cmd).strip()
-    ]:
+    if _step_enabled("verification_command_resolution"):
+        effective_verification_commands = default_verification_commands_for_batch(
+            root,
+            brief,
+            configured_verification_commands,
+        )
+        if not isinstance(configured_verification_commands, list) or not [
+            str(cmd).strip() for cmd in configured_verification_commands if str(cmd).strip()
+        ]:
+            log_lifecycle_event(
+                "lifecycle_verification_fallback_applied",
+                command="implement",
+                run_id=ctx.run_id,
+                extra={
+                    "batch_id": brief.get("batch_id"),
+                    "commands": json.dumps(effective_verification_commands),
+                },
+            )
+    else:
+        effective_verification_commands = (
+            [str(cmd) for cmd in configured_verification_commands if str(cmd).strip()]
+            if isinstance(configured_verification_commands, list)
+            else []
+        )
         log_lifecycle_event(
-            "lifecycle_verification_fallback_applied",
+            "lifecycle_step_disabled",
             command="implement",
             run_id=ctx.run_id,
             extra={
                 "batch_id": brief.get("batch_id"),
-                "commands": json.dumps(effective_verification_commands),
+                "step": "verification_command_resolution",
             },
         )
-    verify = _apply_and_verify(
-        root,
-        brief["batch_id"],
-        patch_paths,
-        effective_verification_commands,
-        paths["verification"],
-        codebase_dir=codebase,
+    _apply_lock: contextlib.AbstractContextManager[Any] = (
+        patch_apply_lock if patch_apply_lock is not None else contextlib.nullcontext()
     )
-    if not verify["success"]:
-        return {"status": ImplementStatus.FAILED, "reason": f"verification_failed_{brief['batch_id']}"}
-
-    applied_patch_paths = [str(p) for p in verify.get("applied_patch_files", [])]
-    after = _hashes(root, touched_files)
-    trace = {
-        "run_id": ctx.run_id,
-        "batch_id": brief["batch_id"],
-        "spec_ids": sorted(parsed.keys()),
-        "diff_sha256": _sha256(
-            "\n".join(Path(p).read_text(encoding="utf-8") for p in applied_patch_paths).encode("utf-8")
+    with _apply_lock:
+        verify = _apply_and_verify(
+            root,
+            brief["batch_id"],
+            patch_paths,
+            effective_verification_commands,
+            paths["verification"],
+            codebase_dir=codebase,
+            normalize_patches=_step_enabled("patch_normalization"),
+            enforce_apply_check=_step_enabled("patch_apply_gate"),
+            run_contract_schema_conformance=_step_enabled("contract_schema_conformance_check"),
+            brief=brief,
+            conformance_out_dir=paths["run"],
+            run_verification_commands=_step_enabled("verification_execution"),
         )
-        if applied_patch_paths
-        else "",
-        "before_hashes": before,
-        "after_hashes": after,
-        "verification": verify["records"],
-        "artifacts": [{"kind": "patch", "ref": f"patches/{Path(p).name}"} for p in patch_paths],
-    }
-    with (paths["trace"] / "trace.jsonl").open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(trace, separators=(",", ":")) + "\n")
+        if not verify["success"]:
+            return {"status": ImplementStatus.FAILED, "reason": f"verification_failed_{brief['batch_id']}"}
+
+        applied_patch_paths = [str(p) for p in verify.get("applied_patch_files", [])]
+        after = _hashes(root, touched_files)
+        trace = {
+            "run_id": ctx.run_id,
+            "batch_id": brief["batch_id"],
+            "spec_ids": sorted(parsed.keys()),
+            "diff_sha256": _sha256(
+                "\n".join(Path(p).read_text(encoding="utf-8") for p in applied_patch_paths).encode("utf-8")
+            )
+            if applied_patch_paths
+            else "",
+            "before_hashes": before,
+            "after_hashes": after,
+            "verification": verify["records"],
+            "artifacts": [{"kind": "patch", "ref": f"patches/{Path(p).name}"} for p in patch_paths],
+        }
+        with (paths["trace"] / "trace.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(trace, separators=(",", ":")) + "\n")
     return {"status": ImplementStatus.COMPLETED, "spec_outputs": parsed}

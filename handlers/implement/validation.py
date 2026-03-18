@@ -18,26 +18,33 @@ _CAMEL_PART_PATTERN = re.compile(r"[A-Z]+(?=[A-Z][a-z]|[0-9]|$)|[A-Z]?[a-z]+|[0-
 _SAFE_TOKEN_PATTERN = re.compile(r"[^a-z0-9_]+")
 
 
+_AMBIGUITY_TIE_MARGIN = 0.03
+
+
 def _validate_unified_plan(
     plan: dict[str, Any],
     all_spec_ids: set[str],
     module_catalog: ModuleCatalog,
 ) -> dict[str, Any]:
-    """Validate the unified planner output: spec coverage and DAG acyclicity.
+    """Validate the unified planner output with differentiated failure handling.
 
-    Checks:
+    Checks (retryable — planner omission, share planner retry counter):
     1. Every spec_id in the workset appears in at least one planned_anchor.
-    2. spec_dependencies form a DAG (no cycles).
     3. All spec_ids referenced in spec_dependencies exist in the workset.
     4. Every module in module_catalog has a corresponding module_plan.
+
+    Checks (blocking — requires human judgment):
+    2. spec_dependencies form a DAG (no cycles).
     """
-    reasons: list[str] = []
+    retryable_reasons: list[str] = []
+    blocking_reasons: list[str] = []
     checks: list[str] = []
+    cycle_path: list[str] | None = None
 
     module_plans = plan.get("module_plans", [])
     spec_deps = plan.get("spec_dependencies", [])
 
-    # Check 1: spec coverage
+    # Check 1 (retryable): spec coverage
     covered_specs: set[str] = set()
     for mp in module_plans:
         if not isinstance(mp, dict):
@@ -50,11 +57,11 @@ def _validate_unified_plan(
 
     uncovered = sorted(all_spec_ids - covered_specs)
     if uncovered:
-        reasons.append(f"Specs not covered by any planned_anchor: {', '.join(uncovered)}")
+        retryable_reasons.append(f"Specs not covered by any planned_anchor: {', '.join(uncovered)}")
     else:
         checks.append("all_specs_covered")
 
-    # Check 2: DAG acyclicity via DFS
+    # Check 2 (blocking): DAG acyclicity via DFS
     dep_graph: dict[str, set[str]] = {}
     all_referenced: set[str] = set()
     for dep in spec_deps:
@@ -75,18 +82,19 @@ def _validate_unified_plan(
 
     cycle = _find_cycle(dep_graph)
     if cycle:
-        reasons.append(f"Spec dependency cycle detected: {' -> '.join(cycle)}")
+        cycle_path = cycle
+        blocking_reasons.append(f"Spec dependency cycle detected: {' -> '.join(cycle)}")
     else:
         checks.append("spec_dependencies_acyclic")
 
-    # Check 3: all referenced spec_ids exist in workset
+    # Check 3 (retryable): all referenced spec_ids exist in workset
     unknown_refs = sorted(all_referenced - all_spec_ids)
     if unknown_refs:
-        reasons.append(f"spec_dependencies reference unknown spec_ids: {', '.join(unknown_refs)}")
+        retryable_reasons.append(f"spec_dependencies reference unknown spec_ids: {', '.join(unknown_refs)}")
     else:
         checks.append("spec_dependency_refs_valid")
 
-    # Check 4: module coverage
+    # Check 4 (retryable): module coverage
     catalog_tags = {
         str(m.get("module_tag", "")).strip()
         for m in module_catalog.get("modules", [])
@@ -99,14 +107,18 @@ def _validate_unified_plan(
     }
     missing_modules = sorted(catalog_tags - plan_tags)
     if missing_modules:
-        reasons.append(f"Modules in catalog but missing from plan: {', '.join(missing_modules)}")
+        retryable_reasons.append(f"Modules in catalog but missing from plan: {', '.join(missing_modules)}")
     else:
         checks.append("all_modules_planned")
 
+    all_reasons = retryable_reasons + blocking_reasons
     return {
-        "status": ImplementStatus.PASSED if not reasons else ImplementStatus.FAILED,
+        "status": ImplementStatus.PASSED if not all_reasons else ImplementStatus.FAILED,
         "checks": checks,
-        "reasons": reasons,
+        "reasons": all_reasons,
+        "retryable_reasons": retryable_reasons,
+        "blocking_reasons": blocking_reasons,
+        "cycle_path": cycle_path,
     }
 
 
@@ -270,6 +282,7 @@ def _validate_brief_scoping(briefs: list[BatchBrief]) -> dict[str, Any]:
     reasons: list[str] = []
     total_anchor_leaks = 0
     total_contract_leaks = 0
+    total_nullable_missing = 0
 
     for brief in briefs:
         if not isinstance(brief, dict):
@@ -298,6 +311,12 @@ def _validate_brief_scoping(briefs: list[BatchBrief]) -> dict[str, Any]:
             leaked = consumed - batch_specs
             if leaked:
                 total_contract_leaks += len(leaked)
+            for field in contract.get("fields") or []:
+                if not isinstance(field, dict):
+                    continue
+                name = str(field.get("name", "")).strip()
+                if name and not isinstance(field.get("nullable"), bool):
+                    total_nullable_missing += 1
 
     if total_anchor_leaks:
         reasons.append(
@@ -312,6 +331,13 @@ def _validate_brief_scoping(briefs: list[BatchBrief]) -> dict[str, Any]:
         )
     else:
         checks.append("contract_consumed_by_specs_batch_scoped")
+
+    if total_nullable_missing:
+        reasons.append(
+            f"batch briefs contain {total_nullable_missing} contract field(s) missing nullable boolean"
+        )
+    else:
+        checks.append("contract_fields_have_nullable")
 
     return {
         "status": ImplementStatus.PASSED if not reasons else ImplementStatus.FAILED,
@@ -555,6 +581,59 @@ def _validate_contract_field_consistency(
     items: list[dict[str, Any]] = []
     reasons: list[str] = []
 
+    # Structural metadata pre-pass: check nullable presence and duplicate field names.
+    for contract in contracts:
+        if not isinstance(contract, dict):
+            continue
+        contract_id = str(contract.get("contract_id", "")).strip()
+        if not contract_id:
+            continue
+        fields_list = contract.get("fields") or []
+        if not isinstance(fields_list, list):
+            continue
+        seen_names: dict[str, int] = {}
+        for idx, field in enumerate(fields_list):
+            if not isinstance(field, dict):
+                continue
+            name = str(field.get("name", "")).strip()
+            type_name = str(field.get("type_name", "")).strip()
+            if not name or not type_name:
+                continue
+            if name in seen_names:
+                item_id = f"duplicate_field_{contract_id}_{name}"
+                items.append({
+                    "item_id": item_id,
+                    "title": f"Duplicate field name in contract {contract_id}: {name!r}",
+                    "question": (
+                        f"Contract {contract_id} declares field {name!r} more than once "
+                        f"(first at index {seen_names[name]}, again at index {idx}). "
+                        "Remove the duplicate field declaration."
+                    ),
+                    "resolution_mode": "edit_contract",
+                    "options": [],
+                    "required": True,
+                    "blocking_reason": f"Duplicate field name {name!r} in contract {contract_id}.",
+                })
+                reasons.append(f"Contract {contract_id} has duplicate field name {name!r}")
+            else:
+                seen_names[name] = idx
+            nullable = field.get("nullable")
+            if not isinstance(nullable, bool):
+                item_id = f"missing_nullable_{contract_id}_{name}"
+                items.append({
+                    "item_id": item_id,
+                    "title": f"Missing nullable on {contract_id}.{name}",
+                    "question": (
+                        f"Field {name!r} in contract {contract_id} is missing the required `nullable` "
+                        "boolean. Add `nullable: true` or `nullable: false` to the field declaration."
+                    ),
+                    "resolution_mode": "edit_contract",
+                    "options": [],
+                    "required": True,
+                    "blocking_reason": f"Field {name!r} in contract {contract_id} has no nullable boolean.",
+                })
+                reasons.append(f"Contract {contract_id} field {name!r} missing nullable boolean")
+
     for contract in contracts:
         if not isinstance(contract, dict):
             continue
@@ -636,6 +715,54 @@ def _validate_contract_field_consistency(
                     f"(score={score:.3f}, distance={distance}, score_threshold={match_score_threshold:.3f})"
                 )
 
+            # Tie-detection: for each non-exact field, find all candidates and
+            # check for near-equal scores (ambiguity that needs human clarification).
+            for field_name in contract_fields:
+                if field_name in exact_matches:
+                    continue
+                candidates: list[dict[str, Any]] = []
+                for source_word in spec_words:
+                    row = _build_high_match_row(
+                        source_word,
+                        field_name,
+                        score_threshold=match_score_threshold,
+                    )
+                    if row is not None:
+                        candidates.append(row)
+                candidates_sorted = sorted(candidates, key=_match_sort_key)
+                if len(candidates_sorted) < 2:
+                    continue
+                top = candidates_sorted[0]
+                second = candidates_sorted[1]
+                score_delta = abs(
+                    float(top.get("score", 0.0)) - float(second.get("score", 0.0))
+                )
+                if score_delta > _AMBIGUITY_TIE_MARGIN:
+                    continue
+                tie_item_id = (
+                    f"match_ambiguity_{contract_id}_{spec_id}_{_safe_item_token(field_name)}"
+                )
+                items.append({
+                    "item_id": tie_item_id,
+                    "title": f"Ambiguous contract field match: {contract_id} / {spec_id}",
+                    "question": (
+                        f"Spec {spec_id} has near-equal word matches for contract field "
+                        f"'{field_name}': {_format_high_match_pairs([top, second])}. "
+                        "Edit the spec text to use one unambiguous field name."
+                    ),
+                    "resolution_mode": "edit_spec",
+                    "options": [],
+                    "required": True,
+                    "blocking_reason": (
+                        f"Near-equal candidate words for {field_name} in spec {spec_id} "
+                        f"(delta={score_delta:.3f})"
+                    ),
+                })
+                reasons.append(
+                    f"Spec {spec_id} has ambiguous high-match candidates for "
+                    f"{contract_id}.{field_name}"
+                )
+
             # Provider check: evaluate missing contract fields by high-distance matches.
             if is_provider and provider_spec_id:
                 missing_in_spec = sorted(contract_fields - spec_words)
@@ -680,4 +807,334 @@ def _validate_contract_field_consistency(
         "manual_resolution_items": items,
         "reasons": reasons,
         "shared_contracts": contracts,
+    }
+
+
+
+def _spec_words_and_parts(text: str) -> tuple[set[str], set[str], set[str]]:
+    """Return exact words, normalized words, and split parts from spec text."""
+    raw_words = _extract_words(text)
+    words = {w.lower() for w in raw_words}
+    normalized_words = {_normalize_word_for_distance(w) for w in raw_words}
+    normalized_words.discard("")
+    parts: set[str] = set()
+    for word in raw_words:
+        parts.update(_split_word_parts(word))
+    return words, normalized_words, parts
+
+
+def _field_is_covered_in_spec(field_name: str, spec_text: str) -> bool:
+    """Return True if contract field is explicitly or alias-covered in spec text."""
+    field = str(field_name).strip().lower()
+    if not field:
+        return True
+    words, normalized_words, parts = _spec_words_and_parts(spec_text)
+    if field in words:
+        return True
+    field_norm = _normalize_word_for_distance(field)
+    if field_norm and field_norm in normalized_words:
+        return True
+    field_parts = [p for p in _split_word_parts(field) if p]
+    if field_parts and all(part in parts for part in field_parts):
+        return True
+    return False
+
+
+def _spec_text_lookup(
+    spec_rows: list[dict[str, Any]],
+    headers: list[str],
+) -> dict[str, dict[str, Any]]:
+    """Return spec_id -> normalized text/context metadata."""
+    req_col = _find_col(headers, "requirement")
+    ac_col = _find_col(headers, "acceptance_criteria")
+    spec_col = _find_col(headers, "spec_id")
+    module_col = _find_col(headers, "module_tag")
+    if not spec_col:
+        return {}
+
+    by_spec: dict[str, dict[str, Any]] = {}
+    for row in spec_rows:
+        if not isinstance(row, dict):
+            continue
+        spec_id = str(row.get(spec_col, "")).strip()
+        if not spec_id:
+            continue
+        requirement = str(row.get(req_col or "requirement", "") or "")
+        acceptance = str(row.get(ac_col or "acceptance_criteria", "") or "")
+        text = f"{requirement} {acceptance}".strip()
+        by_spec[spec_id] = {
+            "module_tag": str(row.get(module_col or "module_tag", "")).strip(),
+            "text": text,
+        }
+    return by_spec
+
+
+def _validate_required_field_coverage(
+    shared_contracts: list[dict[str, Any]],
+    spec_rows: list[dict[str, Any]],
+    headers: list[str],
+    *,
+    providerless_contract_allowlist: set[str] | None = None,
+) -> dict[str, Any]:
+    """Validate contract field coverage using provider-first, low-noise rules.
+
+    Deterministic policy:
+    1) Prefer provider specs (consumed specs in owning_module) as source-of-truth.
+    2) If provider text explicitly declares canonical contract/DTO + field naming intent,
+       treat provider coverage as satisfied even when every field token is not listed.
+    3) If no provider spec exists and the contract is not in providerless_contract_allowlist,
+       emit a manual_resolution_item (always — there is no skip/fail mode).
+       If the contract is in the allowlist, skip it silently.
+    """
+    spec_by_id = _spec_text_lookup(spec_rows, headers)
+    reasons: list[str] = []
+    checks: list[str] = []
+    missing_records: list[dict[str, Any]] = []
+    manual_resolution_items: list[dict[str, Any]] = []
+
+    for contract in shared_contracts:
+        if not isinstance(contract, dict):
+            continue
+        contract_id = str(contract.get("contract_id", "")).strip()
+        if not contract_id:
+            continue
+        fields = contract.get("fields", [])
+        if not isinstance(fields, list) or not fields:
+            continue
+        field_names = [
+            str(field.get("name", "")).strip()
+            for field in fields
+            if isinstance(field, dict) and str(field.get("name", "")).strip()
+        ]
+        if not field_names:
+            continue
+
+        consumed_specs = [
+            str(spec_id).strip()
+            for spec_id in contract.get("consumed_by_specs", [])
+            if str(spec_id).strip()
+        ]
+        owning_module = str(contract.get("owning_module", "")).strip()
+        provider_spec_ids = [
+            spec_id
+            for spec_id in consumed_specs
+            if str(spec_by_id.get(spec_id, {}).get("module_tag", "")).strip() == owning_module
+        ]
+        if not provider_spec_ids:
+            if contract_id in (providerless_contract_allowlist or set()):
+                checks.append(f"{contract_id}:skipped_allowlisted")
+                continue
+            manual_resolution_items.append({
+                "item_id": f"no_provider_spec_{contract_id}",
+                "title": f"No provider spec for contract {contract_id}",
+                "question": (
+                    f"Contract {contract_id} (owning_module={owning_module!r}) has no provider spec "
+                    f"in consumed_by_specs {consumed_specs}. Either add a spec owned by "
+                    f"{owning_module!r} to consumed_by_specs, or add this contract_id to "
+                    "providerless_contract_allowlist."
+                ),
+                "options": [],
+                "required": True,
+                "blocking_reason": f"No provider spec found for contract {contract_id}.",
+            })
+            checks.append(f"{contract_id}:manual_block_no_provider_spec")
+            continue
+
+        provider_texts = [
+            str(spec_by_id.get(spec_id, {}).get("text", ""))
+            for spec_id in provider_spec_ids
+            if spec_id in spec_by_id
+        ]
+        canonical_declaration_present = any(
+            ("dto" in text.lower() or "contract" in text.lower())
+            and "field" in text.lower()
+            for text in provider_texts
+        )
+        if canonical_declaration_present:
+            checks.append(f"{contract_id}:provider_declares_canonical_contract")
+            continue
+
+        covered_fields: set[str] = set()
+        for text in provider_texts:
+            for field_name in field_names:
+                if _field_is_covered_in_spec(field_name, text):
+                    covered_fields.add(field_name)
+        missing_fields_sorted = sorted(set(field_names) - covered_fields)
+        if not missing_fields_sorted:
+            checks.append(f"{contract_id}:provider_fields_covered")
+            continue
+
+        missing_records.append(
+            {
+                "contract_id": contract_id,
+                "provider_spec_ids": provider_spec_ids,
+                "missing_fields": missing_fields_sorted,
+            }
+        )
+        reasons.append(
+            f"Provider spec(s) {provider_spec_ids} do not explicitly/alias-cover required contract "
+            f"fields {missing_fields_sorted} for {contract_id}"
+        )
+        manual_resolution_items.append({
+            "item_id": f"uncovered_fields_{contract_id}",
+            "title": f"Uncovered fields in contract {contract_id}",
+            "question": (
+                f"Provider spec(s) {provider_spec_ids} do not cover required fields "
+                f"{missing_fields_sorted} for contract {contract_id}. "
+                "Edit provider spec text to reference these fields."
+            ),
+            "options": [],
+            "required": True,
+            "blocking_reason": (
+                f"Required fields {missing_fields_sorted} not covered "
+                f"in provider spec(s) {provider_spec_ids}."
+            ),
+        })
+
+    if not reasons and not manual_resolution_items:
+        checks.append("required_contract_fields_covered")
+    return {
+        "status": (
+            ImplementStatus.PASSED
+            if not reasons and not manual_resolution_items
+            else ImplementStatus.FAILED
+        ),
+        "checks": checks,
+        "reasons": reasons,
+        "missing_records": missing_records,
+        "manual_resolution_items": manual_resolution_items,
+    }
+
+
+
+_SPEC_ISSUE_BLOCKING_REASONS: dict[str, str] = {
+    "contradiction": "Mutually exclusive behaviors in specs {affected}",
+    "overlap": "Overlapping responsibilities in specs {affected}",
+    "dependency_gap": "Dependency gap in specs {affected}",
+    "ambiguity": "Ambiguous requirement in specs {affected}",
+    "orphan_reference": "Orphan reference in specs {affected}",
+}
+
+
+def _escalate_spec_issues(
+    spec_issues: list[dict[str, Any]],
+    selected: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Convert all spec_issues to blocking manual_resolution_items.
+
+    All 5 issue kinds (contradiction, overlap, dependency_gap, ambiguity,
+    orphan_reference) are escalated regardless of cross-module scope.
+    For dependency_gap, module detail is included in the blocking_reason.
+    """
+    spec_id_to_module: dict[str, str] = {}
+    for row in selected:
+        spec_id = str(row.get("spec_id", "")).strip()
+        module_tag = str(row.get("module_tag", "")).strip()
+        if spec_id and module_tag:
+            spec_id_to_module[spec_id] = module_tag
+
+    items: list[dict[str, Any]] = []
+    for issue in spec_issues:
+        kind = str(issue.get("kind", "")).strip()
+        if not kind:
+            continue
+        affected_ids: list[str] = [
+            str(s).strip() for s in issue.get("affected_spec_ids", []) if s
+        ]
+        affected_str = ", ".join(affected_ids) if affected_ids else "unknown"
+        description = str(issue.get("description", "")).strip()
+        resolution_hint = str(issue.get("resolution_hint", "")).strip()
+
+        blocking_reason = _SPEC_ISSUE_BLOCKING_REASONS.get(
+            kind, f"{kind} in specs {{affected}}"
+        ).format(affected=affected_str)
+
+        if kind == "dependency_gap":
+            modules = sorted({
+                spec_id_to_module[sid]
+                for sid in affected_ids
+                if sid in spec_id_to_module
+            })
+            if len(modules) >= 2:
+                blocking_reason = (
+                    f"Dependency gap spanning modules {modules} in specs {affected_str}"
+                )
+
+        item: dict[str, Any] = {
+            "item_id": issue.get("issue_id", ""),
+            "title": description[:120],
+            "question": description,
+            "options": [],
+            "required": True,
+            "blocking_reason": blocking_reason,
+            "evidence_refs": affected_ids,
+            "resolution_mode": "edit_spec",
+        }
+        if resolution_hint:
+            item["spec_amendment_hints"] = resolution_hint
+        items.append(item)
+    return items
+
+
+def _validate_dependency_context_edges(
+    briefs: list[BatchBrief],
+    spec_dependencies: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Validate brief dependency-context edges against planner spec_dependencies."""
+    expected_edges: set[tuple[str, str]] = set()
+    for dep in spec_dependencies:
+        if not isinstance(dep, dict):
+            continue
+        consumer = str(dep.get("consumer_spec_id", "")).strip()
+        providers = dep.get("provider_spec_ids", [])
+        if not consumer or not isinstance(providers, list):
+            continue
+        for provider_raw in providers:
+            provider = str(provider_raw).strip()
+            if provider:
+                expected_edges.add((consumer, provider))
+
+    observed_edges: set[tuple[str, str]] = set()
+    reasons: list[str] = []
+    checks: list[str] = []
+
+    for brief in briefs:
+        if not isinstance(brief, dict):
+            continue
+        batch_id = str(brief.get("batch_id", "")).strip()
+        for dep in brief.get("spec_dependency_context", []):
+            if not isinstance(dep, dict):
+                continue
+            consumer = str(dep.get("consumer_spec_id", "")).strip()
+            providers = dep.get("provider_spec_ids", [])
+            if not consumer or not isinstance(providers, list):
+                continue
+            for provider_raw in providers:
+                provider = str(provider_raw).strip()
+                if not provider:
+                    continue
+                edge = (consumer, provider)
+                observed_edges.add(edge)
+                if edge not in expected_edges:
+                    reasons.append(
+                        f"Batch {batch_id} contains unknown dependency-context edge {consumer}->{provider}"
+                    )
+
+    missing_edges = sorted(expected_edges - observed_edges)
+    if missing_edges:
+        reasons.append(
+            "Missing dependency-context edges: "
+            + ", ".join(f"{consumer}->{provider}" for consumer, provider in missing_edges)
+        )
+
+    if not reasons:
+        checks.append("dependency_context_edges_match_planner")
+    return {
+        "status": ImplementStatus.PASSED if not reasons else ImplementStatus.FAILED,
+        "checks": checks,
+        "reasons": reasons,
+        "missing_edges": [
+            {"consumer_spec_id": consumer, "provider_spec_id": provider}
+            for consumer, provider in missing_edges
+        ],
     }

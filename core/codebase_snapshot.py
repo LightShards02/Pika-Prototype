@@ -12,24 +12,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from tree_sitter_languages import get_parser
+
+from core.pika_config import get_pika_config
+
 logger = logging.getLogger(__name__)
-
-# Optional tree-sitter; import lazily to avoid startup cost when not used
-_tree_sitter_available = None
-
-
-def _check_tree_sitter() -> bool:
-    """Return True if tree-sitter and tree-sitter-languages are available."""
-    global _tree_sitter_available
-    if _tree_sitter_available is not None:
-        return _tree_sitter_available
-    try:
-        from tree_sitter_languages import get_parser  # noqa: F401
-
-        _tree_sitter_available = True
-    except ImportError:
-        _tree_sitter_available = False
-    return _tree_sitter_available
 
 
 # Extension -> tree-sitter language name
@@ -79,8 +66,6 @@ def _get_codebase_transmission_config(config: dict[str, Any]) -> dict[str, Any]:
     ct = config.get("codebase_transmission")
     if not isinstance(ct, dict):
         ct = {}
-    from core.pika_config import get_pika_config
-
     pika = get_pika_config()
     defaults = pika.get("codebase_transmission", {})
     if not isinstance(defaults, dict):
@@ -245,74 +230,10 @@ def _extract_python_symbols(path: Path, source_bytes: bytes, parser: Any) -> tup
     return symbols, call_edges
 
 
-def _extract_python_symbols_stdlib(path: Path, content: str) -> tuple[list[Symbol], list[tuple[str, str]]]:
-    """Extract symbols and call edges using Python stdlib ast. Fallback when tree-sitter unavailable."""
-    import ast
-
-    symbols: list[Symbol] = []
-    call_edges: list[tuple[str, str]] = []
-
-    def get_docstring(node: ast.AST) -> str:
-        doc = ast.get_docstring(node)
-        return (doc[:200] + "..." if len(doc) > 200 else doc) if doc else ""
-
-    def get_callee(node: ast.Call) -> str:
-        if isinstance(node.func, ast.Name):
-            return node.func.id
-        if isinstance(node.func, ast.Attribute):
-            return node.func.attr
-        return ""
-
-    def collect_calls(node: ast.AST, caller: str) -> None:
-        for n in ast.walk(node):
-            if isinstance(n, ast.Call):
-                callee = get_callee(n)
-                if callee:
-                    call_edges.append((caller, callee))
-
-    class Visitor(ast.NodeVisitor):
-        def __init__(self) -> None:
-            self._class_prefix = ""
-
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            doc = get_docstring(node)
-            bases_str = ""
-            if node.bases and hasattr(ast, "unparse"):
-                bases_str = f"({', '.join(ast.unparse(b) for b in node.bases)})"
-            sig = f"class {node.name}{bases_str}:"
-            sym = Symbol(node.name, "class", sig, doc, node.lineno, [])
-            for n in node.body:
-                if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name):
-                    type_str = ast.unparse(n.annotation) if hasattr(ast, "unparse") else ""
-                    sym.children.append(Symbol(n.target.id, "attribute", f"{n.target.id}: {type_str}", "", n.lineno))
-            symbols.append(sym)
-            prev = self._class_prefix
-            self._class_prefix = f"{node.name}."
-            self.generic_visit(node)
-            self._class_prefix = prev
-
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            full_name = f"{self._class_prefix}{node.name}" if self._class_prefix else node.name
-            doc = get_docstring(node)
-            args_str = ast.unparse(node.args) if hasattr(ast, "unparse") else "..."
-            sig = f"def {node.name}{args_str}"
-            kind = "method" if self._class_prefix else "function"
-            symbols.append(Symbol(full_name, kind, sig, doc, node.lineno, []))
-            collect_calls(node, full_name)
-            self.generic_visit(node)
-
-    try:
-        tree = ast.parse(content)
-        Visitor().visit(tree)
-    except SyntaxError:
-        pass
-    return symbols, call_edges
-
-
 def _extract_file_summary(
     path: Path, codebase_dir: Path, config: dict[str, Any], raw_file_set: set[Path]
 ) -> FileSummary | None:
-    """Parse file with tree-sitter (or stdlib ast for Python), extract symbols and call edges."""
+    """Parse file with tree-sitter, extract symbols and call edges."""
     lang = _detect_language(path)
     if not lang:
         return FileSummary(rel_path=str(path.relative_to(codebase_dir)).replace("\\", "/"), language="", symbols=[], call_edges=[])
@@ -325,22 +246,10 @@ def _extract_file_summary(
         return None
     symbols: list[Symbol]
     call_edges: list[tuple[str, str]]
-    if lang == "python" and not _check_tree_sitter():
-        symbols, call_edges = _extract_python_symbols_stdlib(path, content)
-    elif _check_tree_sitter():
+    if lang == "python":
         source_bytes = content.encode("utf-8")
-        try:
-            from tree_sitter_languages import get_parser
-
-            parser = get_parser(lang)
-        except (ImportError, Exception) as e:
-            logger.warning("Could not get parser for %s: %s", lang, e)
-            symbols, call_edges = [], []
-        else:
-            if lang == "python":
-                symbols, call_edges = _extract_python_symbols(path, source_bytes, parser)
-            else:
-                symbols, call_edges = [], []
+        parser = get_parser(lang)
+        symbols, call_edges = _extract_python_symbols(path, source_bytes, parser)
     else:
         symbols, call_edges = [], []
     rel = str(path.relative_to(codebase_dir)).replace("\\", "/")

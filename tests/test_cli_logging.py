@@ -127,6 +127,12 @@ class CliLoggingTests(unittest.TestCase):
         self.assertIsNone(summary.get("run_id"))
         self.assertFalse(logs_dir.exists())
 
+    def test_version_flag_prints_version_and_exits(self) -> None:
+        """Test that --version prints version from pika.yaml and exits 0."""
+        result = self._run_cli(["--version"])
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(result.stdout.strip(), "0.0.3")
+
 
 if __name__ == "__main__":
     unittest.main()

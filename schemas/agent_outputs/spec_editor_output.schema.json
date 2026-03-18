@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SpecEditorOutput",
+  "description": "Spec Editor output. The agent produces either a field-level rewrite (for ambiguity/testability items) or structural row edits (for decomposition split/merge items). edit_type discriminates between the two modes.",
+  "type": "object",
+  "oneOf": [
+    {
+      "description": "Field-level edit: rewrite a single field on one spec row.",
+      "required": ["edit_type", "spec_id", "field", "new_text", "rationale"],
+      "additionalProperties": false,
+      "properties": {
+        "edit_type": {
+          "type": "string",
+          "const": "field",
+          "description": "Discriminator. Must be 'field' for field-level edits."
+        },
+        "spec_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "spec_id of the row to edit."
+        },
+        "field": {
+          "type": "string",
+          "enum": ["requirement", "acceptance_criteria"],
+          "description": "Which field to rewrite."
+        },
+        "new_text": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Complete replacement text for the field."
+        },
+        "rationale": {
+          "type": "string",
+          "description": "Explanation of why this rewrite improves the spec."
+        }
+      }
+    },
+    {
+      "description": "Structural edit: add, update, or delete spec rows (for split/merge decomposition items).",
+      "required": ["edit_type", "edits", "rationale"],
+      "additionalProperties": false,
+      "properties": {
+        "edit_type": {
+          "type": "string",
+          "const": "structural",
+          "description": "Discriminator. Must be 'structural' for row-level edits."
+        },
+        "rationale": {
+          "type": "string",
+          "description": "Explanation of the structural change (why the split or merge is correct)."
+        },
+        "edits": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/structural_edit" },
+          "description": "Ordered list of row operations to apply."
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "structural_edit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "spec_id"],
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": ["add", "update", "delete"],
+          "description": "add: insert new row after any existing row with this spec_id (or at end); update: replace all row_data fields for this spec_id; delete: remove this spec_id row."
+        },
+        "spec_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "spec_id of the row to add, update, or delete."
+        },
+        "row_data": {
+          "type": "object",
+          "description": "Full row as key-value string pairs. Required for 'add' and 'update'. Must omit for 'delete'.",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    }
+  }
+}

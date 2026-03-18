@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 from core.constants import ContractKind
+from core.errors import ConfigParseError
+from core.lifecycle import get_agent_provider
 from core.pika_config import get_pika_config
 
 
@@ -13,6 +15,7 @@ _DEFAULT_BUDGETS = {
     "max_specs_per_batch": 15,
     "max_files": 10,
     "max_lines_changed": 600,
+    "max_parallel_batches": 3,
 }
 _DEFAULT_TYPE_PLACEMENT = "shared/types"
 _DEFAULT_MIN_CONFIDENCE_THRESHOLD = 0.70
@@ -22,6 +25,7 @@ _DEFAULT_MIN_AUTO_BIND_SCORE = 0.70
 _DEFAULT_TIE_MARGIN = 0.08
 _DEFAULT_FIELD_MATCH_SCORE_THRESHOLD = 0.80
 _DEFAULT_SEMANTIC_VALIDATION_RETRIES = 2
+_DEFAULT_IMPLEMENT_STEP_ENABLED = True
 _CONTRACT_KINDS = tuple(ContractKind)
 _DEFAULT_DISALLOWED_LINK_KINDS_BY_REQUIRED_ROLE: dict[str, set[str]] = {
     "frontend": {
@@ -43,6 +47,50 @@ _DEFAULT_CONTRACT_KIND_DEFINITIONS: dict[str, str] = {
     ContractKind.EXTERNAL_API: "Out-of-project third-party/system HTTP API boundary only.",
     ContractKind.TEST_SUITE: "Test harness or test provider capability boundary.",
 }
+
+_DETERMINISTIC_IMPLEMENT_STEPS_IN_ORDER: tuple[str, ...] = (
+    "workset_schema_validation",
+    "module_catalog_validation",
+    "planner_path_contract_prep",
+    "planner_semantic_validation",
+    "planner_manual_resolution_gate",
+    "spec_issue_escalation",
+    "unified_plan_validation",
+    "contract_field_consistency_validation",
+    "required_field_coverage_validation",
+    "batch_plan_construction",
+    "batch_plan_dependency_validation",
+    "batch_brief_build",
+    "batch_brief_scope_validation",
+    "dependency_context_edge_validation",
+    "batch_runtime_path_contract_prep",
+    "implement_semantic_validation",
+    "implement_output_structure_validation",
+    "patch_constraints_validation",
+    "verification_command_resolution",
+    "patch_normalization",
+    "patch_apply_gate",
+    "contract_schema_conformance_check",
+    "verification_execution",
+)
+
+
+def _step_cfg(impl: dict[str, Any], step_name: str) -> dict[str, Any]:
+    """Return step config object for `implement.<step_name>`, else empty object."""
+    raw = impl.get(step_name)
+    return raw if isinstance(raw, dict) else {}
+
+
+def _agent_cfg(impl: dict[str, Any], agent_name: str) -> dict[str, Any]:
+    """Return agent config object for `implement.<agent_name>`, else empty object."""
+    raw = impl.get(agent_name)
+    return raw if isinstance(raw, dict) else {}
+
+
+def _resolve_step_enabled(step_config: dict[str, Any], default: bool = True) -> bool:
+    """Resolve step enabled flag with deterministic default."""
+    raw = step_config.get("enabled")
+    return raw if isinstance(raw, bool) else bool(default)
 
 
 def _parse_min_confidence_threshold(value: Any) -> float:
@@ -74,26 +122,26 @@ def _normalize_disallowed_link_policy(value: Any) -> dict[str, set[str]]:
             for role, kinds in _DEFAULT_DISALLOWED_LINK_KINDS_BY_REQUIRED_ROLE.items()
         }
     if not isinstance(value, dict):
-        raise ValueError("implement.disallowed_link_kinds_by_required_role must be an object")
+        raise ConfigParseError("implement.disallowed_link_kinds_by_required_role must be an object")
     normalized: dict[str, set[str]] = {}
     known_roles = set(_DEFAULT_ROLES)
     known_kinds = set(_CONTRACT_KINDS)
     for raw_role, raw_kinds in value.items():
         role = str(raw_role).strip().lower()
         if role not in known_roles:
-            raise ValueError(
+            raise ConfigParseError(
                 "implement.disallowed_link_kinds_by_required_role contains unknown role: "
                 f"{raw_role}"
             )
         if not isinstance(raw_kinds, list):
-            raise ValueError(
+            raise ConfigParseError(
                 "implement.disallowed_link_kinds_by_required_role entries must be arrays of contract kind strings"
             )
         kinds: set[str] = set()
         for raw_kind in raw_kinds:
             kind = str(raw_kind).strip()
             if kind not in known_kinds:
-                raise ValueError(
+                raise ConfigParseError(
                     "implement.disallowed_link_kinds_by_required_role contains unknown contract kind "
                     f"'{raw_kind}' for role '{role}'"
                 )
@@ -113,7 +161,7 @@ def _normalize_leaf_dependency_roles(value: Any) -> set[str]:
     if value is None:
         return set()
     if not isinstance(value, list):
-        raise ValueError("implement.leaf_dependency_roles must be an array of role strings")
+        raise ConfigParseError("implement.leaf_dependency_roles must be an array of role strings")
     normalized: set[str] = set()
     known_roles = set(_DEFAULT_ROLES)
     for raw_role in value:
@@ -121,7 +169,7 @@ def _normalize_leaf_dependency_roles(value: Any) -> set[str]:
         if not role:
             continue
         if role not in known_roles:
-            raise ValueError(f"implement.leaf_dependency_roles contains unknown role: {raw_role}")
+            raise ConfigParseError(f"implement.leaf_dependency_roles contains unknown role: {raw_role}")
         normalized.add(role)
     return normalized
 
@@ -134,13 +182,13 @@ def _normalize_leaf_dependency_policy(value: Any) -> dict[str, Any]:
             "track_external_dependencies": _DEFAULT_TRACK_EXTERNAL_DEPENDENCIES,
         }
     if not isinstance(value, dict):
-        raise ValueError("implement.leaf_dependency_policy must be an object")
+        raise ConfigParseError("implement.leaf_dependency_policy must be an object")
     mode = str(value.get("mode", _DEFAULT_LEAF_DEPENDENCY_POLICY_MODE)).strip().lower()
     if mode != "auto_drop":
-        raise ValueError("implement.leaf_dependency_policy.mode must be 'auto_drop'")
+        raise ConfigParseError("implement.leaf_dependency_policy.mode must be 'auto_drop'")
     track = value.get("track_external_dependencies", _DEFAULT_TRACK_EXTERNAL_DEPENDENCIES)
     if not isinstance(track, bool):
-        raise ValueError(
+        raise ConfigParseError(
             "implement.leaf_dependency_policy.track_external_dependencies must be boolean"
         )
     return {"mode": mode, "track_external_dependencies": track}
@@ -152,21 +200,21 @@ def _normalize_contract_kind_definitions(value: Any) -> dict[str, str]:
     if value is None:
         return definitions
     if not isinstance(value, dict):
-        raise ValueError("implement.contract_kind_definitions must be an object")
+        raise ConfigParseError("implement.contract_kind_definitions must be an object")
     known_kinds = set(_CONTRACT_KINDS)
     for raw_kind, raw_info in value.items():
         kind = str(raw_kind).strip()
         if kind not in known_kinds:
-            raise ValueError(
+            raise ConfigParseError(
                 f"implement.contract_kind_definitions contains unknown kind: {raw_kind}"
             )
         if not isinstance(raw_info, dict):
-            raise ValueError(
+            raise ConfigParseError(
                 f"implement.contract_kind_definitions.{kind} must be an object with a definition field"
             )
         definition = str(raw_info.get("definition", "")).strip()
         if not definition:
-            raise ValueError(
+            raise ConfigParseError(
                 f"implement.contract_kind_definitions.{kind}.definition must be non-empty"
             )
         definitions[kind] = definition
@@ -181,19 +229,37 @@ def _normalize_type_shape_match(value: Any) -> dict[str, float]:
             "tie_margin": _DEFAULT_TIE_MARGIN,
         }
     if not isinstance(value, dict):
-        raise ValueError("implement.type_shape_match must be an object")
+        raise ConfigParseError("implement.type_shape_match must be an object")
     min_score = value.get("min_auto_bind_score", _DEFAULT_MIN_AUTO_BIND_SCORE)
     tie_margin = value.get("tie_margin", _DEFAULT_TIE_MARGIN)
     try:
         min_score_f = float(min_score)
         tie_margin_f = float(tie_margin)
     except (TypeError, ValueError) as exc:
-        raise ValueError(
+        raise ConfigParseError(
             "implement.type_shape_match values must be numeric"
         ) from exc
     min_score_f = max(0.0, min(1.0, min_score_f))
     tie_margin_f = max(0.0, min(1.0, tie_margin_f))
     return {"min_auto_bind_score": min_score_f, "tie_margin": tie_margin_f}
+
+
+def _parse_providerless_contract_allowlist(value: Any) -> list[str]:
+    """Parse providerless_contract_allowlist as a deduplicated list of contract IDs."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ConfigParseError(
+            "implement.required_field_coverage_validation.providerless_contract_allowlist must be an array"
+        )
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        s = str(item).strip()
+        if s and s not in seen:
+            result.append(s)
+            seen.add(s)
+    return result
 
 
 def _parse_field_match_score_threshold(value: Any) -> float:
@@ -290,12 +356,20 @@ def _get_impl_cfg(config: dict[str, Any]) -> dict[str, Any]:
     impl = commands.get("implement") if isinstance(commands, dict) else {}
     if not isinstance(impl, dict):
         impl = {}
+    planner_agent_cfg = _agent_cfg(impl, "unified_planner")
+    implementer_agent_cfg = _agent_cfg(impl, "implementer")
     raw_budgets = impl.get("budgets") if isinstance(impl.get("budgets"), dict) else {}
     budgets = dict(_DEFAULT_BUDGETS)
     for key, default in _DEFAULT_BUDGETS.items():
         value = raw_budgets.get(key, default)
         if isinstance(value, int) and value > 0:
             budgets[key] = value
+    pika_min_max_files = get_pika_config().get("implement", {}).get("min_max_files", 5)
+    if budgets["max_files"] < pika_min_max_files:
+        raise ConfigParseError(
+            f"budgets.max_files ({budgets['max_files']}) is below the minimum "
+            f"allowed value ({pika_min_max_files}) from pika.yaml implement.min_max_files"
+        )
     roles = impl.get("allowed_module_roles", list(_DEFAULT_ROLES))
     if not isinstance(roles, list) or not roles:
         roles = list(_DEFAULT_ROLES)
@@ -306,22 +380,96 @@ def _get_impl_cfg(config: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(verify_cmds, list):
         verify_cmds = []
     disallowed_policy = _normalize_disallowed_link_policy(
-        impl.get("disallowed_link_kinds_by_required_role")
+        planner_agent_cfg.get(
+            "disallowed_link_kinds_by_required_role",
+            impl.get("disallowed_link_kinds_by_required_role"),
+        )
     )
     leaf_dependency_roles = _normalize_leaf_dependency_roles(
-        impl.get("leaf_dependency_roles")
+        planner_agent_cfg.get("leaf_dependency_roles", impl.get("leaf_dependency_roles"))
     )
     leaf_dependency_policy = _normalize_leaf_dependency_policy(
-        impl.get("leaf_dependency_policy")
+        planner_agent_cfg.get("leaf_dependency_policy", impl.get("leaf_dependency_policy"))
     )
     contract_kind_definitions = _normalize_contract_kind_definitions(
-        impl.get("contract_kind_definitions")
+        planner_agent_cfg.get("contract_kind_definitions", impl.get("contract_kind_definitions"))
     )
-    type_shape_match = _normalize_type_shape_match(impl.get("type_shape_match"))
+    type_shape_match = _normalize_type_shape_match(
+        planner_agent_cfg.get("type_shape_match", impl.get("type_shape_match"))
+    )
+    min_confidence_source = dict(impl)
+    planner_min_confidence_threshold = planner_agent_cfg.get(
+        "min_confidence_threshold",
+        impl.get("min_confidence_threshold"),
+    )
+    if planner_min_confidence_threshold is not None:
+        min_confidence_source["min_confidence_threshold"] = planner_min_confidence_threshold
+
+    step_configs = {
+        step_name: _step_cfg(impl, step_name)
+        for step_name in _DETERMINISTIC_IMPLEMENT_STEPS_IN_ORDER
+    }
+    steps: dict[str, dict[str, Any]] = {
+        step_name: {
+            "enabled": _resolve_step_enabled(
+                step_configs[step_name],
+                _DEFAULT_IMPLEMENT_STEP_ENABLED,
+            )
+        }
+        for step_name in _DETERMINISTIC_IMPLEMENT_STEPS_IN_ORDER
+    }
+
+    contract_field_cfg = step_configs["contract_field_consistency_validation"]
+    field_match_score_threshold = _parse_field_match_score_threshold(
+        contract_field_cfg.get(
+            "field_match_score_threshold",
+            contract_field_cfg.get(
+                "field_match_distance_threshold",
+                impl.get("field_match_score_threshold", impl.get("field_match_distance_threshold")),
+            ),
+        )
+    )
+    steps["contract_field_consistency_validation"][
+        "field_match_score_threshold"
+    ] = field_match_score_threshold
+
+    planner_semantic_cfg = step_configs["planner_semantic_validation"]
+    implement_semantic_cfg = step_configs["implement_semantic_validation"]
+    planner_semantic_validation_retries = _parse_semantic_validation_retries(
+        planner_semantic_cfg.get("semantic_validation_retries", impl.get("semantic_validation_retries"))
+    )
+    implement_semantic_validation_retries = _parse_semantic_validation_retries(
+        implement_semantic_cfg.get("semantic_validation_retries", impl.get("semantic_validation_retries"))
+    )
+    steps["planner_semantic_validation"][
+        "semantic_validation_retries"
+    ] = planner_semantic_validation_retries
+    steps["implement_semantic_validation"][
+        "semantic_validation_retries"
+    ] = implement_semantic_validation_retries
+
+    coverage_cfg = step_configs["required_field_coverage_validation"]
+    providerless_allowlist = _parse_providerless_contract_allowlist(
+        coverage_cfg.get("providerless_contract_allowlist")
+    )
+    steps["required_field_coverage_validation"][
+        "providerless_contract_allowlist"
+    ] = providerless_allowlist
+
+    default_prompt = (
+        "implement_from_specs_local"
+        if get_agent_provider(config) == "local"
+        else "implement_from_specs"
+    )
     return {
-        "prompt_name": str(impl.get("prompt_name", "implement_from_specs")),
+        "prompt_name": str(
+            implementer_agent_cfg.get("prompt_name", impl.get("prompt_name", default_prompt))
+        ),
         "unified_planner_prompt_name": str(
-            impl.get("unified_planner_prompt_name", "implement_unified_planner")
+            planner_agent_cfg.get(
+                "prompt_name",
+                impl.get("unified_planner_prompt_name", "implement_unified_planner"),
+            )
         ),
         "type_placement_path": str(
             impl.get("type_placement_path", _DEFAULT_TYPE_PLACEMENT)
@@ -331,16 +479,14 @@ def _get_impl_cfg(config: dict[str, Any]) -> dict[str, Any]:
         "forbidden_paths": [str(p).replace("\\", "/") for p in forbidden if str(p).strip()],
         "verification_commands": [str(c) for c in verify_cmds if str(c).strip()],
         "test_spec_path": str(impl.get("test_spec_path", "out/state/test_spec.csv")),
-        "min_confidence_threshold": _resolve_min_confidence_threshold(impl),
+        "min_confidence_threshold": _resolve_min_confidence_threshold(min_confidence_source),
         "disallowed_link_kinds_by_required_role": disallowed_policy,
         "leaf_dependency_roles": leaf_dependency_roles,
         "leaf_dependency_policy": leaf_dependency_policy,
         "contract_kind_definitions": contract_kind_definitions,
         "type_shape_match": type_shape_match,
-        "field_match_score_threshold": _parse_field_match_score_threshold(
-            impl.get("field_match_score_threshold", impl.get("field_match_distance_threshold"))
-        ),
-        "semantic_validation_retries": _parse_semantic_validation_retries(
-            impl.get("semantic_validation_retries")
-        ),
+        # Backward-compatible flat aliases; nested step values are canonical.
+        "field_match_score_threshold": field_match_score_threshold,
+        "semantic_validation_retries": planner_semantic_validation_retries,
+        "steps": steps,
     }

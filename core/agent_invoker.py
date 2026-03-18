@@ -15,10 +15,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-try:
-    import requests  # type: ignore
-except ImportError:
-    requests = None  # type: ignore
+import requests  # type: ignore
+
+from core.pika_config import get_pika_config
 
 _SUBPROCESS_TEXT_ENCODING = "utf-8"
 _SUBPROCESS_TEXT_ERRORS = "replace"
@@ -71,16 +70,12 @@ def _prepare_codex_output_schema(output_schema_path: Path, output_path: Path) ->
 
 def _get_local_ps1_path() -> Path:
     """Return local CLI .ps1 path from pika config (Windows)."""
-    from core.pika_config import get_pika_config
-
     p = get_pika_config().get("local", {}).get("ps1_path_windows", "")
     return Path(p) if p else Path.home() / "AppData" / "Roaming" / "npm" / "codex.ps1"
 
 
 def _get_heartbeat_interval() -> int:
     """Return heartbeat interval in seconds from pika config."""
-    from core.pika_config import get_pika_config
-
     return int(get_pika_config().get("local", {}).get("heartbeat_interval_sec", 30))
 
 
@@ -226,8 +221,6 @@ def _parse_combined_prompt(combined: str) -> tuple[str, str]:
 
 def _get_api_config() -> dict[str, Any]:
     """Return api section from pika config."""
-    from core.pika_config import get_pika_config
-
     return get_pika_config().get("api", {})
 
 
@@ -310,14 +303,9 @@ def run_api_invoke(
         output_tokens when present in the API response (prompt_tokens/completion_tokens).
 
     Raises:
-        RuntimeError: If requests is not installed or API call fails.
+        RuntimeError: If API call fails.
         ValueError: If response cannot be parsed as JSON.
     """
-    if requests is None:
-        raise RuntimeError(
-            "API provider requires the 'requests' package. Install with: pip install requests"
-        )
-
     api_cfg = _get_api_config()
     url = url or api_cfg.get("url", "https://integrate.api.nvidia.com/v1/chat/completions")
     model = model or api_cfg.get("model", "moonshotai/kimi-k2.5")
@@ -407,10 +395,12 @@ def _stream_output(
     prefix: str = "",
     capture: list[str] | None = None,
     stream_to_dest: bool = True,
+    line_callback: Any = None,
 ) -> None:
     """Read lines from pipe and optionally write to dest. Used for streaming subprocess output.
 
     When stream_to_dest is False or dest is None, only captures to the list (no terminal output).
+    line_callback: Optional callable(line: str) called for each non-empty line.
     """
     try:
         for line in iter(pipe.readline, ""):
@@ -420,6 +410,11 @@ def _stream_output(
                 if stream_to_dest and dest is not None:
                     dest.write(prefix + line)
                     dest.flush()
+                if line_callback is not None:
+                    try:
+                        line_callback(line)
+                    except Exception:
+                        pass
     except (ValueError, OSError):
         pass
     finally:
@@ -427,6 +422,32 @@ def _stream_output(
             pipe.close()
         except OSError:
             pass
+
+
+def _stream_reasoning_callback(line: str) -> None:
+    """Parse Codex JSONL line and print reasoning items to stderr in real time.
+
+    Expects item.completed events with item.type=='reasoning' and item.text.
+    """
+    line = line.strip()
+    if not line:
+        return
+    try:
+        obj = json.loads(line)
+        if obj.get("type") != "item.completed":
+            return
+        item = obj.get("item")
+        if not isinstance(item, dict) or item.get("type") != "reasoning":
+            return
+        text = item.get("text")
+        if isinstance(text, str) and text:
+            try:
+                sys.stderr.write(f"[PIKA] Reasoning: {text}\n")
+                sys.stderr.flush()
+            except OSError:
+                pass
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
 
 
 def _parse_codex_token_usage(jsonl_stdout: str) -> dict[str, int] | None:
@@ -490,6 +511,8 @@ def run_local_exec(
     timeout: int | None = 300,
     stream_output: bool = True,
     reasoning_effort: str | None = None,
+    model: str | None = None,
+    stream_reasoning: bool = False,
 ) -> tuple[dict[str, Any], dict[str, int] | None]:
     """Run local CLI (e.g. Codex exec) non-interactively and return parsed JSON output.
 
@@ -513,6 +536,8 @@ def run_local_exec(
         timeout: Max seconds to wait (default 300). None = no limit.
         stream_output: If True, stream Codex output to terminal and show heartbeat.
         reasoning_effort: Codex model_reasoning_effort (low, medium, high, xhigh). Passed as --config.
+        model: Codex model ID (e.g. gpt-5-codex). Passed as --model when set. Omit to use Codex config.
+        stream_reasoning: If True, parse JSONL stdout and print reasoning items to stderr in real time.
 
     Returns:
         Tuple of (parsed JSON from Codex output, token_usage or None).
@@ -539,7 +564,10 @@ def run_local_exec(
         "--dangerously-bypass-approvals-and-sandbox",
         "--skip-git-repo-check",
         "--output-last-message", str(output_path),
+        "--config", 'model_reasoning_summary=\'"concise"\'',
     ]
+    if model and model.strip():
+        exec_args_base = exec_args_base + ["--model", model.strip()]
     if reasoning_effort and reasoning_effort in ("low", "medium", "high", "xhigh"):
         # Codex expects value as JSON string, e.g. model_reasoning_effort='"high"'
         exec_args_base = exec_args_base + [
@@ -566,10 +594,14 @@ def run_local_exec(
         )
         stop_heartbeat = threading.Event()
         # With --json, stdout is JSONL; capture only (no terminal dump). Stderr streams progress.
+        # When stream_reasoning, parse each line and print reasoning items to stderr.
         t_stdout = threading.Thread(
             target=_stream_output,
             args=(proc.stdout, None, "", stdout_lines),
-            kwargs={"stream_to_dest": False},
+            kwargs={
+                "stream_to_dest": False,
+                "line_callback": _stream_reasoning_callback if stream_reasoning else None,
+            },
             daemon=True,
         )
         t_stderr = threading.Thread(

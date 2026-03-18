@@ -32,13 +32,14 @@
 | requirement | Yes | No | Core requirement statement to be implemented/indexed. |
 | acceptance_criteria | No | No | Concrete acceptance criteria for verification. |
 | implementation_status | No | No | User workflow status for the spec row. For implement workset selection: boolean (done or not done). |
-| mapped_code_symbols | No | Yes | Comma-delimited mapped class/function symbols from indexing. |
+| mapped_code_symbols | No | Yes | Comma-delimited mapped symbols in `path::symbol_name` format (path relative to codebase root). Legacy entries may contain symbol_name only. |
 | mapped_confidence | No | Yes | Comma-delimited confidence scores (0-1) per symbol, same order as mapped_code_symbols. |
 | mapped_consistency_score | No | Yes | Comma-delimited consistency scores (0-1) per symbol, same order as mapped_code_symbols. |
 | mapped_problems | No | Yes | Semicolon-delimited problem notes per symbol (reason for low confidence/inconsistency); same order as mapped_code_symbols. |
 | map_status | Yes | Yes | Index result state (`mapped`, `partial`, `unmapped`, `blocked`). |
 | map_assumptions | No | Yes | Assumptions made to produce the mapping. Nullable. |
 | mapped_at | No | Yes | Timestamp of latest indexing run: agent `created_at` when provided, else invocation time. Format: `YYYY-MM-DDTHH:MM:SS UTC+X`. |
+| map_run_id | No | Yes | Run ID of the latest map invocation. |
 
 ## Implementation Issue Tracking Table Contract
 

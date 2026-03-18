@@ -20,14 +20,13 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-# Optional XLSX support
-try:
-    import openpyxl  # type: ignore
-except ImportError:
-    openpyxl = None  # type: ignore
+import openpyxl  # type: ignore
 
 # Unicode to LaTeX conversion (preserves math formulas, special chars as ASCII-safe escapes)
 from pylatexenc.latexencode import UnicodeToLatexEncoder
+
+from core.lifecycle import resolve_project_state_path
+from core.pika_config import get_pika_config
 
 _LATEX_ENCODER = UnicodeToLatexEncoder(
     non_ascii_only=True,
@@ -108,7 +107,7 @@ def load_sads_csv_or_xlsx(source_path: Path) -> tuple[list[str], list[dict[str, 
         Tuple of (column names in order, list of row dicts keyed by column name).
 
     Raises:
-        ValueError: If file extension unsupported or XLSX used without openpyxl.
+        ValueError: If file extension unsupported.
         OSError: If file cannot be read.
     """
     suffix = source_path.suffix.lower()
@@ -151,15 +150,11 @@ def _load_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
 
 
 def _load_xlsx(path: Path) -> tuple[list[str], list[dict[str, str]]]:
-    """Load first sheet of XLSX file. Requires openpyxl.
+    """Load first sheet of XLSX file.
 
     Converts non-ASCII Unicode (e.g. math symbols ∑, μm) to LaTeX escapes
     for ASCII-safe internal representation.
     """
-    if openpyxl is None:
-        raise ValueError(
-            "XLSX support requires openpyxl. Install with: pip install openpyxl"
-        )
     wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
     sheet = wb.active
     if sheet is None:
@@ -901,8 +896,6 @@ def normalize_raw_sads(
     log["columns_appended"] = [c for c in add_if_missing if c not in existing_before]
 
     # 5. Deterministic IDs
-    from core.pika_config import get_pika_config
-
     default_outputs = get_pika_config().get("default_outputs", {})
     registry_path_str = default_outputs.get("id_registry", "out/state/id_registry.json")
     id_gen = config.get("id_generation", {})
@@ -922,8 +915,6 @@ def normalize_raw_sads(
 
         # 6. Persist registry and ID mapping: write to out/state first, then copy to project.state
         if not dry_run:
-            from core.lifecycle import resolve_project_state_path
-
             # Write registry to out/state (id_generation.registry_path)
             resolved_registry = registry_path if registry_path.is_absolute() else (project_root / registry_path)
             resolved_registry.parent.mkdir(parents=True, exist_ok=True)
@@ -958,8 +949,6 @@ def normalize_raw_sads(
         log["ids_preserved"] = rows_before
 
         if not dry_run:
-            from core.lifecycle import resolve_project_state_path
-
             resolved_registry = registry_path if registry_path.is_absolute() else (project_root / registry_path)
             resolved_registry.parent.mkdir(parents=True, exist_ok=True)
             resolved_registry.write_text(json.dumps(registry, indent=2), encoding="utf-8")

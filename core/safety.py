@@ -17,6 +17,7 @@ from core.contracts import (
     get_project_context_required_sections,
 )
 from core.errors import SafetyPreconditionError
+from core.format_sads import load_sads_csv_or_xlsx
 from core.lifecycle import (
     _get_effective_inputs,
     _get_effective_outputs,
@@ -26,6 +27,7 @@ from core.lifecycle import (
     resolve_project_context_path,
 )
 from core.logger import _resolve_log_dir
+from core.pika_config import get_pika_config
 
 
 _INPUT_KEY_GROUPS = (
@@ -45,7 +47,7 @@ def validate_command_preconditions(command: str, config: dict[str, Any], ctx: An
     3. No-overwrite outputs: refuse to overwrite existing files
     4. Input file existence: required input files exist (when defined)
     5. CSV contract validation: required CSV columns for design_spec and issue_tracking
-    6. PROJECT_CONTEXT contract: Purpose, Overview, Workflow sections (plan, map, implement)
+    6. PROJECT_CONTEXT contract: Purpose, Overview, Workflow sections (plan, map, implement, refine)
     """
     errors: list[str] = []
     project_root = _run_step_1_project_root(ctx, errors)
@@ -187,6 +189,11 @@ def _run_step_4_input_files(
             _validate_input_file_if_defined(
                 inputs_map, keys=keys, project_root=project_root, command=command, errors=errors
             )
+        return
+    if command == "refine":
+        _validate_input_file_if_defined(
+            inputs_map, keys=_REVIEW_INPUT_KEYS, project_root=project_root, command=command, errors=errors
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +220,7 @@ def _run_step_5_csv_contracts(
         errors.append(str(exc))
         return
 
-    if command in {"map", "implement", "resolve_plan"}:
+    if command in {"map", "implement", "resolve_plan", "refine"}:
         design_path = _resolve_input_path_from_map(inputs_map, project_root, "design_spec_path")
         if design_path is not None and design_path.exists() and design_path.is_file():
             _validate_csv_columns(
@@ -245,7 +252,7 @@ def _run_step_6_project_context_contract(
     errors: list[str],
 ) -> None:
     """Step 6: Validate PROJECT_CONTEXT.md has Purpose, Overview, Workflow sections."""
-    if command not in {"plan", "map", "implement"}:
+    if command not in {"plan", "map", "implement", "refine"}:
         return
 
     project_root_path = Path(project_root) if isinstance(project_root, str) else project_root
@@ -325,12 +332,6 @@ def _validate_csv_columns(
 ) -> None:
     """Validate CSV has required columns. Case-insensitive header match."""
     try:
-        from core.format_sads import load_sads_csv_or_xlsx
-    except ImportError:
-        errors.append(f"{label}: Cannot load file for validation (format_sads not available).")
-        return
-
-    try:
         headers, _ = load_sads_csv_or_xlsx(path)
     except Exception as exc:
         errors.append(f"{label}: Failed to read file: {exc}")
@@ -354,7 +355,7 @@ def _validate_csv_columns(
 # ---------------------------------------------------------------------------
 def _run_step_7_unsupported_command(command: str, errors: list[str]) -> None:
     """Step 7: Reject unsupported commands."""
-    supported = {"plan", "format", "review", "map", "implement", "resolve_plan", "resolve"}
+    supported = {"plan", "format", "review", "map", "implement", "resolve_plan", "resolve", "refine"}
     if command not in supported:
         errors.append(f"Unsupported command for safety validation: {command}")
 
@@ -408,7 +409,7 @@ def _build_inputs_map(
     if command == "format":
         src = resolve_format_source_path(config, project_root, overrides)
         inputs_map["design_spec_path"] = str(src)
-    elif command in ("map", "implement", "review", "resolve_plan"):
+    elif command in ("map", "implement", "review", "resolve_plan", "refine"):
         design_path = resolve_input_path(
             config, project_root, "design_spec_path",
             overrides=overrides, command=command
@@ -512,8 +513,6 @@ def _resolve_state_dir(config: dict[str, Any], project_root: Path) -> Path:
             if isinstance(outputs_state_path, str) and outputs_state_path.strip():
                 state_dir_value = outputs_state_path
     if state_dir_value is None:
-        from core.pika_config import get_pika_config
-
         state_dir = get_pika_config().get("default_outputs", {}).get(
             "state_dir", "out/state"
         )

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import re
 import shutil
 import sys
+import threading
 from core.time_utils import (
     format_timestamp_local_minutes,
     format_timestamp_local_minutes_filename,
@@ -86,8 +88,7 @@ def _normalize_code_refs(code_refs: Any) -> list[dict[str, Any]]:
         if not isinstance(ref, dict):
             dropped += 1
             continue
-        # Accept legacy "notes" as "problems" for backward compatibility
-        problems = ref.get("problems", ref.get("notes", ""))
+        problems = ref.get("problems", "")
         normalized = {
             "path": ref.get("path", ""),
             "symbol_name": ref.get("symbol_name", ""),
@@ -126,7 +127,34 @@ def _get_map_config(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, An
             max_acceptance_chars = int(overrides["max_acceptance_chars"])
         except (ValueError, TypeError):
             pass
-    return {"skip_mapped": skip_mapped, "max_acceptance_chars": max_acceptance_chars}
+    max_specs_per_subunit = map_cfg.get("max_specs_per_subunit", 0)
+    if "max_specs_per_subunit" in overrides:
+        try:
+            max_specs_per_subunit = int(overrides["max_specs_per_subunit"])
+        except (ValueError, TypeError):
+            pass
+    subunit_filter_raw = overrides.get("subunit_filter", "")
+    subunit_filter: set[str] = {s.strip() for s in subunit_filter_raw.split(",") if s.strip()} if subunit_filter_raw else set()
+    min_remapping_confidence_threshold = map_cfg.get("min_remapping_confidence_threshold", 0.0)
+    if "min_remapping_confidence_threshold" in overrides:
+        try:
+            min_remapping_confidence_threshold = float(overrides["min_remapping_confidence_threshold"])
+        except (ValueError, TypeError):
+            pass
+    max_problem_threshold = map_cfg.get("max_problem_threshold", 1.0)
+    if "max_problem_threshold" in overrides:
+        try:
+            max_problem_threshold = float(overrides["max_problem_threshold"])
+        except (ValueError, TypeError):
+            pass
+    return {
+        "skip_mapped": skip_mapped,
+        "max_acceptance_chars": max_acceptance_chars,
+        "max_specs_per_subunit": max_specs_per_subunit,
+        "subunit_filter": subunit_filter,
+        "min_remapping_confidence_threshold": min_remapping_confidence_threshold,
+        "max_problem_threshold": max_problem_threshold,
+    }
 
 
 def validate_subunit_column(headers: list[str], rows: list[dict[str, str]]) -> None:
@@ -168,24 +196,48 @@ def validate_spec_id_unique(headers: list[str], rows: list[dict[str, str]]) -> N
         )
 
 
+def _parse_max_confidence(raw: str) -> float:
+    """Parse comma-delimited confidence string; return max float (0.0 on empty/error)."""
+    best = 0.0
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            val = float(part)
+            if val > best:
+                best = val
+        except ValueError:
+            pass
+    return best
+
+
 def filter_rows_for_mapping(
     headers: list[str],
     rows: list[dict[str, str]],
     *,
     skip_mapped: bool,
+    min_remapping_confidence_threshold: float = 0.0,
 ) -> list[dict[str, str]]:
     """Filter rows to those needing mapping.
 
     Returns:
         Rows with status != 'mapped' when skip_mapped is True, or all rows otherwise.
+        When min_remapping_confidence_threshold > 0, mapped rows whose max confidence
+        falls below the threshold are re-included for re-mapping.
     """
     status_col = _find_column(headers, _COLUMN_ALIASES["map_status"])
     if not status_col:
         return rows
+    conf_col = _find_column(headers, ["mapped_confidence"]) if min_remapping_confidence_threshold > 0.0 else None
     filtered: list[dict[str, str]] = []
     for row in rows:
         status = (row.get(status_col) or "").strip().lower()
         if skip_mapped and status == "mapped":
+            if conf_col and min_remapping_confidence_threshold > 0.0:
+                raw_conf = (row.get(conf_col) or "").strip()
+                if _parse_max_confidence(raw_conf) < min_remapping_confidence_threshold:
+                    filtered.append(row)
             continue
         filtered.append(row)
     return filtered
@@ -208,11 +260,35 @@ def group_by_subunit(
     return groups
 
 
+def _aggregate_run_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate per-subunit run_summaries into one. Status hierarchy: blocked > partial > success."""
+    if not summaries:
+        return {}
+    statuses = [s.get("status", "") for s in summaries]
+    if "blocked" in statuses:
+        agg_status = "blocked"
+    elif "partial" in statuses:
+        agg_status = "partial"
+    else:
+        agg_status = "success"
+    summary_texts = [s.get("summary", "") for s in summaries if s.get("summary")]
+    agg_summary = "; ".join(summary_texts) if summary_texts else ""
+    agg_blocking = sum(s.get("blocking_items", 0) for s in summaries)
+    storage_file = summaries[-1].get("storage_file", "")
+    return {
+        "command": "agent map",
+        "status": agg_status,
+        "summary": agg_summary or "aggregated",
+        "blocking_items": agg_blocking,
+        "storage_file": storage_file,
+    }
+
+
 def merge_subunit_results(batch_outputs: list[dict[str, Any]]) -> dict[str, Any]:
     """Merge per-subunit agent outputs into a single output. Check for duplicate spec_ids."""
     merged_mappings: dict[str, Any] = {}
     manual_items: list[Any] = []
-    run_summary = None
+    all_run_summaries: list[dict[str, Any]] = []
     created_at = ""
     for out in batch_outputs:
         mappings = out.get("mappings") or {}
@@ -236,14 +312,13 @@ def merge_subunit_results(batch_outputs: list[dict[str, Any]]) -> dict[str, Any]
                     )
                 merged_mappings[sid] = m
         manual_items.extend(out.get("manual_resolution_items") or [])
-        # Last subunit's run_summary is canonical (intentionally overwrites prior).
         if out.get("run_summary"):
-            run_summary = out["run_summary"]
+            all_run_summaries.append(out["run_summary"])
         if out.get("created_at"):
             created_at = out["created_at"]
     return {
         "manual_resolution_items": manual_items,
-        "run_summary": run_summary or {},
+        "run_summary": _aggregate_run_summaries(all_run_summaries),
         "created_at": created_at,
         "mappings": merged_mappings,
     }
@@ -262,29 +337,93 @@ def _post_process_map(
     *,
     partial_failures: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
-    """Merge, validate, check manual resolution, and translate. Shared by apply_existing and agent paths."""
+    """Merge, validate, check manual resolution, and translate. Shared by apply_existing and agent paths.
+
+    Per-subunit blocking: clean (non-blocked) subunit outputs are translated immediately.
+    Blocked subunit outputs trigger persist_manual_resolution_block_for_run and return status=blocked.
+    """
     partial_failures = partial_failures or []
-    try:
-        output = merge_subunit_results(batch_outputs)
-    except ValueError as e:
-        _report_map_step("Merge", "failed", str(e))
-        return {"command": "map", "status": "failed", "reason": str(e)}
+    project_root = Path(ctx.project_root)
+    map_cfg = _get_map_config(config, ctx)
+    min_threshold = map_cfg["min_remapping_confidence_threshold"]
 
-    n_mappings = len(output.get("mappings") or {})
-    _report_map_step(
-        "Merge",
-        "ok",
-        f"merged {n_mappings} mapping(s) from {len(batch_outputs)} subunit(s)",
-    )
-    try:
-        validate_map_output_contract(output)
-    except ValueError as e:
-        _report_map_step("Validate", "failed", str(e))
-        return {"command": "map", "status": "failed", "reason": str(e)}
-    _report_map_step("Validate", "ok", "output contract passed")
+    # Split into clean and blocked before merging (per-subunit blocking).
+    clean_outputs = [o for o in batch_outputs if not has_blocking_manual_resolution(o)]
+    blocked_outputs = [o for o in batch_outputs if has_blocking_manual_resolution(o)]
 
-    if has_blocking_manual_resolution(output):
-        n_blocking = len(output.get("manual_resolution_items", []))
+    # Process clean outputs (translate if any).
+    clean_applied = 0
+    if clean_outputs:
+        try:
+            clean_merged = merge_subunit_results(clean_outputs)
+        except ValueError as e:
+            _report_map_step("Merge", "failed", str(e))
+            return {"command": "map", "status": "failed", "reason": str(e)}
+
+        clean_n = len(clean_merged.get("mappings") or {})
+        _report_map_step(
+            "Merge",
+            "ok",
+            f"merged {clean_n} mapping(s) from {len(clean_outputs)} clean subunit(s)",
+        )
+        try:
+            validate_map_output_contract(clean_merged, min_remapping_confidence_threshold=min_threshold)
+        except ValueError as e:
+            _report_map_step("Validate", "failed", str(e))
+            return {"command": "map", "status": "failed", "reason": str(e)}
+        _report_map_step("Validate", "ok", "output contract passed")
+
+        # Validate code_ref paths.
+        codebase_dir_path = resolve_codebase_dir_path(config, project_root, ctx)
+        invalid_paths = validate_code_ref_paths(clean_merged, codebase_dir_path)
+        if invalid_paths:
+            _report_map_step(
+                "PathValidation",
+                "warning",
+                f"{len(invalid_paths)} code_ref path(s) not found under codebase_dir",
+            )
+            logger = get_run_logger()
+            for inv in invalid_paths:
+                logger.warning(
+                    "Invalid code_ref path: spec=%s path=%s symbol=%s",
+                    inv["spec_id"], inv["path"], inv["symbol_name"],
+                )
+
+        _report_map_step("Translate", "ok", "writing mappings to design spec CSV")
+        log_lifecycle_event("lifecycle_translate", command="map", run_id=ctx.run_id)
+        inputs = {"design_spec_path": design_path}
+        translate_map(config, ctx, clean_merged, inputs)
+        clean_applied = clean_n
+        _report_map_step("Translate", "completed", f"updated {clean_n} row(s) in design spec")
+
+        # Post-run stats.
+        if not ctx.dry_run:
+            stats = _compute_map_stats(clean_merged)
+            print(
+                f"[PIKA] Map complete: {stats['mapped']} mapped, {stats['partial']} partial, "
+                f"{stats['unmapped']} unmapped, {stats['blocked']} blocked ({stats['total']} total)",
+                file=sys.stderr,
+            )
+            agent_runs_base = resolve_output_path(config, project_root, "agent_runs_dir", command="map")
+            if agent_runs_base:
+                stats_dir = agent_runs_base / "map"
+                stats_dir.mkdir(parents=True, exist_ok=True)
+                stats_payload: dict[str, Any] = {
+                    "run_id": ctx.run_id,
+                    **stats,
+                    "partial_failures": len(partial_failures),
+                    "invalid_code_ref_paths": len(invalid_paths),
+                }
+                (stats_dir / f"{ctx.run_id}_stats.json").write_text(
+                    json.dumps(stats_payload, indent=2), encoding="utf-8"
+                )
+
+    # Handle blocked outputs.
+    if blocked_outputs:
+        all_blocking_items: list[Any] = []
+        for bo in blocked_outputs:
+            all_blocking_items.extend(bo.get("manual_resolution_items") or [])
+        n_blocking = len(all_blocking_items)
         _report_map_step(
             "Manual resolution",
             "blocked",
@@ -293,28 +432,31 @@ def _post_process_map(
         log_lifecycle_event("lifecycle_manual_resolution", command="map", run_id=ctx.run_id)
         persist_manual_resolution_block_for_run(
             config,
-            Path(ctx.project_root),
+            project_root,
             "map",
             ctx.run_id,
             "map",
-            output["manual_resolution_items"],
+            all_blocking_items,
             source="agent",
             completed_stages=["load_inputs", "invoke_agent", "merge", "validate"],
         )
-        return {
+        result: dict[str, Any] = {
             "command": "map",
             "status": "blocked",
             "blocking_items": n_blocking,
         }
+        if clean_applied:
+            result["clean_mappings_applied"] = clean_applied
+        if partial_failures:
+            result["partial_failures"] = partial_failures
+        return result
 
-    _report_map_step("Translate", "ok", "writing mappings to design spec CSV")
-    log_lifecycle_event("lifecycle_translate", command="map", run_id=ctx.run_id)
-    inputs = {"design_spec_path": design_path}
-    translate_map(config, ctx, output, inputs)
-    _report_map_step("Translate", "completed", f"updated {n_mappings} row(s) in design spec")
+    # All clean, no blocking.
+    if not clean_outputs:
+        return {"command": "map", "status": "failed", "reason": "no outputs to process"}
 
     status = "partial" if partial_failures else "completed"
-    result: dict[str, Any] = {"command": "map", "status": status, "dry_run": ctx.dry_run}
+    result = {"command": "map", "status": status, "dry_run": ctx.dry_run}
     if partial_failures:
         result["partial_failures"] = partial_failures
         print(
@@ -380,6 +522,18 @@ def run_map(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
     # Apply-existing-outputs: load from directory, merge, validate, translate (no agent)
     apply_existing = (ctx.input_overrides or {}).get("apply_existing_outputs", "").strip()
     if apply_existing:
+        # Resolve "latest" sentinel to the most recently modified run subdir.
+        if apply_existing.lower() == "latest":
+            base_intermediate = resolve_intermediate_map_dir(config, project_root)
+            subdirs = [p for p in base_intermediate.iterdir() if p.is_dir()] if base_intermediate.exists() else []
+            if not subdirs:
+                _report_map_step("Load outputs", "failed", "apply_existing_outputs=latest: no prior run directories found in intermediate_map_dir")
+                return {
+                    "command": "map",
+                    "status": "failed",
+                    "reason": "apply_existing_outputs=latest: no prior run directories found in intermediate_map_dir",
+                }
+            apply_existing = str(max(subdirs, key=lambda p: p.stat().st_mtime))
         resolved_path = Path(apply_existing)
         if not resolved_path.is_absolute():
             resolved_path = (project_root / apply_existing).resolve()
@@ -416,75 +570,128 @@ def run_map(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
     map_cfg = _get_map_config(config, ctx)
     skip_mapped = map_cfg["skip_mapped"]
     max_acceptance_chars = map_cfg["max_acceptance_chars"]
+    max_specs_per_subunit = map_cfg["max_specs_per_subunit"]
+    subunit_filter = map_cfg["subunit_filter"]
+    min_threshold = map_cfg["min_remapping_confidence_threshold"]
 
-    filtered_rows = filter_rows_for_mapping(headers, rows, skip_mapped=skip_mapped)
+    filtered_rows = filter_rows_for_mapping(
+        headers, rows,
+        skip_mapped=skip_mapped,
+        min_remapping_confidence_threshold=min_threshold,
+    )
     if not filtered_rows:
         return {"command": "map", "status": "completed", "reason": "no specs to map (all already mapped)"}
 
     subunit_groups = group_by_subunit(headers, filtered_rows)
     subunit_order = sorted(subunit_groups.keys())
 
-    batch_outputs: list[dict[str, Any]] = []
+    # Apply subunit filter if specified.
+    if subunit_filter:
+        subunit_order = [s for s in subunit_order if s in subunit_filter]
+        if not subunit_order:
+            return {"command": "map", "status": "skipped", "reason": "no subunits matched subunit_filter"}
+
+    results_with_order: list[tuple[int, dict[str, Any]]] = []
     partial_failures: list[dict[str, str]] = []
+    lock = threading.Lock()
     logger = get_run_logger()
 
-    for subunit_name in subunit_order:
+    def _invoke_subunit(idx_name: tuple[int, str]) -> None:
+        idx, subunit_name = idx_name
         sub_rows = subunit_groups[subunit_name]
         if not sub_rows:
-            continue
+            return
         row_count = len(sub_rows)
+
+        # Split large subunits into consecutive sub-batches.
+        if max_specs_per_subunit and max_specs_per_subunit > 0 and row_count > max_specs_per_subunit:
+            batches = [sub_rows[i:i + max_specs_per_subunit] for i in range(0, row_count, max_specs_per_subunit)]
+        else:
+            batches = [sub_rows]
+
         log_lifecycle_event(
             "lifecycle_invoke_agent",
             command="map",
             run_id=ctx.run_id,
-            extra={"subunit": subunit_name, "row_count": row_count},
+            extra={"subunit": subunit_name, "row_count": row_count, "batches": len(batches)},
         )
         print(
-            f"[PIKA] Mapping subunit '{subunit_name}' ({row_count} specs)...",
+            f"[PIKA] Mapping subunit '{subunit_name}' ({row_count} specs, {len(batches)} batch(es))...",
             file=sys.stderr,
         )
-        csv_content = build_agent_view_csv_content(
-            headers,
-            sub_rows,
-            max_acceptance_chars=max_acceptance_chars,
-        )
-        if not csv_content:
-            continue
-        inputs = {
-            "design_spec_path": design_path,
-            "agent_view_content": csv_content,
-        }
-        template_vars = build_template_vars(config, project_root, ctx, inputs)
-        schema_path = resolve_output_schema_path(
-            config, project_root, "map_output", command="map"
-        )
-        invocation_ts = format_timestamp_local_minutes()
-        try:
-            out = invoke_agent_with_schema_retry(
-                prompt_name=_get_prompt_name(config),
-                template_vars=template_vars,
-                schema_path=schema_path,
-                config=config,
-                ctx=ctx,
-                invocation_timestamp=invocation_ts,
+
+        sub_batch_outputs: list[dict[str, Any]] = []
+        intermediate_dir = resolve_intermediate_map_dir(config, project_root)
+        run_subdir = intermediate_dir / ctx.run_id
+        run_subdir.mkdir(parents=True, exist_ok=True)
+        sanitized = sanitize_subunit_for_filename(subunit_name)
+
+        for batch_idx, batch_rows in enumerate(batches):
+            csv_content = build_agent_view_csv_content(
+                headers,
+                batch_rows,
+                max_acceptance_chars=max_acceptance_chars,
             )
-            # Persist per-subunit output for resume/apply-existing-outputs
-            intermediate_dir = resolve_intermediate_map_dir(config, project_root)
-            run_subdir = intermediate_dir / ctx.run_id
-            run_subdir.mkdir(parents=True, exist_ok=True)
-            sanitized = sanitize_subunit_for_filename(subunit_name)
-            out_path = run_subdir / f"map_{sanitized}.json"
-            out_path.write_text(json.dumps(out, indent=2), encoding="utf-8")
-            batch_outputs.append(out)
-        except Exception as exc:
-            logger.exception("Subunit %s failed: %s", subunit_name, exc)
-            partial_failures.append({"subunit": subunit_name, "error": str(exc)})
-            log_lifecycle_event(
-                "lifecycle_subunit_failed",
-                command="map",
-                run_id=ctx.run_id,
-                extra={"subunit": subunit_name, "error": str(exc)},
+            if not csv_content:
+                continue
+            inputs = {
+                "design_spec_path": design_path,
+                "agent_view_content": csv_content,
+            }
+            template_vars = build_template_vars(config, project_root, ctx, inputs)
+            schema_path = resolve_output_schema_path(
+                config, project_root, "map_output", command="map"
             )
+            invocation_ts = format_timestamp_local_minutes()
+            try:
+                out = invoke_agent_with_schema_retry(
+                    prompt_name=_get_prompt_name(config),
+                    template_vars=template_vars,
+                    schema_path=schema_path,
+                    config=config,
+                    ctx=ctx,
+                    invocation_timestamp=invocation_ts,
+                )
+                # Persist per-batch output for resume/apply-existing-outputs.
+                suffix = f"_{batch_idx}" if len(batches) > 1 else ""
+                out_path = run_subdir / f"map_{sanitized}{suffix}.json"
+                out_path.write_text(json.dumps(out, indent=2), encoding="utf-8")
+                sub_batch_outputs.append(out)
+            except Exception as exc:
+                logger.exception("Subunit %s batch %d failed: %s", subunit_name, batch_idx, exc)
+                with lock:
+                    partial_failures.append({"subunit": subunit_name, "batch": batch_idx, "error": str(exc)})
+                log_lifecycle_event(
+                    "lifecycle_subunit_failed",
+                    command="map",
+                    run_id=ctx.run_id,
+                    extra={"subunit": subunit_name, "batch": batch_idx, "error": str(exc)},
+                )
+
+        if not sub_batch_outputs:
+            return
+
+        # Merge sub-batches into a single subunit-level output.
+        if len(sub_batch_outputs) == 1:
+            subunit_out = sub_batch_outputs[0]
+        else:
+            try:
+                subunit_out = merge_subunit_results(sub_batch_outputs)
+            except ValueError as exc:
+                logger.exception("Sub-batch merge for subunit %s failed: %s", subunit_name, exc)
+                with lock:
+                    partial_failures.append({"subunit": subunit_name, "error": f"sub-batch merge: {exc}"})
+                return
+
+        with lock:
+            results_with_order.append((idx, subunit_out))
+
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        list(executor.map(_invoke_subunit, enumerate(subunit_order)))
+
+    # Sort by original index for deterministic merge order regardless of thread scheduling.
+    results_with_order.sort(key=lambda x: x[0])
+    batch_outputs: list[dict[str, Any]] = [out for _, out in results_with_order]
 
     if not batch_outputs:
         _report_map_step("Merge", "failed", "all subunits failed; no outputs to merge")
@@ -533,12 +740,18 @@ def build_template_vars(
         else ""
     )
 
-    # Build codebase snapshot for all real providers.
-    # Local provider runs in an isolated temp workspace and should use this content.
+    # Build codebase snapshot only for API-style providers.
+    # Local provider explores the codebase directly via file tools (uses map_spec_to_code_local
+    # prompt which has no codebase_content placeholder). Stub provider never needs content.
     provider = get_agent_provider(config)
     codebase_content = ""
-    if provider != "stub":
+    if provider not in ("stub", "local"):
         codebase_content = build_codebase_snapshot(codebase_dir_path, config, command="map")
+
+    commands = config.get("commands") or {}
+    map_cfg_raw = commands.get("map") if isinstance(commands, dict) else {}
+    map_cfg_raw = map_cfg_raw if isinstance(map_cfg_raw, dict) else {}
+    max_problem_threshold = map_cfg_raw.get("max_problem_threshold", 1.0)
 
     return {
         "output_schema_file": schema_file,
@@ -551,15 +764,22 @@ def build_template_vars(
         "manual_resolution_file": str(manual_path),
         "run_summary_file": str(run_summary_path),
         "resolved_decisions": ctx.resolved_decisions or "",
+        "max_problem_threshold": str(max_problem_threshold),
     }
 
 
 def _get_prompt_name(config: dict[str, Any]) -> str:
-    """Return prompt name for map from config."""
+    """Return prompt name for map from config.
+
+    Explicit config prompt_name always takes precedence. Otherwise defaults to
+    map_spec_to_code_local for local provider and map_spec_to_code for all others.
+    """
     commands = config.get("commands", {})
     map_cfg = commands.get("map") if isinstance(commands, dict) else {}
-    if isinstance(map_cfg, dict):
-        return map_cfg.get("prompt_name", "map_spec_to_code")
+    if isinstance(map_cfg, dict) and map_cfg.get("prompt_name"):
+        return map_cfg["prompt_name"]
+    if get_agent_provider(config) == "local":
+        return "map_spec_to_code_local"
     return "map_spec_to_code"
 
 
@@ -579,6 +799,7 @@ def _apply_mapping_updates(
     spec_id_col: str,
     column_map: dict[str, str | None],
     mapped_at_val: str,
+    run_id_val: str = "",
 ) -> None:
     """Apply mapping updates to rows in place. Pure data transform; no file I/O."""
     spec_id_to_idx: dict[str, int] = {}
@@ -594,6 +815,7 @@ def _apply_mapping_updates(
     status_col = column_map.get("status")
     assumptions_col = column_map.get("assumptions")
     timestamp_col = column_map.get("timestamp")
+    run_id_col = column_map.get("run_id")
 
     for spec_id, mapping in mappings.items():
         if spec_id not in spec_id_to_idx:
@@ -612,14 +834,15 @@ def _apply_mapping_updates(
             sym = str(ref.get("symbol_name", "")).strip()
             if not sym:
                 continue
-            symbols.append(sym)
+            path_val = str(ref.get("path", "")).strip()
+            symbols.append(f"{path_val}::{sym}" if path_val else sym)
             conf = ref.get("confidence")
             conf_str = f"{conf:.2f}" if isinstance(conf, (int, float)) else ""
             confidences.append(conf_str)
             cons = ref.get("consistency_score")
             cons_str = f"{cons:.2f}" if isinstance(cons, (int, float)) else ""
             consistencies.append(cons_str)
-            prob = ref.get("problems", ref.get("notes", "")) or ""
+            prob = ref.get("problems", "") or ""
             problems_list.append(str(prob).strip())
         if mapped_col:
             row[mapped_col] = ",".join(symbols)
@@ -634,12 +857,15 @@ def _apply_mapping_updates(
         if isinstance(status, str) and status.strip() and status_col:
             row[status_col] = status.strip()
 
-        assumptions = mapping.get("assumptions", mapping.get("notes"))
+        assumptions = mapping.get("assumptions")
         if assumptions_col:
             row[assumptions_col] = "" if assumptions is None else str(assumptions).strip()
 
         if timestamp_col:
             row[timestamp_col] = mapped_at_val
+
+        if run_id_col and run_id_val:
+            row[run_id_col] = run_id_val
 
 
 def _backup_and_write(
@@ -728,19 +954,28 @@ def translate_map(
         "status": _find_column(headers, _COLUMN_ALIASES["map_status"]),
         "assumptions": _find_column(headers, _COLUMN_ALIASES["map_assumptions"]),
         "timestamp": _find_column(headers, _COLUMN_ALIASES["mapped_at"]),
+        "run_id": _find_column(headers, ["map_run_id"]),
     }
 
-    _apply_mapping_updates(rows, mappings, spec_id_col, column_map, mapped_at_val)
+    _apply_mapping_updates(rows, mappings, spec_id_col, column_map, mapped_at_val, run_id_val=ctx.run_id[:8])
     _backup_and_write(design_path, headers, rows, config, ctx)
 
 
-def validate_map_output_contract(output: dict[str, Any]) -> None:
+def validate_map_output_contract(
+    output: dict[str, Any],
+    *,
+    min_remapping_confidence_threshold: float = 0.0,
+) -> None:
     """Enforce map-specific invariants. Normalizes code_refs to include consistency_score
     and problems (per-ref reasons for inconfidence/inconsistency; empty when both high).
     Schema may provide mappings as either:
     - list of objects with explicit spec_id (Codex response_format-safe), or
     - dict keyed by spec_id (legacy/internal shape).
     This function normalizes to dict keyed by spec_id.
+
+    When min_remapping_confidence_threshold > 0, demotes 'mapped' → 'partial' for any
+    mapping whose max code_ref confidence falls below the threshold. Never promotes
+    'partial' → 'mapped'.
     """
     mappings_raw = output.get("mappings")
     if mappings_raw is None:
@@ -754,7 +989,7 @@ def validate_map_output_contract(output: dict[str, Any]) -> None:
             mappings[spec_id] = {
                 "status": item.get("status"),
                 "code_refs": _normalize_code_refs(item.get("code_refs")),
-                "assumptions": item.get("assumptions", item.get("notes")),  # backward compat
+                "assumptions": item.get("assumptions"),
             }
     elif isinstance(mappings_raw, list):
         for item in mappings_raw:
@@ -771,7 +1006,7 @@ def validate_map_output_contract(output: dict[str, Any]) -> None:
             mappings[sid] = {
                 "status": item.get("status"),
                 "code_refs": _normalize_code_refs(item.get("code_refs")),
-                "assumptions": item.get("assumptions", item.get("notes")),  # backward compat
+                "assumptions": item.get("assumptions"),
             }
     else:
         raise ValueError(
@@ -779,6 +1014,19 @@ def validate_map_output_contract(output: dict[str, Any]) -> None:
             "or a list of mapping items with 'spec_id'"
         )
     output["mappings"] = mappings
+
+    # One-directional status demotion: mapped → partial when max confidence below threshold.
+    # Never promotes partial → mapped.
+    if min_remapping_confidence_threshold > 0.0:
+        for mapping in mappings.values():
+            if mapping.get("status") == "mapped":
+                refs = mapping.get("code_refs") or []
+                max_conf = max(
+                    (r.get("confidence", 0.0) for r in refs if isinstance(r, dict)),
+                    default=0.0,
+                )
+                if max_conf < min_remapping_confidence_threshold:
+                    mapping["status"] = "partial"
 
     manual_items = output.get("manual_resolution_items")
     if isinstance(manual_items, list) and manual_items and mappings:
@@ -807,3 +1055,44 @@ def validate_map_output_contract(output: dict[str, Any]) -> None:
             "Output contract failed: mappings keys must match ^[A-Za-z][0-9]+$. "
             f"Invalid keys: {keys_preview}"
         )
+
+
+def validate_code_ref_paths(
+    output: dict[str, Any],
+    codebase_dir: Path,
+) -> list[dict[str, str]]:
+    """Check all code_refs[].path values against codebase_dir.
+
+    Returns list of {spec_id, path, symbol_name} for paths that do not exist under
+    codebase_dir. Never raises — caller decides how to handle warnings.
+    """
+    invalid: list[dict[str, str]] = []
+    mappings = output.get("mappings") or {}
+    for spec_id, mapping in mappings.items():
+        for ref in (mapping.get("code_refs") or []):
+            if not isinstance(ref, dict):
+                continue
+            path_str = ref.get("path", "").strip()
+            if not path_str:
+                continue
+            if not (codebase_dir / path_str).exists():
+                invalid.append({
+                    "spec_id": str(spec_id),
+                    "path": path_str,
+                    "symbol_name": ref.get("symbol_name", ""),
+                })
+    return invalid
+
+
+def _compute_map_stats(output: dict[str, Any]) -> dict[str, int]:
+    """Count mapping statuses across all mappings in output.
+
+    Returns dict with keys: mapped, partial, unmapped, blocked, total.
+    """
+    counts: dict[str, int] = {"mapped": 0, "partial": 0, "unmapped": 0, "blocked": 0}
+    for mapping in (output.get("mappings") or {}).values():
+        status = (mapping.get("status") or "").strip().lower()
+        if status in counts:
+            counts[status] += 1
+    counts["total"] = sum(counts.values())
+    return counts

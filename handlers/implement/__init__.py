@@ -20,9 +20,12 @@ from handlers.implement.helpers import (
 )
 from handlers.implement.impl import run_implement
 from handlers.implement.validation import (
+    _escalate_spec_issues,
     _validate_batch_plan_dependencies,
     _validate_brief_scoping,
     _validate_contract_field_consistency,
+    _validate_dependency_context_edges,
+    _validate_required_field_coverage,
     _validate_unified_plan,
 )
 
@@ -31,6 +34,7 @@ __all__ = [
     "_build_batches",
     "_build_briefs",
     "_build_module_catalog",
+    "_escalate_spec_issues",
     "_execute_batch",
     "_get_impl_cfg",
     "_report_implement_phase",
@@ -39,5 +43,7 @@ __all__ = [
     "_validate_batch_plan_dependencies",
     "_validate_brief_scoping",
     "_validate_contract_field_consistency",
+    "_validate_dependency_context_edges",
+    "_validate_required_field_coverage",
     "_validate_unified_plan",
 ]

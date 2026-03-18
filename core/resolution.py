@@ -18,12 +18,16 @@ VALIDATION_CONFIDENCE = 1.0
 AGENT_HINT_CONFIDENCE_DEFAULT = 0.6
 
 
-def _is_edit_spec_item(item: dict[str, Any]) -> bool:
-    """Return True when an item is a no-option spec-edit acknowledgement flow."""
+def _is_manual_edit_item(item: dict[str, Any]) -> bool:
+    """Return True when item should offer manual spec edit (M) instead of DONE.
+
+    Matches items with resolution_mode edit_spec or edit_contract, and
+    validation-sourced items with no options.
+    """
     resolution_mode = str(item.get("resolution_mode", "")).strip().lower()
-    if resolution_mode == "edit_spec":
+    if resolution_mode in ("edit_spec", "edit_contract"):
         return True
-    if item.get("source") != RESOLUTION_SOURCE_VALIDATION:
+    if item.get("source") == RESOLUTION_SOURCE_AGENT:
         return False
     options = [o for o in (item.get("options") or []) if isinstance(o, dict)]
     return len(options) == 0
@@ -74,10 +78,25 @@ def generate_resolution_template(
         )
         enriched["source"] = source
         enriched["chosen_option_id"] = None
-        if source == RESOLUTION_SOURCE_VALIDATION and _is_edit_spec_item(enriched):
-            enriched["acknowledged"] = False
+        if _is_manual_edit_item(enriched):
+            # Manual-edit items: store edit text instead of acknowledged flag
+            enriched["manual_edit_text"] = None
+            enriched["manual_edit_spec_id"] = None
+            enriched["manual_edit_field"] = None
         if source == RESOLUTION_SOURCE_AGENT:
             enriched["free_text"] = None
+        # Inject manual_edit option for items that already have let_agent_edit
+        option_ids = {
+            str(o.get("option_id", ""))
+            for o in (enriched.get("options") or [])
+            if isinstance(o, dict)
+        }
+        if "let_agent_edit" in option_ids:
+            enriched["options"].append({
+                "option_id": "manual_edit",
+                "label": "Edit spec text manually",
+                "effect": "Enter replacement text directly in the terminal.",
+            })
         template_items.append(enriched)
 
     payload: dict[str, Any] = {
@@ -257,10 +276,11 @@ def validate_resolutions(template: dict[str, Any]) -> tuple[bool, list[str]]:
         valid_ids = {str(o.get("option_id", "")).strip() for o in opts}
 
         if source == RESOLUTION_SOURCE_VALIDATION:
-            if _is_edit_spec_item(item):
-                if not bool(item.get("acknowledged")):
+            if _is_manual_edit_item(item):
+                manual_edit_text = (item.get("manual_edit_text") or "").strip()
+                if not manual_edit_text and not chosen:
                     errors.append(
-                        f"Item {item_id}: edit_spec validation items require acknowledged=true"
+                        f"Item {item_id}: manual-edit items require manual_edit_text or chosen_option_id"
                     )
             elif not chosen:
                 errors.append(f"Item {item_id}: validation items require chosen_option_id")
@@ -295,14 +315,16 @@ def build_resolved_decisions_context(resolutions: dict[str, Any]) -> str:
             continue
 
         free_text = (item.get("free_text") or "").strip()
-        acknowledged = bool(item.get("acknowledged"))
+        manual_edit_text = (item.get("manual_edit_text") or "").strip()
         chosen_id = item.get("chosen_option_id")
         options = item.get("options") or []
 
-        if free_text:
+        if manual_edit_text:
+            spec_id = item.get("manual_edit_spec_id", "")
+            field = item.get("manual_edit_field", "requirement")
+            lines.append(f"- [{item_id}] Manual edit applied to {spec_id}.{field}: {manual_edit_text}")
+        elif free_text:
             lines.append(f"- [{item_id}] {free_text}")
-        elif acknowledged:
-            lines.append(f"- [{item_id}] Spec edits acknowledged")
         elif chosen_id:
             label = chosen_id
             for opt in options:
@@ -328,9 +350,16 @@ def update_resolution_item(
     item_index: int,
     chosen_option_id: str | None,
     free_text: str | None,
-    acknowledged: bool | None = None,
+    *,
+    manual_edit_text: str | None = None,
+    manual_edit_spec_id: str | None = None,
+    manual_edit_field: str | None = None,
 ) -> None:
-    """Update a single item's resolution in resolutions.yaml."""
+    """Update a single item's resolution in resolutions.yaml.
+
+    If manual_edit_text is provided, the item is treated as a manual spec edit
+    and chosen_option_id / free_text are cleared.
+    """
     import yaml
 
     with open(resolutions_path, encoding="utf-8") as f:
@@ -340,18 +369,18 @@ def update_resolution_item(
     if 0 <= item_index < len(items):
         item = items[item_index]
         if isinstance(item, dict):
-            if free_text is not None:
+            if manual_edit_text is not None:
+                item["manual_edit_text"] = manual_edit_text.strip() if manual_edit_text else None
+                item["manual_edit_spec_id"] = manual_edit_spec_id
+                item["manual_edit_field"] = manual_edit_field
+                item["chosen_option_id"] = "manual_edit"
+                item.pop("free_text", None)
+            elif free_text is not None:
                 item["free_text"] = free_text.strip() if free_text else None
                 item["chosen_option_id"] = None
             elif chosen_option_id is not None:
                 item["chosen_option_id"] = chosen_option_id
                 item["free_text"] = None
-            if acknowledged is not None:
-                item["acknowledged"] = bool(acknowledged)
-                if acknowledged:
-                    item["chosen_option_id"] = None
-                    if "free_text" in item:
-                        item["free_text"] = None
 
     with open(resolutions_path, "w", encoding="utf-8") as f:
         yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
@@ -370,8 +399,10 @@ def clear_resolution_item(resolutions_path: Path, item_index: int) -> None:
         if isinstance(item, dict):
             item["chosen_option_id"] = None
             item["free_text"] = None
-            if "acknowledged" in item:
-                item["acknowledged"] = False
+            if "manual_edit_text" in item:
+                item["manual_edit_text"] = None
+                item["manual_edit_spec_id"] = None
+                item["manual_edit_field"] = None
 
     with open(resolutions_path, "w", encoding="utf-8") as f:
         yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)

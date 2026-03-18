@@ -28,8 +28,9 @@ agent:
   # When provider is local (e.g. Codex CLI):
   # local_command: codex
   # local_exec_timeout_sec: 1200  # Optional workspace override for long-running local agent calls
+  # local_model: gpt-5-codex  # Or object: { default: "gpt-5-codex", implement_from_specs: "gpt-4-codex" }
   # reasoning_effort: per-prompt Codex model_reasoning_effort (low|medium|high|xhigh)
-  #   Keys: prompt_name (map_spec_to_code, implement_anchor_planner, implement_anchor_linker, implement_from_specs) or default
+  #   Keys: prompt_name (map_spec_to_code, implement_unified_planner, implement_from_specs) or default
   #   Pika defaults: map + anchor agents = medium, implementer = high
   # reasoning_effort:
   #   default: medium
@@ -98,6 +99,9 @@ commands:
     prompt_name: map_spec_to_code
     skip_mapped: true           # Skip map_status=mapped on re-runs
     max_acceptance_chars: 0     # Truncate acceptance_criteria at invocation (0 = unlimited)
+    # max_specs_per_subunit: 50              # Split subunits larger than this into consecutive sub-batches
+    # min_remapping_confidence_threshold: 0.0  # Re-map 'mapped' rows whose max confidence falls below this threshold
+    # max_problem_threshold: 1.0             # Only populate problems when confidence/consistency_score < threshold
     inputs:
       design_spec_path: out/state/DESIGN-SPEC.csv
       codebase_dir: .
@@ -113,7 +117,10 @@ commands:
       intermediate_map_dir: { path: out/intermediate/map, no_overwrite: false }
   implement:
     enabled: true
-    prompt_name: implement_from_specs
+    implementer:
+      prompt_name: implement_from_specs
+    unified_planner:
+      prompt_name: implement_unified_planner
     inputs:
       design_spec_path: out/state/DESIGN-SPEC.csv
       codebase_dir: .
@@ -126,33 +133,68 @@ commands:
       logs_dir: { path: out/logs, no_overwrite: false }
     # type_placement_path: workspace/shared-contracts/
     # allowed_module_roles: [frontend, api, domain, infra, shared, cli, worker]
-    # disallowed_link_kinds_by_required_role:
-    #   frontend: [service_interface, event_topic, db_table, file_format, external_api, test_suite]
-    #   domain: [external_api]
-    # leaf_dependency_roles: [infra]
-    # leaf_dependency_policy:
-    #   mode: auto_drop
-    #   track_external_dependencies: true
-    # contract_kind_definitions:
-    #   api_endpoint:
-    #     definition: Internal project API boundary between project modules.
-    #   external_api:
-    #     definition: Out-of-project third-party/system API boundary only.
-    # type_shape_match:
-    #   min_auto_bind_score: 0.70
-    #   tie_margin: 0.08
-    # field_match_score_threshold: 0.80  # Normalized Damerau-Levenshtein score threshold (0..1) for contract/spec high-match pairs.
+    # unified_planner:
+    #   prompt_name: implement_unified_planner
+    #   disallowed_link_kinds_by_required_role:
+    #     frontend: [service_interface, event_topic, db_table, file_format, external_api, test_suite]
+    #     domain: [external_api]
+    #   leaf_dependency_roles: [infra]
+    #   leaf_dependency_policy:
+    #     mode: auto_drop
+    #     track_external_dependencies: true
+    #   contract_kind_definitions:
+    #     api_endpoint:
+    #       definition: Internal project API boundary between project modules.
+    #     external_api:
+    #       definition: Out-of-project third-party/system API boundary only.
+    #   type_shape_match:
+    #     min_auto_bind_score: 0.70
+    #     tie_margin: 0.08
+    #   min_confidence_threshold: 0.85  # Overrides pika default 0.7. Items below block until resolved. 0 = disabled.
+    # workset_schema_validation: { enabled: true }
+    # module_catalog_validation: { enabled: true }
+    # planner_path_contract_prep: { enabled: true }
+    # planner_semantic_validation:
+    #   enabled: true
+    #   semantic_validation_retries: 2
+    # planner_manual_resolution_gate: { enabled: true }
+    # spec_issue_escalation: { enabled: true }  # Escalate all spec_issues (contradiction, overlap, dependency_gap, ambiguity, orphan_reference) to blocking manual resolution items
+    # unified_plan_validation: { enabled: true }
+    # contract_field_consistency_validation:
+    #   enabled: true
+    #   field_match_score_threshold: 0.80  # Normalized similarity score (0..1)
+    # required_field_coverage_validation:
+    #   enabled: true
+    #   providerless_contract_allowlist: []  # contract_ids intentionally exempt from providerless manual-block
+    # batch_plan_construction: { enabled: true }
+    # batch_plan_dependency_validation: { enabled: true }
+    # batch_brief_build: { enabled: true }
+    # batch_brief_scope_validation: { enabled: true }
+    # dependency_context_edge_validation: { enabled: true }
+    # batch_runtime_path_contract_prep: { enabled: true }
+    # implement_semantic_validation:
+    #   enabled: true
+    #   semantic_validation_retries: 2
+    # implement_output_structure_validation: { enabled: true }
+    # patch_constraints_validation: { enabled: true }
+    # verification_command_resolution: { enabled: true }
+    # patch_normalization: { enabled: true }
+    # patch_apply_gate: { enabled: true }
+    # contract_schema_conformance_check: { enabled: true }
+    # verification_execution: { enabled: true }
+    # field_match_score_threshold: 0.80  # Deprecated alias of contract_field_consistency_validation.field_match_score_threshold
     # test_spec_path: out/state/test_spec.csv
     # issue_tracker_path: out/issue_tracking.csv
     # forbidden_paths: [docs/, specs/]
     # verification_commands: [pytest -q]
-    # semantic_validation_retries: 2
+    # semantic_validation_retries: 2      # Deprecated alias for semantic_validation step settings
     # budgets:
     #   max_specs_per_batch: 15
     #   max_files: 10
     #   max_lines_changed: 600
     #   max_context_tokens: 12000
-    # min_confidence_threshold: 0.85  # Overrides pika default 0.7. Items below block until resolved. 0 = disabled.
+    # prompt_name: implement_from_specs                 # Deprecated alias of implementer.prompt_name
+    # unified_planner_prompt_name: implement_unified_planner  # Deprecated alias of unified_planner.prompt_name
   resolve_plan:
     enabled: true
     map_prompt_name: map_issues_to_specs
@@ -166,6 +208,26 @@ commands:
       agent_runs_dir: { path: out/agent_runs, no_overwrite: false }
       agent_artifacts_dir: { path: out/agent_artifacts, no_overwrite: false }
       logs_dir: { path: out/logs, no_overwrite: false }
+  # refine:
+  #   enabled: true
+  #   ambiguity_detector:
+  #     prompt_name: spec_ambiguity_detector
+  #   testability_auditor:
+  #     prompt_name: spec_testability_auditor
+  #   spec_editor:
+  #     prompt_name: spec_editor
+  #   decomposition:
+  #     enabled: true
+  #     blocking: false          # set true to gate on split/merge candidates before agents run
+  #     similarity_threshold: 0.85
+  #     variance_threshold: 0.15
+  #   inputs:
+  #     design_spec_path: out/state/DESIGN-SPEC.csv
+  #     project_context_filename: PROJECT_CONTEXT.md
+  #   outputs:
+  #     root_dir: { path: out, no_overwrite: false }
+  #     design_spec_path: { path: out/state/REFINED-SPEC.csv, no_overwrite: false }
+  #     agent_runs_dir: { path: out/agent_runs, no_overwrite: false }
 
 id_generation:
   spec:
@@ -188,6 +250,7 @@ csv_contracts:
       - map_status
       - map_assumptions
       - mapped_at
+      - map_run_id
   issue_tracking:
     add_if_missing:
       - issue_id

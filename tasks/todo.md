@@ -1,5 +1,38 @@
 # TODO
 
+- [x] Implement verification worktree bootstrap when project-root path is missing inside detached worktree.
+- [x] Add regression tests for ignored/untracked subproject roots in detached worktree verification.
+- [x] Run targeted tests in `Local` conda env and record outcomes.
+
+## Current Task: Fix Worktree Project-Root Bootstrap for Ignored Subprojects
+
+## Current Task Review: Fix Worktree Project-Root Bootstrap for Ignored Subprojects
+
+- Updated `handlers/implement/execution.py` to bootstrap missing `worktree_project_root` paths instead of failing immediately.
+- Added regression coverage in `tests/test_implement_execution.py` to simulate `.gitignore`d `dataset/` subproject roots and verify detached worktree verification succeeds.
+- Verification:
+  - `conda run -n Local python -m pytest tests/test_implement_execution.py::ImplementExecutionWorktreeBootstrapTests -q` -> `1 passed`
+  - `conda run -n Local python -m pytest tests/test_implement_execution.py -q` -> `38 passed`
+  - `conda run -n Local python -m pytest tests/test_implement_handler.py -q` -> `53 passed`
+- [x] Add `lastMappedAt` state field across extension + webview payload types.
+- [x] Persist `lastMappedAt` via VS Code workspace state and restore on activation.
+- [x] Update refresh handler to stamp `lastMappedAt` on refresh button execution.
+- [x] Render `Last mapped` panel row with `MM-DD HH:MM` formatting fallback.
+- [x] Add targeted unit tests and run plugin checks.
+- [x] Commit and push branch updates.
+
+## Current Task Review: Plugin Last-Mapped Timestamp Persistence
+
+- Added extension/webview state support for `lastMappedAt` and initialized state from persisted workspace memento.
+- Refresh button flow now stamps click-time `Date.now()` and persists it via `designSpecMapper.lastMappedAt`.
+- Plugin status panel now renders `Last mapped` using `MM-DD HH:MM` formatting with `Not mapped yet` fallback.
+- Added focused `StateStore` tests for hydration, preservation across import updates, and explicit setter updates.
+- Verification:
+  - `npm run compile` -> pass
+  - `npm run typecheck` -> pass
+  - `npm test` -> `26 passed`
+  - Manual GUI launch blocker: VS Code Extension Development Host crashed with code `5` in this environment.
+
 - [ ] Reproduce current `implement` failure (`dataset/nutrition`, `--codebase-dir src`) and capture exit code/stdout/stderr.
 - [ ] Collect deterministic evidence from latest run artifacts (`summary.json`, `run_meta.json`, verification logs, runtime log).
 - [ ] Identify root cause and implement minimal fix with robust error handling.
@@ -989,3 +1022,449 @@
 - Verification:
   - `npm install` completed successfully and lockfile updated.
   - `npm run electron:dev` stays running with Vite ready and no prior dependency/runtime startup errors; run was intentionally terminated after verification window.
+## Current Task: Implement Step Titles + Toggleable Deterministic Checks
+
+- [x] Add human-readable summary titles to every item in `docs/implement-checks-execution-order.md`.
+- [x] Add step-level deterministic check toggles to implement config parsing with backward compatibility defaults.
+- [x] Reorganize step-specific implement config fields to `implement.{step_title}.{field_name}` structure where applicable.
+- [x] Update schema/example/workspace config and adjust tests.
+- [x] Run targeted tests in conda env `Local` and report results.
+
+## Current Task Review: Implement Step Titles + Toggleable Deterministic Checks
+
+- Updated `docs/implement-checks-execution-order.md` with short summary titles and explicit `implement.{step_title}.enabled` keys for execution-order steps (including v0.0.1 planned checks).
+- Added deterministic step-toggle parsing in `handlers/implement/config.py` under `impl["steps"]` with defaults enabled and backward-compatible fallback to flat keys.
+- Wired runtime gating in implement orchestration/execution:
+  - workset + module catalog validation toggles with deterministic relaxed fallback paths;
+  - planner/implement semantic validation toggles and step-scoped retry values;
+  - plan/contract/batch/brief validation toggles;
+  - patch constraints, verification command resolution, patch normalization, patch apply gate, and verification execution toggles.
+- Reorganized one-step fields into step-scoped config (while keeping flat aliases):
+  - `implement.contract_field_consistency_validation.field_match_score_threshold`
+  - `implement.planner_semantic_validation.semantic_validation_retries`
+  - `implement.implement_semantic_validation.semantic_validation_retries`
+- Updated config files and schema:
+  - `config/config.schema.json`
+  - `config/config.example.yaml`
+  - `dataset/nutrition/config.yaml`
+- Added tests for new config shape and parser behavior:
+  - `tests/test_config_loader.py`
+  - `tests/test_implement_handler.py`
+- Verification:
+  - `$env:PYTHONPATH='.'; conda run -n Local python -m pytest tests/test_config_loader.py tests/test_implement_handler.py tests/test_implement_execution.py -q` -> `92 passed`
+
+## Current Task: Agent-Scoped Implement Config Fields
+
+- [x] Move single-agent implement fields under `implement.unified_planner.*` and `implement.implementer.*` with compatibility fallback.
+- [x] Update implement config parser and keep downstream runtime behavior unchanged.
+- [x] Update config schema and example/dataset configs for new agent-scoped structure.
+- [x] Add/adjust tests for parser + schema validation.
+- [x] Run targeted tests in conda env `Local` and record results.
+
+## Current Task Review: Agent-Scoped Implement Config Fields
+
+- Added agent-scoped implement config support:
+  - `commands.implement.implementer.prompt_name`
+  - `commands.implement.unified_planner.prompt_name`
+  - planner-only policy fields under `commands.implement.unified_planner.*`:
+    - `disallowed_link_kinds_by_required_role`
+    - `leaf_dependency_roles`
+    - `leaf_dependency_policy`
+    - `contract_kind_definitions`
+    - `type_shape_match`
+    - `min_confidence_threshold`
+- Kept backward compatibility in parser:
+  - top-level `prompt_name`, `unified_planner_prompt_name`, and planner-policy flat keys still work as fallback aliases.
+- Updated schema/configs:
+  - `config/config.schema.json`
+  - `config/config.example.yaml`
+  - `dataset/nutrition/config.yaml`
+- Added/updated tests:
+  - `tests/test_config_loader.py` (agent-scoped schema validation)
+  - `tests/test_implement_handler.py` (agent-scoped parser behavior)
+- Verification:
+  - `$env:PYTHONPATH='.'; conda run -n Local python -m pytest tests/test_config_loader.py tests/test_implement_handler.py tests/test_implement_execution.py -q` -> `94 passed`
+
+## Current Task: Implement v0.0.1 Checks and Enable Them
+
+- [x] Implement intra-spec behavior conflict validation.
+- [x] Implement required-field coverage validation.
+- [x] Implement match ambiguity/tie validation with manual-resolution blocking.
+- [x] Implement dependency-context edge consistency validation.
+- [x] Wire the checks into `run_implement` in execution order and keep them enabled by default.
+- [x] Add/adjust tests and run targeted suites in conda env `Local`.
+
+## Current Task Review: Implement v0.0.1 Checks and Enable Them
+
+- Implemented new deterministic validations in `handlers/implement/validation.py`:
+  - `_validate_intra_spec_behavior_conflicts`
+  - `_validate_required_field_coverage`
+  - `_validate_match_ambiguity`
+  - `_validate_dependency_context_edges`
+- Updated `run_implement` orchestration (`handlers/implement/impl.py`) so v0.0.1 checks run in order with active gating:
+  - intra-spec conflict: fail run on conflict
+  - required field coverage: fail run on missing explicit/alias coverage
+  - match ambiguity: create manual-resolution block items
+  - dependency-context edge check: fail run on context mismatch
+- Kept checks enabled by default via step toggles (`implement.<step>.enabled` defaults true) and retained explicit `enabled: true` in dataset config.
+- Updated exports and docs:
+  - `handlers/implement/__init__.py`
+  - `docs/implement-checks-execution-order.md` (v0.0.1 items no longer marked planned)
+  - `config/config.example.yaml` comments updated to active state.
+- Verification:
+  - `$env:PYTHONPATH='.'; conda run -n Local python -m pytest tests/test_implement_handler.py tests/test_implement_execution.py tests/test_config_loader.py -q` -> `98 passed`
+
+## Current Task: Reduce Semantic Violations from Blank-Context Diff Hunks
+
+- [x] Add deterministic patch normalizer that strips whitespace-only context lines in unified hunks and rewrites hunk counts.
+- [x] Wire fallback normalization into semantic apply-check so semantic retries are avoided when patch is fixable.
+- [x] Add regression tests for blank-context mismatch acceptance and non-applicable patch rejection stability.
+- [x] Run targeted tests in conda env `Local`.
+- [x] Run non-dry-run implement debug loop (`dataset/nutrition`, `--codebase-dir src`) and capture outcome.
+
+## Current Task: Planner Missed Intentional date_range Mismatch (Nutrition Implement)
+
+- [ ] Reproduce recent `implement` run behavior for `dataset/nutrition` and capture planner artifacts.
+- [ ] Inspect unified planner input context (spec rows, links, contracts) for `A1049` and `A1057`.
+- [ ] Identify exact stage where mismatch should be surfaced and why it currently is not.
+- [ ] Validate root cause with code-path and run evidence.
+- [ ] Document bug, solution options, and verification in review notes.
+
+
+## Current Task Review: Reduce Semantic Violations from Blank-Context Diff Hunks
+
+- Implemented deterministic semantic apply-check recovery in `handlers/implement/semantic_guard.py`:
+  - strips whitespace-only hunk context lines and recomputes hunk counts,
+  - retries apply-check with additional one-sided context trims (`leading`/`trailing`) when needed,
+  - persists normalized patch only when `git apply --check` passes.
+- Added regression coverage in `tests/test_implement_execution.py`:
+  - `test_semantic_guard_normalizes_blank_context_hunk_mismatch`.
+- Verification:
+  - `conda run -n Local python -m pytest tests/test_implement_execution.py::ImplementExecutionPatchApplySemanticGuardTests -q` -> `3 passed`
+  - `conda run -n Local python -m pytest tests/test_implement_execution.py -q` -> `39 passed`
+  - `conda run -n Local python -m pytest tests/test_implement_handler.py -q` -> `53 passed`
+- Non-dry-run debug loop run:
+  - `conda run -n Local python cli.py agent implement --project-root dataset/nutrition --codebase-dir src`
+  - run_id `20260312_225137_m0700` -> `failed`, reason `execute_exception_B0`.
+  - B2 semantic retries recovered and completed; B0/B1 still exhausted semantic retries with non-applicable OBS patch hunks (`metrics_recorder.py`, `structured_logger.py`, `test_telemetry.py`).
+
+## Current Task: Continue Implement Debug Loop (Semantic Apply Whitespace Mismatch)
+
+- [x] Add deterministic semantic/apply fallback for whitespace-only context mismatches (`git apply --check --ignore-space-change`).
+- [x] Ensure actual apply path uses same fallback semantics so semantic-pass patches do not fail later at apply.
+- [x] Add regression tests for whitespace-mismatch patch applicability in semantic guard and apply pipeline.
+- [x] Run targeted tests in conda env `Local`.
+- [x] Run next non-dry-run implement debug iteration and capture run status + artifacts.
+
+## Current Task Review: Continue Implement Debug Loop (Semantic Apply Whitespace Mismatch)
+
+- Implemented additional semantic/apply resilience:
+  - `handlers/implement/semantic_guard.py`: semantic apply-check now accepts already-applied diffs via reverse-check fallback and supports whitespace fallback in check helper.
+  - `handlers/implement/execution.py`: `_apply_and_verify` now skips already-applied patches (worktree/root check) instead of failing, with explicit `patch_already_applied_skip` records.
+  - `handlers/implement/impl.py`: parallel execute failure path now persists `details` into `summary.json`.
+- Added regression tests:
+  - `tests/test_implement_execution.py::ImplementExecutionPatchApplySemanticGuardTests::test_semantic_guard_accepts_patch_when_change_is_already_applied`
+  - `tests/test_implement_execution.py::ImplementExecutionWorktreeScopeTests::test_apply_and_verify_skips_patch_when_change_is_already_applied`
+- Verification:
+  - `conda run -n Local python -m pytest tests/test_implement_execution.py::ImplementExecutionPatchApplySemanticGuardTests -q` -> `5 passed`
+  - `conda run -n Local python -m pytest tests/test_implement_execution.py::ImplementExecutionWorktreeScopeTests -q` -> `8 passed`
+  - `conda run -n Local python -m pytest tests/test_implement_handler.py -q` -> `53 passed`
+- Debug-loop runs (cap reached: 3):
+  - `20260313_113031_m0700`: failed `execute_exception_B4` (post-whitespace fix, B0 recovered).
+  - `20260313_123100_m0700`: failed `execute_exception_B1`, stderr showed semantic retry exhaustion for B1.
+  - `20260313_125309_m0700`: failed `execute_exception_B1` with explicit details: local provider `http 429 usage_limit_reached` (external quota blocker).
+
+## Current Task: Debug Implement (User Request 2026-03-13)
+
+- [x] Reproduce `implement` failure with required non-dry-run command.
+- [x] Collect deterministic evidence (stderr, summary.json, run_meta.json, implement log).
+- [x] Identify root cause and implement minimal fix.
+- [x] Verify with targeted tests and one rerun (within run cap).
+- [x] Document bug/solution/verification in task review.
+
+## Current Task Review: Debug Implement (User Request 2026-03-13)
+
+- Reproduced failures:
+  - `python cli.py agent implement --project-root dataset/nutrition --codebase-dir src` failed immediately outside `Local` env (`ModuleNotFoundError: click`).
+  - `conda run -n Local python cli.py agent implement --project-root dataset/nutrition --codebase-dir src` failed on config schema validation (`csv_contracts.design_spec.add_if_missing` missing `map_run_id`).
+  - After config fix, rerun reached planner then failed with temp workspace ACL (`[WinError 5] Access is denied` for `%LOCALAPPDATA%\\Temp\\pika-local-agent-*`).
+- Implemented fixes:
+  - Added missing `map_run_id` contract column to `dataset/nutrition/config.yaml`.
+  - Aligned fallback defaults in `config/pika.yaml` to include `map_run_id`.
+  - Hardened `core/lifecycle.py` local temp workspace creation:
+    - added access probe for created temp workspace,
+    - added project-local fallback base `out/local_agent_temp` when primary temp base is inaccessible,
+    - cleans up failed workspace candidates before fallback.
+  - Added regression tests:
+    - `tests/test_config_loader.py::ConfigLoaderImplementPolicyTests::test_nutrition_workspace_config_passes_schema_validation`
+    - `tests/test_lifecycle.py::LocalAgentTempWorkspaceFallbackTests::test_create_workspace_falls_back_to_project_local_base_when_primary_inaccessible`
+- Verification:
+  - `conda run -n Local python -m pytest tests/test_lifecycle.py::LocalAgentTempWorkspaceFallbackTests::test_create_workspace_falls_back_to_project_local_base_when_primary_inaccessible tests/test_config_loader.py::ConfigLoaderImplementPolicyTests::test_nutrition_workspace_config_passes_schema_validation -q` -> `2 passed`
+  - `conda run -n Local python -m py_compile core/lifecycle.py tests/test_lifecycle.py tests/test_config_loader.py` -> success
+  - Implement rerun (3rd and final allowed in this cycle): run_id `20260313_204739_m0700` advanced past load/catalog into planner, then failed on temp workspace ACL before agent invocation.
+
+## Current Task Review: Continue Debug Implement (User Request Follow-up 2026-03-13)
+
+- Debug loop runs (cap 3 for this follow-up request):
+  - `20260313_205501_m0700`: failed before planner invoke with ACL on fallback temp workspace directory (`out/local_agent_temp/...`).
+  - `20260313_213357_m0700`: progressed to planner start; failed on unreadable source entry `src/.pytest_cache` during local workspace sync.
+  - `20260313_213535_m0700`: progressed through local shared workspace creation + resync and reached `implement_unified_planner` local agent invoke; failed in external Codex runtime with session permission error (`C:\Users\CodexSandboxOffline\.codex\sessions`).
+
+- Implemented platform fixes:
+  - `core/lifecycle.py`:
+    - Replaced temp workspace creation path with ACL-safe inherited directory creation (`Path.mkdir`) and retained fallback base selection.
+    - Added explicit workspace access probe.
+    - Hardened local workspace sync to skip unreadable source entries (warn + continue), preserving deterministic ordering.
+  - Added tests:
+    - `LocalAgentTempWorkspaceFallbackTests::test_create_workspace_falls_back_to_project_local_base_when_primary_inaccessible`
+    - `SyncLocalAgentWorkspaceTests::test_sync_skips_unreadable_source_entry_and_copies_readable_entries`
+
+- Verification:
+  - `conda run -n Local python -m pytest tests/test_lifecycle.py::LocalAgentTempWorkspaceFallbackTests::test_create_workspace_falls_back_to_project_local_base_when_primary_inaccessible tests/test_lifecycle.py::SyncLocalAgentWorkspaceTests::test_sync_skips_unreadable_source_entry_and_copies_readable_entries -q` -> `2 passed`
+  - `conda run -n Local python -m py_compile core/lifecycle.py tests/test_lifecycle.py` -> success
+
+- Current blocker after fixes:
+  - External local-provider runtime environment permissions for Codex session files (`C:\Users\CodexSandboxOffline\.codex\sessions`) and outbound model fetch errors (network/credentials/runtime), outside PIKA implement orchestration logic.
+- Additional hardening (post-cap, not rerun yet in this cycle):
+  - `core/agent_invoker.py`: local subprocess environment now sets `CODEX_HOME` to a writable directory under each local workspace (`<workspace>/.codex_home`) before invoking Codex.
+  - Added regression test: `tests/test_agent_invoker.py::RunLocalExecSubprocessDecodeTests::test_non_stream_sets_writable_codex_home_env`.
+  - Verification: `conda run -n Local python -m pytest tests/test_agent_invoker.py::RunLocalExecSubprocessDecodeTests::test_non_stream_sets_writable_codex_home_env tests/test_lifecycle.py::LocalAgentTempWorkspaceFallbackTests::test_create_workspace_falls_back_to_project_local_base_when_primary_inaccessible tests/test_lifecycle.py::SyncLocalAgentWorkspaceTests::test_sync_skips_unreadable_source_entry_and_copies_readable_entries -q` -> `3 passed`.
+
+## Current Task Review: Continue Debug Implement (User Request Follow-up 2026-03-13, Cycle 2)
+
+- Debug loop runs (cap 3 for this cycle):
+  - `20260313_214002_m0700`: failed at unified planner local invoke due network disconnect errors to `api.openai.com`.
+  - `20260313_214216_m0700` (escalated): failed at unified planner local invoke with explicit `401 Unauthorized` / missing bearer auth for models + responses endpoints.
+  - `20260313_214416_m0700`: after fast-fail auth guard, run failed immediately with actionable auth message before long local-agent retries.
+
+- Implemented fixes and hardening:
+  - `core/lifecycle.py`:
+    - Added fast-fail local auth precheck (`check_local_available(local_cmd)`) before local agent execution.
+    - Emits deterministic actionable error: run `codex login status` / `codex login`.
+  - `core/agent_invoker.py`:
+    - Added `_build_local_exec_env` and set `CODEX_HOME=<workspace>/.codex_home` for local subprocesses to avoid host-home permission dependencies.
+  - Existing cycle-1 hardening retained and verified:
+    - ACL-safe local temp workspace creation.
+    - Skip unreadable source entries during local workspace sync.
+
+- Added/updated regression tests:
+  - `tests/test_lifecycle.py::InvokeAgentLocalIsolationTests::test_invoke_agent_local_fails_fast_when_local_auth_unavailable`
+  - `tests/test_agent_invoker.py::RunLocalExecSubprocessDecodeTests::test_non_stream_sets_writable_codex_home_env`
+  - `tests/test_lifecycle.py::LocalAgentTempWorkspaceFallbackTests::test_create_workspace_falls_back_to_project_local_base_when_primary_inaccessible`
+  - `tests/test_lifecycle.py::SyncLocalAgentWorkspaceTests::test_sync_skips_unreadable_source_entry_and_copies_readable_entries`
+
+- Verification:
+  - `conda run -n Local python -m pytest tests/test_lifecycle.py::InvokeAgentLocalIsolationTests::test_invoke_agent_local_fails_fast_when_local_auth_unavailable tests/test_agent_invoker.py::RunLocalExecSubprocessDecodeTests::test_non_stream_sets_writable_codex_home_env tests/test_lifecycle.py::SyncLocalAgentWorkspaceTests::test_sync_skips_unreadable_source_entry_and_copies_readable_entries -q` -> `3 passed`
+  - `conda run -n Local python -m py_compile core/lifecycle.py core/agent_invoker.py tests/test_lifecycle.py tests/test_agent_invoker.py` -> success
+
+- Current blocker:
+  - External local-provider authentication state is missing (`codex login` not active for this environment), which blocks live planner/implement agent calls even after PIKA-side hardening.
+
+## Current Task: Continue Debug Implement (User Request Follow-up 2026-03-13, Cycle 3)
+
+- [x] Reproduce non-dry-run `implement` failure in Local env.
+- [x] Collect run evidence (summary, run_meta, logs, stderr).
+- [x] Implement minimal fix for first blocking root cause.
+- [x] Verify with targeted tests.
+- [x] Rerun implement within cycle cap and report Bug/Solution/Verification.
+
+## Current Task Review: Continue Debug Implement (User Request Follow-up 2026-03-13, Cycle 3)
+
+- Debug loop runs (cap 3 for this cycle):
+  - raw shell reproduction: `python cli.py agent implement --project-root dataset/nutrition --codebase-dir src` failed pre-start with `ModuleNotFoundError: jsonschema` (base interpreter dependency gap).
+  - Local env run: `conda run -n Local python cli.py agent implement --project-root dataset/nutrition --codebase-dir src` reached execution and failed `execute_exception_B0` due semantic patch apply invalidation.
+  - Post-fix Local env run: advanced through many batches (`lifecycle_batch_executed` events for B0..B6) with no early `execute_exception_B0`; run was externally interrupted by shell timeout before final summary write.
+
+- Implemented fix:
+  - `handlers/implement/execution.py` now resolves `agent_artifacts_dir` per batch (`.../<run_id>/<batch_id>/`) instead of shared run-level dir during `_execute_batch`.
+  - This removes cross-batch diff cleanup/overwrite interference during parallel semantic retry.
+
+- Added regression coverage:
+  - `tests/test_implement_execution.py::ImplementExecutionLocalWorkspaceTests::test_execute_batch_local_workspace_override_sets_prompt_codebase_dir`
+    now asserts `template_vars["agent_artifacts_dir"]` is batch-scoped (`.../implement/<run_id>/B0`).
+
+- Verification:
+  - `conda run -n Local python -m pytest tests/test_implement_execution.py::ImplementExecutionLocalWorkspaceTests -q` -> `2 passed`
+  - `conda run -n Local python -m pytest tests/test_implement_execution.py -q` -> `43 passed`
+  - `conda run -n Local python -m py_compile handlers/implement/execution.py tests/test_implement_execution.py` -> success
+  - Runtime evidence from `dataset/nutrition/out/logs/implement_20260313_224238_m0700.log` confirms deeper batch progression post-fix (multiple `lifecycle_batch_executed`) before timeout interruption.
+
+## Current Task: Categorize Implement Findings by Problem Source + Add Skill
+
+- [x] Map each previously reported artifact finding to owning batch/spec and responsible agent.
+- [x] Cross-reference deterministic checks using `docs/implement-checks-execution-order.md` and identify misses.
+- [x] Create new skill `implement-problem-sourcing` in local and user skill registries.
+
+## Current Task Review: Categorize Implement Findings by Problem Source + Add Skill
+
+- Built source attribution from run `20260313_224238_m0700` artifacts (`batch_plan.json`, `unified_plan.json`, `agent_outputs/implement_B*.json`, `trace/trace.jsonl`, validation json outputs).
+- Mapped failures to primary sources: planner contract modeling vs batch implementer behavior, with explicit check-index references for misses.
+- Added skill `implement-problem-sourcing` at:
+  - `.codex/skills/implement-problem-sourcing/SKILL.md`
+  - `%USERPROFILE%/.codex/skills/implement-problem-sourcing/SKILL.md`
+
+## Current Task: Fix preflight support for `refine`
+
+- [x] Reproduce and locate preflight command support failure for `refine`.
+- [x] Apply minimal safety validation updates to support `refine`.
+- [x] Add regression test coverage for `refine` preflight support.
+- [x] Run targeted tests and verify `agent refine` no longer fails preflight with unsupported-command error.
+- [x] Document root cause, fix, and verification.
+
+## Current Task Review: Fix preflight support for `refine`
+
+- Root cause: `refine` existed in CLI/dispatch but was missing from `core/safety.py` supported-command gate (`_run_step_7_unsupported_command`), which caused deterministic preflight failure before execution.
+- Minimal fix:
+  - Added `refine` to preflight supported commands.
+  - Included `refine` in safety input-path resolution and design-spec CSV contract validation paths.
+  - Included `refine` in project-context preflight contract scope to align with `run_refine` runtime behavior.
+- Regression coverage:
+  - Added `test_preflight_refine_command_is_supported` to `tests/test_command_router.py`.
+- Verification:
+  - `conda run -n Local python -m pytest tests/test_command_router.py -q` -> `13 passed`.
+  - CLI smoke run no longer reports `Unsupported command for safety validation: refine`; next validation now proceeds to actual config requirements.
+
+## Current Task: Make `dataset/nutrition/config.yaml` pass refine preflight
+
+- [x] Add minimal `commands.refine` config block with required inputs.
+- [x] Ensure block matches config schema for refine outputs.
+- [x] Validate preflight directly via `validate_command_preconditions`.
+- [x] Validate via CLI run that no preflight error is raised.
+
+## Current Task Review: Make `dataset/nutrition/config.yaml` pass refine preflight
+
+- Added `commands.refine` with:
+  - `inputs.design_spec_path: state/DESIGN-SPEC.csv`
+  - `inputs.project_context_filename: PROJECT_CONTEXT.md`
+  - schema-valid `outputs` keys only (`root_dir`, `agent_runs_dir`, `design_spec_path`).
+- Verification:
+  - `conda run -n Local python -c "... validate_command_preconditions('refine', ...) ..."` -> `PREFLIGHT_OK`.
+  - `conda run -n Local python cli.py agent refine --project-root dataset/nutrition --config config.yaml --dry-run` -> command executed and returned `status: blocked` (no preflight failure).
+## Current Task: Plugin Codex Executable Detection + Readiness UI
+
+- [x] Add plugin runtime state/schema for Codex executable readiness and path source.
+- [x] Implement startup auto-detection of `codex` executable (configured path first, PATH/common locations fallback).
+- [x] Add manual configure action from webview (button -> file picker -> save path -> re-validate).
+- [x] Render panel readiness indicator (`ready` vs `not configured`) and conditional configure button.
+- [x] Add targeted unit tests for executable detection helper and run plugin checks.
+- [x] Commit and push the feature branch changes.
+
+## Current Task Review: Plugin Codex Executable Detection + Readiness UI
+
+- Added deterministic Codex executable detection helper for configured path validation plus auto-scan across `PATH` and common install directories.
+- Extended extension state and webview payload contracts with `codexRuntime` readiness metadata and wired launch-time refresh.
+- Added panel UI readiness badge, codex details text, and conditional `Configure Codex Path` button when runtime is missing.
+- Added manual path-configuration flow in extension host (file picker -> settings update -> runtime re-validation -> panel refresh).
+- Verification:
+  - `npm run compile` -> pass
+  - `npm run typecheck` -> pass
+  - `npm test` -> `16 passed`
+  - Manual GUI walkthrough recorded: `plugin_codex_detection_ready_transition.mp4` (Not ready + configure button -> Ready after selecting `/tmp/codex-demo/codex`).
+
+## Current Task: Plugin Mapping In-Progress Indicator + Mock Async Delay
+
+- [x] Add extension/webview state fields representing mapping run-in-progress status.
+- [x] Add fixed async delay in extension mapping execution path to simulate running state.
+- [x] Render UI indicator while mapping is running and disable conflicting actions.
+- [x] Add/adjust tests for mapping-running state helpers where feasible.
+- [x] Run plugin compile/typecheck/tests and manual GUI walkthrough with recording.
+- [ ] Commit and push branch updates.
+
+## Current Task Review: Plugin Mapping In-Progress Indicator + Mock Async Delay
+
+- Added `mappingRuntime` state contract and store support so extension host can publish mapping progress (`isRunning`, message, lastStartedAt) to webview.
+- Added deterministic mock mapping delay (`MOCK_MAPPING_EXEC_DELAY_MS=5000`) and wrapped import/refresh execution in `runMappingWithRuntime` so panel status transitions `Idle -> Running... -> Idle`.
+- Added panel mapping status badge/details and disabled import/refresh buttons while mapping is running.
+- Added unit tests for runtime delay helper behavior using fake timers.
+- Verification:
+  - `npm run compile` -> pass
+  - `npm run typecheck` -> pass
+  - `npm test` -> `17 passed`
+  - Manual GUI walkthrough recorded: `plugin_mapping_running_status_refresh.mp4` (refresh shows `Running...` then returns to `Idle`).
+
+## Current Task: Codex Validation Status + Readiness-Gated Refresh
+
+- [x] Add codex validation runtime state contract (`isValidating`, progress message) in extension/webview.
+- [x] Add stubbed handshake validation flow with real-time progress updates and stale-run protection.
+- [x] Gate readiness so `ready` is set only after validation pass; hide validation status when idle.
+- [x] Disable refresh button when agent is not ready and enforce host-side guard.
+- [x] Add/adjust targeted tests and run compile/typecheck/tests.
+- [x] Run manual GUI walkthrough recording proving validation progress + refresh disable behavior.
+- [ ] Commit and push changes.
+
+## Current Task Review: Codex Validation Status + Readiness-Gated Refresh
+
+- Added `codexValidationRuntime` state contract and propagation in extension/webview payloads to represent active handshake progress.
+- Implemented stubbed validation module with deterministic progress steps and stale-run protection in `refreshCodexRuntimeStatus`.
+- Updated readiness flow so runtime remains not-ready during validation and transitions to ready only on validation pass; validation row is rendered only while validating.
+- Disabled refresh button when agent is not ready and added host-side guard in `refreshMappings` to reject non-ready runs.
+- Added unit tests for validation step progress helper and re-ran plugin checks.
+- Verification:
+  - `npm run compile` -> pass
+  - `npm run typecheck` -> pass
+  - `npm test` -> `18 passed`
+  - Manual GUI walkthrough recorded: `plugin_codex_validation_and_readiness_gating.mp4` (not-ready refresh disabled -> validation progress shown -> ready after pass).
+
+## Current Task: Code Directory Configure Button + Workspace-Scoped Selection
+
+- [x] Add extension/webview state for effective code directory path.
+- [x] Add settings + runtime resolution so default code directory is workspace root.
+- [x] Add `Configure Code Directory` button and current path display in panel.
+- [x] Implement folder picker flow that only accepts directories inside workspace root.
+- [x] Add targeted helper tests for workspace path scoping and default resolution.
+- [x] Run plugin compile/typecheck/tests and manual GUI walkthrough recording.
+- [x] Commit and push changes.
+
+## Current Task Review: Code Directory Configure Button + Workspace-Scoped Selection
+
+- Added workspace-scoped code directory resolver helpers with inside-parent checks and workspace-root fallback defaults.
+- Added `designSpecMapper.codeDirectory` config setting and extension runtime/state propagation for effective code directory.
+- Added `Configure Code Directory` panel button and `Code directory` display, including folder-picker flow and inside-workspace guardrails.
+- Updated mapping root resolution to use effective code directory and kept preview output files under workspace root.
+- Added unit tests for code-directory normalization/containment/default resolution and re-ran plugin checks.
+- Verification:
+  - `npm run compile` -> pass
+  - `npm run typecheck` -> pass
+  - `npm test` -> `23 passed`
+  - Manual GUI walkthrough recorded showing default root and update to inside-workspace directory.
+
+## Current Task: Document Import Column + Double-Click Quick Open
+
+- [x] Replace prior design-spec-only import affordance with a 3-row document import column.
+- [x] Add rows for Design Spec, Issue Tracking Sheet, and Testing Plan, each with right-side Import button.
+- [x] Add double-click quick-open action on each row bar when the document is imported.
+- [x] Add extension host message handlers and state fields for issue/testing document paths.
+- [x] Run compile/typecheck/tests and manual GUI walkthrough recording.
+- [x] Commit and push changes.
+
+## Current Task Review: Document Import Column + Double-Click Quick Open
+
+- Added a dedicated `Documents` column in plugin panel with three rows (`Design Spec`, `Issue Tracking Sheet`, `Testing Plan`) and per-row `Import` buttons.
+- Added webview/extension message flow for importing issue/testing documents and double-click quick-open actions for all three document rows.
+- Extended extension/webview state contracts and state store to carry imported issue/testing file paths.
+- Kept mapping refresh control in toolbar while removing the old top-level design-spec import button from the header.
+- Verification:
+  - `npm run compile` -> pass
+  - `npm run typecheck` -> pass
+  - `npm test` -> `23 passed`
+  - Manual GUI walkthrough recorded: `plugin_document_column_import_and_quick_open.mp4`.
+
+## Current Task: Adaptive Document Row Layout for Narrow Panel Width
+
+- [x] Add left icons on each document bar in Documents column.
+- [x] Add responsive layout breakpoint that hides document labels/path text when panel width is narrow.
+- [x] Keep document bar and import button usable in compact mode.
+- [x] Run plugin compile/typecheck/tests.
+- [x] Run manual GUI walkthrough recording demonstrating compact behavior.
+- [ ] Commit and push changes.
+
+## Current Task Review: Adaptive Document Row Layout for Narrow Panel Width
+
+- Added left document icons (`DS`, `IT`, `TP`) inside each document bar and grouped text into a label container.
+- Added responsive compact breakpoint for document rows so label/path text collapses while icon + Import button remain visible.
+- Preserved document row quick-open and Import button interactions in both regular and compact states.
+- Verification:
+  - `npm run compile` -> pass
+  - `npm run typecheck` -> pass
+  - `npm test` -> `23 passed`
+  - Manual GUI walkthrough recorded for wide/narrow panel behavior.

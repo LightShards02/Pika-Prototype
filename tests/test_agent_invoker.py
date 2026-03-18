@@ -12,6 +12,7 @@ from core.agent_invoker import (
     _api_params_for_command,
     _normalize_for_codex_response_format,
     _parse_codex_token_usage,
+    _stream_reasoning_callback,
     _parse_combined_prompt,
     check_codex_available,
     extract_json_from_text,
@@ -265,13 +266,6 @@ class RunApiInvokeTests(unittest.TestCase):
             self.assertEqual(usage["input_tokens"], 100)
             self.assertEqual(usage["output_tokens"], 50)
 
-    def test_raises_when_requests_missing(self) -> None:
-        """Raises clear error when requests is not installed."""
-        with patch("core.agent_invoker.requests", None):
-            with self.assertRaises(RuntimeError) as ctx:
-                run_api_invoke("prompt", api_key="x")
-            self.assertIn("requests", str(ctx.exception))
-
     def test_raises_on_api_error(self) -> None:
         """Raises when API returns non-OK status."""
         mock_response = MagicMock()
@@ -424,7 +418,6 @@ class RunLocalExecSubprocessDecodeTests(unittest.TestCase):
             self.assertIn("--output-schema", first_cmd)
             self.assertNotIn("--output-schema", second_cmd)
 
-
 class ParseCodexTokenUsageTests(unittest.TestCase):
     """Tests for _parse_codex_token_usage."""
 
@@ -463,8 +456,67 @@ class ParseCodexTokenUsageTests(unittest.TestCase):
         self.assertEqual(usage["output_tokens"], 10)
 
 
+class StreamReasoningCallbackTests(unittest.TestCase):
+    """Tests for _stream_reasoning_callback."""
+
+    def test_prints_reasoning_item_to_stderr(self) -> None:
+        """item.completed with type=reasoning prints item.text to stderr."""
+        import io
+        import sys
+
+        line = '{"type":"item.completed","item":{"id":"item_1","type":"reasoning","text":"Analyzing the request."}}\n'
+        buf = io.StringIO()
+        with patch.object(sys, "stderr", buf):
+            _stream_reasoning_callback(line)
+        out = buf.getvalue()
+        self.assertIn("[PIKA] Reasoning: Analyzing the request.", out)
+
+    def test_ignores_non_reasoning_items(self) -> None:
+        """Non-reasoning items do not print."""
+        import io
+        import sys
+
+        line = '{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Done."}}\n'
+        buf = io.StringIO()
+        with patch.object(sys, "stderr", buf):
+            _stream_reasoning_callback(line)
+        self.assertEqual(buf.getvalue(), "")
+
+
 class RunLocalExecJsonFlagTests(unittest.TestCase):
-    """Tests that run_local_exec adds --json for token usage."""
+    """Tests that run_local_exec adds --json and model_reasoning_summary."""
+
+    def test_model_reasoning_summary_concise_in_exec_args(self) -> None:
+        """Codex exec is invoked with model_reasoning_summary=concise."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            schema_path = root / "schema.json"
+            schema_path.write_text(
+                '{"type":"object","required":["x"],"properties":{"x":{"type":"string"}},"additionalProperties":false}',
+                encoding="utf-8",
+            )
+            output_path = root / "out" / "local_output.txt"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text('{"x":"y"}', encoding="utf-8")
+
+            proc = MagicMock()
+            proc.returncode = 0
+            proc.stderr = ""
+            proc.stdout = '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20}}\n'
+
+            with patch("core.agent_invoker.subprocess.run", return_value=proc) as mock_run:
+                run_local_exec(
+                    prompt="Return JSON",
+                    output_schema_path=schema_path,
+                    workspace=root,
+                    output_path=output_path,
+                    stream_output=False,
+                    timeout=10,
+                )
+
+            cmd = mock_run.call_args[0][0]
+            config_args = [a for a in cmd if a == "--config" or (isinstance(a, str) and "model_reasoning_summary" in a)]
+            self.assertIn("model_reasoning_summary", " ".join(config_args))
 
     def test_json_flag_in_exec_args(self) -> None:
         """Codex exec is invoked with --json for token usage capture."""
@@ -500,3 +552,37 @@ class RunLocalExecJsonFlagTests(unittest.TestCase):
             self.assertEqual(token_usage["output_tokens"], 20)
             cmd = mock_run.call_args[0][0]
             self.assertIn("--json", cmd)
+
+    def test_model_flag_in_exec_args_when_set(self) -> None:
+        """Codex exec is invoked with --model when model param is set."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            schema_path = root / "schema.json"
+            schema_path.write_text(
+                '{"type":"object","required":["x"],"properties":{"x":{"type":"string"}},"additionalProperties":false}',
+                encoding="utf-8",
+            )
+            output_path = root / "out" / "local_output.txt"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text('{"x":"y"}', encoding="utf-8")
+
+            proc = MagicMock()
+            proc.returncode = 0
+            proc.stderr = ""
+            proc.stdout = '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20}}\n'
+
+            with patch("core.agent_invoker.subprocess.run", return_value=proc) as mock_run:
+                run_local_exec(
+                    prompt="Return JSON",
+                    output_schema_path=schema_path,
+                    workspace=root,
+                    output_path=output_path,
+                    stream_output=False,
+                    timeout=10,
+                    model="gpt-5-codex",
+                )
+
+            cmd = mock_run.call_args[0][0]
+            self.assertIn("--model", cmd)
+            model_idx = cmd.index("--model")
+            self.assertEqual(cmd[model_idx + 1], "gpt-5-codex")

@@ -635,7 +635,7 @@ def _module_affinity_penalty(
 
 
 def _rescale_score(value: float) -> float:
-    """Rescale pre-score into confidence range expected by linker thresholding."""
+    """Rescale pre-score into confidence range expected by planner/implement thresholding."""
     if value <= 0.0:
         return 0.0
     return min(1.0, value / _SCORE_RESCALE_DENOMINATOR)

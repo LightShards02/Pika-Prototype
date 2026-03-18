@@ -33,6 +33,10 @@
         "shared_contracts": {
           "type": "array",
           "items": { "$ref": "#/$defs/shared_contract" }
+        },
+        "spec_issues": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/spec_issue" }
         }
       }
     }
@@ -130,10 +134,11 @@
     "contract_field": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "type_name"],
+      "required": ["name", "type_name", "nullable"],
       "properties": {
         "name": { "type": "string", "minLength": 1 },
         "type_name": { "type": "string", "minLength": 1 },
+        "nullable": { "type": "boolean" },
         "constraints": { "type": "array", "items": { "type": "string" } }
       }
     },
@@ -145,6 +150,25 @@
         "option_id": { "type": "string", "minLength": 1 },
         "label": { "type": "string", "minLength": 1 },
         "effect": { "type": "string", "minLength": 1 }
+      }
+    },
+    "spec_issue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issue_id", "kind", "affected_spec_ids", "description"],
+      "properties": {
+        "issue_id": { "type": "string", "minLength": 1 },
+        "kind": {
+          "type": "string",
+          "enum": ["contradiction", "overlap", "dependency_gap", "ambiguity", "orphan_reference"]
+        },
+        "affected_spec_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "pattern": "^[A-Za-z][0-9]+$" }
+        },
+        "description": { "type": "string", "minLength": 1 },
+        "resolution_hint": { "type": "string" }
       }
     },
     "manual_resolution_item": {

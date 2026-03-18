@@ -16,6 +16,7 @@ from unittest.mock import patch
 from core.context import RuntimeContext
 from core.pika_config import reset_pika_config_cache
 from handlers.implement import (
+    _escalate_spec_issues,
     _report_implement_phase,
     _build_batches,
     _build_briefs,
@@ -26,6 +27,8 @@ from handlers.implement import (
     _validate_batch_plan_dependencies,
     _validate_brief_scoping,
     _validate_contract_field_consistency,
+    _validate_dependency_context_edges,
+    _validate_required_field_coverage,
     _validate_unified_plan,
     run_implement,
 )
@@ -101,6 +104,9 @@ class UnifiedPlanValidationTests(unittest.TestCase):
         self.assertIn("spec_dependencies_acyclic", result["checks"])
         self.assertIn("spec_dependency_refs_valid", result["checks"])
         self.assertIn("all_modules_planned", result["checks"])
+        self.assertEqual(result["retryable_reasons"], [])
+        self.assertEqual(result["blocking_reasons"], [])
+        self.assertIsNone(result["cycle_path"])
 
     def test_validate_unified_plan_detects_uncovered_specs(self) -> None:
         plan = {
@@ -121,6 +127,8 @@ class UnifiedPlanValidationTests(unittest.TestCase):
         result = _validate_unified_plan(plan, all_spec_ids, module_catalog)
         self.assertEqual(result["status"], "failed")
         self.assertTrue(any("A2001" in r for r in result["reasons"]))
+        self.assertTrue(any("A2001" in r for r in result["retryable_reasons"]))
+        self.assertEqual(result["blocking_reasons"], [])
 
     def test_validate_unified_plan_detects_cycle(self) -> None:
         plan = {
@@ -154,6 +162,9 @@ class UnifiedPlanValidationTests(unittest.TestCase):
         result = _validate_unified_plan(plan, all_spec_ids, module_catalog)
         self.assertEqual(result["status"], "failed")
         self.assertTrue(any("cycle" in r.lower() for r in result["reasons"]))
+        self.assertTrue(len(result["blocking_reasons"]) > 0)
+        self.assertIsNotNone(result["cycle_path"])
+        self.assertEqual(result["retryable_reasons"], [])
 
     def test_validate_unified_plan_detects_unknown_spec_refs(self) -> None:
         plan = {
@@ -176,6 +187,8 @@ class UnifiedPlanValidationTests(unittest.TestCase):
         result = _validate_unified_plan(plan, all_spec_ids, module_catalog)
         self.assertEqual(result["status"], "failed")
         self.assertTrue(any("A9999" in r for r in result["reasons"]))
+        self.assertTrue(any("A9999" in r for r in result["retryable_reasons"]))
+        self.assertEqual(result["blocking_reasons"], [])
 
     def test_validate_unified_plan_detects_missing_module(self) -> None:
         plan = {
@@ -199,6 +212,8 @@ class UnifiedPlanValidationTests(unittest.TestCase):
         result = _validate_unified_plan(plan, all_spec_ids, module_catalog)
         self.assertEqual(result["status"], "failed")
         self.assertTrue(any("CORE" in r for r in result["reasons"]))
+        self.assertTrue(any("CORE" in r for r in result["retryable_reasons"]))
+        self.assertEqual(result["blocking_reasons"], [])
 
 
 class ImplementConfigTests(unittest.TestCase):
@@ -214,6 +229,12 @@ class ImplementConfigTests(unittest.TestCase):
         self.assertTrue(impl["leaf_dependency_policy"]["track_external_dependencies"])
         self.assertEqual(impl["unified_planner_prompt_name"], "implement_unified_planner")
         self.assertEqual(impl["field_match_score_threshold"], 0.8)
+        self.assertTrue(impl["steps"]["workset_schema_validation"]["enabled"])
+        self.assertTrue(impl["steps"]["contract_field_consistency_validation"]["enabled"])
+        self.assertEqual(
+            impl["steps"]["contract_field_consistency_validation"]["field_match_score_threshold"],
+            0.8,
+        )
 
     def test_get_impl_cfg_parses_field_match_score_threshold(self) -> None:
         cfg = {
@@ -228,6 +249,96 @@ class ImplementConfigTests(unittest.TestCase):
         impl = _get_impl_cfg(cfg)
         self.assertEqual(impl["field_match_score_threshold"], 0.75)
 
+    def test_get_impl_cfg_parses_step_scoped_settings(self) -> None:
+        cfg = {
+            "commands": {
+                "implement": {
+                    "enabled": True,
+                    "prompt_name": "implement_from_specs",
+                    "contract_field_consistency_validation": {
+                        "enabled": False,
+                        "field_match_score_threshold": 0.66,
+                    },
+                    "planner_semantic_validation": {
+                        "enabled": False,
+                        "semantic_validation_retries": 3,
+                    },
+                    "implement_semantic_validation": {
+                        "semantic_validation_retries": 4,
+                    },
+                }
+            }
+        }
+        impl = _get_impl_cfg(cfg)
+        self.assertFalse(impl["steps"]["contract_field_consistency_validation"]["enabled"])
+        self.assertEqual(
+            impl["steps"]["contract_field_consistency_validation"]["field_match_score_threshold"],
+            0.66,
+        )
+        self.assertFalse(impl["steps"]["planner_semantic_validation"]["enabled"])
+        self.assertEqual(
+            impl["steps"]["planner_semantic_validation"]["semantic_validation_retries"],
+            3,
+        )
+        self.assertEqual(
+            impl["steps"]["implement_semantic_validation"]["semantic_validation_retries"],
+            4,
+        )
+
+    def test_get_impl_cfg_parses_agent_scoped_fields(self) -> None:
+        cfg = {
+            "commands": {
+                "implement": {
+                    "enabled": True,
+                    "implementer": {"prompt_name": "implement_custom"},
+                    "unified_planner": {
+                        "prompt_name": "planner_custom",
+                        "disallowed_link_kinds_by_required_role": {
+                            "frontend": ["external_api"],
+                        },
+                        "leaf_dependency_roles": ["infra"],
+                        "leaf_dependency_policy": {
+                            "mode": "auto_drop",
+                            "track_external_dependencies": False,
+                        },
+                        "contract_kind_definitions": {
+                            "external_api": {
+                                "definition": "External system boundary only.",
+                            }
+                        },
+                        "type_shape_match": {
+                            "min_auto_bind_score": 0.61,
+                            "tie_margin": 0.05,
+                        },
+                        "min_confidence_threshold": 0.55,
+                    },
+                }
+            }
+        }
+        impl = _get_impl_cfg(cfg)
+        self.assertEqual(impl["prompt_name"], "implement_custom")
+        self.assertEqual(impl["unified_planner_prompt_name"], "planner_custom")
+        self.assertEqual(impl["leaf_dependency_roles"], {"infra"})
+        self.assertFalse(impl["leaf_dependency_policy"]["track_external_dependencies"])
+        self.assertEqual(impl["type_shape_match"]["min_auto_bind_score"], 0.61)
+        self.assertEqual(impl["type_shape_match"]["tie_margin"], 0.05)
+        self.assertEqual(impl["min_confidence_threshold"], 0.55)
+
+    def test_get_impl_cfg_defaults_to_local_prompt_for_local_provider(self) -> None:
+        """prompt_name defaults to implement_from_specs_local when provider is local."""
+        cfg = {"agent": {"provider": "local"}, "commands": {"implement": {"enabled": True}}}
+        impl = _get_impl_cfg(cfg)
+        self.assertEqual(impl["prompt_name"], "implement_from_specs_local")
+
+    def test_get_impl_cfg_explicit_prompt_name_overrides_provider_default(self) -> None:
+        """Explicit implementer.prompt_name always overrides provider-based default."""
+        cfg = {
+            "agent": {"provider": "local"},
+            "commands": {"implement": {"implementer": {"prompt_name": "my_custom_prompt"}}},
+        }
+        impl = _get_impl_cfg(cfg)
+        self.assertEqual(impl["prompt_name"], "my_custom_prompt")
+
     def test_resolve_min_confidence_threshold_project_overrides_pika(self) -> None:
         reset_pika_config_cache()
         impl = {"min_confidence_threshold": 0.9}
@@ -237,6 +348,22 @@ class ImplementConfigTests(unittest.TestCase):
         reset_pika_config_cache()
         impl = {}
         self.assertEqual(_resolve_min_confidence_threshold(impl), 0.7)
+
+    def test_get_impl_cfg_rejects_max_files_below_min(self) -> None:
+        """budgets.max_files below pika.yaml implement.min_max_files raises ValueError."""
+        reset_pika_config_cache()
+        cfg = {
+            "commands": {
+                "implement": {
+                    "enabled": True,
+                    "prompt_name": "implement_from_specs",
+                    "budgets": {"max_files": 1},
+                }
+            }
+        }
+        with self.assertRaises(ValueError) as ctx:
+            _get_impl_cfg(cfg)
+        self.assertIn("min_max_files", str(ctx.exception))
 
 
 class ImplementBatchPlanTests(unittest.TestCase):
@@ -701,10 +828,10 @@ class ContractFieldConsistencyTests(unittest.TestCase):
                 "owning_module": "SHARED",
                 "consumed_by_specs": ["A1057", "A1056"],
                 "fields": [
-                    {"name": "export_format", "type_name": "string"},
-                    {"name": "date_range_start", "type_name": "string"},
-                    {"name": "date_range_end", "type_name": "string"},
-                    {"name": "include_input_details", "type_name": "boolean"},
+                    {"name": "export_format", "type_name": "string", "nullable": False},
+                    {"name": "date_range_start", "type_name": "string", "nullable": False},
+                    {"name": "date_range_end", "type_name": "string", "nullable": False},
+                    {"name": "include_input_details", "type_name": "boolean", "nullable": False},
                 ],
             },
         ]
@@ -740,10 +867,10 @@ class ContractFieldConsistencyTests(unittest.TestCase):
                 "owning_module": "SHARED",
                 "consumed_by_specs": ["A1057", "A1056"],
                 "fields": [
-                    {"name": "export_format", "type_name": "string"},
-                    {"name": "date_range_start", "type_name": "string"},
-                    {"name": "date_range_end", "type_name": "string"},
-                    {"name": "include_input_details", "type_name": "boolean"},
+                    {"name": "export_format", "type_name": "string", "nullable": False},
+                    {"name": "date_range_start", "type_name": "string", "nullable": False},
+                    {"name": "date_range_end", "type_name": "string", "nullable": False},
+                    {"name": "include_input_details", "type_name": "boolean", "nullable": False},
                 ],
             },
         ]
@@ -780,9 +907,9 @@ class ContractFieldConsistencyTests(unittest.TestCase):
                 "owning_module": "SHARED",
                 "consumed_by_specs": ["A1057"],
                 "fields": [
-                    {"name": "export_format", "type_name": "string"},
-                    {"name": "date_range", "type_name": "string"},  # planner used date_range, spec says date_range_start/end
-                    {"name": "include_input_details", "type_name": "boolean"},
+                    {"name": "export_format", "type_name": "string", "nullable": False},
+                    {"name": "date_range", "type_name": "string", "nullable": False},  # planner used date_range, spec says date_range_start/end
+                    {"name": "include_input_details", "type_name": "boolean", "nullable": False},
                 ],
             },
         ]
@@ -1025,6 +1152,81 @@ class ContractFieldConsistencyTests(unittest.TestCase):
         self.assertNotIn("Word 'artifact'", str(items[0].get("blocking_reason", "")))
 
 
+class PlannedValidationChecksTests(unittest.TestCase):
+    """Tests for v0.0.1 planned deterministic validation checks."""
+
+    def test_required_field_coverage_passes_with_alias_resolution(self) -> None:
+        headers = ["spec_id", "module_tag", "requirement", "acceptance_criteria"]
+        spec_rows = [
+            {
+                "spec_id": "A1001",
+                "module_tag": "API",
+                "requirement": "The response includes artifactId and statusCode.",
+                "acceptance_criteria": "",
+            },
+        ]
+        shared_contracts = [
+            {
+                "contract_id": "artifact_response",
+                "owning_module": "API",
+                "planned_file_path": "shared/types/artifact_response.py",
+                "consumed_by_specs": ["A1001"],
+                "fields": [
+                    {"name": "artifact_id", "type_name": "string", "nullable": False},
+                    {"name": "status_code", "type_name": "integer", "nullable": False},
+                ],
+            }
+        ]
+        result = _validate_required_field_coverage(shared_contracts, spec_rows, headers)
+        self.assertEqual(result["status"], "passed")
+
+    def test_required_field_coverage_skips_when_provider_declares_canonical_contract(self) -> None:
+        headers = ["spec_id", "module_tag", "requirement", "acceptance_criteria"]
+        spec_rows = [
+            {
+                "spec_id": "A1027",
+                "module_tag": "SHARED",
+                "requirement": "Canonical DTO contract with explicit field names and field types.",
+                "acceptance_criteria": "",
+            },
+            {
+                "spec_id": "A1005",
+                "module_tag": "UI",
+                "requirement": "Submit request to API endpoint.",
+                "acceptance_criteria": "",
+            },
+        ]
+        shared_contracts = [
+            {
+                "contract_id": "nutrition_request_dto",
+                "owning_module": "SHARED",
+                "planned_file_path": "workspace/shared-contracts/nutrition_request_dto.json",
+                "consumed_by_specs": ["A1027", "A1005"],
+                "fields": [
+                    {"name": "age", "type_name": "integer", "nullable": False},
+                    {"name": "height_cm", "type_name": "number", "nullable": False},
+                ],
+            }
+        ]
+        result = _validate_required_field_coverage(shared_contracts, spec_rows, headers)
+        self.assertEqual(result["status"], "passed")
+
+    def test_dependency_context_edge_validation_detects_missing_edge(self) -> None:
+        briefs = [
+            {
+                "batch_id": "B0",
+                "spec_rows": [{"spec_id": "A1001"}],
+                "spec_dependency_context": [],
+            }
+        ]
+        spec_dependencies = [
+            {"consumer_spec_id": "A1001", "provider_spec_ids": ["A2001"]},
+        ]
+        result = _validate_dependency_context_edges(briefs, spec_dependencies)
+        self.assertEqual(result["status"], "failed")
+        self.assertTrue(any("Missing dependency-context edges" in reason for reason in result["reasons"]))
+
+
 class ImplementDryRunTests(unittest.TestCase):
     """End-to-end dry-run tests for run_implement with unified planner."""
 
@@ -1081,6 +1283,7 @@ class ImplementDryRunTests(unittest.TestCase):
                 "implement": {
                     "enabled": True,
                     "prompt_name": "implement_from_specs",
+                    "required_field_coverage_validation": {"enabled": False},
                     "inputs": {
                         "design_spec_path": str(self.design),
                         "codebase_dir": ".",
@@ -1116,6 +1319,7 @@ class ImplementDryRunTests(unittest.TestCase):
         self.assertTrue((run_dir / "batch_plan_validation.json").exists())
         self.assertTrue((run_dir / "summary.json").exists())
         self.assertTrue((run_dir / "module_plans" / "CORE.json").exists())
+        self.assertTrue((run_dir / "spec_issues.json").exists())
 
         mock_invoke.assert_called_once()
         call_kwargs = mock_invoke.call_args.kwargs
@@ -1156,6 +1360,7 @@ class ImplementDryRunTests(unittest.TestCase):
                 "implement": {
                     "enabled": True,
                     "prompt_name": "implement_from_specs",
+                    "required_field_coverage_validation": {"enabled": False},
                     "inputs": {
                         "design_spec_path": str(self.design),
                         "codebase_dir": ".",
@@ -1236,6 +1441,7 @@ class ImplementDryRunTests(unittest.TestCase):
                 "implement": {
                     "enabled": True,
                     "prompt_name": "implement_from_specs",
+                    "required_field_coverage_validation": {"enabled": False},
                     "inputs": {
                         "design_spec_path": str(self.design),
                         "codebase_dir": ".",
@@ -1350,6 +1556,7 @@ class ImplementDryRunTests(unittest.TestCase):
                 "implement": {
                     "enabled": True,
                     "prompt_name": "implement_from_specs",
+                    "required_field_coverage_validation": {"enabled": False},
                     "inputs": {
                         "design_spec_path": str(self.design),
                         "codebase_dir": ".",
@@ -1378,6 +1585,155 @@ class ImplementDryRunTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "completed")
         self.assertEqual(captured.get("shared_contracts"), patched_contracts)
+
+
+class SpecIssuesExtractionTests(ImplementDryRunTests):
+    """Tests for spec_issues extraction and persistence from planner Phase 0 output."""
+
+    def _make_plan(self, spec_issues: list[dict] | None = None) -> dict:
+        plan: dict = {
+            "module_plans": [
+                {
+                    "module_tag": "CORE",
+                    "planned_anchors": [
+                        {
+                            "anchor_kind": "new_symbol",
+                            "anchor_materialization_kind": "runtime_logic",
+                            "planned_file_path": "core/calc.py",
+                            "spec_ids": ["A1"],
+                        }
+                    ],
+                }
+            ],
+            "spec_dependencies": [],
+            "shared_contracts": [],
+        }
+        if spec_issues is not None:
+            plan["spec_issues"] = spec_issues
+        return plan
+
+    def _make_config_ctx(self) -> tuple[dict, Any]:
+        from core.context import RuntimeContext
+
+        config = {
+            "agent": {"provider": "stub", "schema_validation_retries": 0},
+            "project": {
+                "name": "test",
+                "root_dir": ".",
+                "state": {
+                    "design_spec_path": str(self.design),
+                    "id_registry_path": str(self.tmp / "out" / "state" / "id_registry.json"),
+                    "sads_id_mapping_path": str(self.tmp / "out" / "state" / "sads_id_mapping.json"),
+                },
+            },
+            "prompts": {"prompt_file": "prompts/PROMPT.yaml"},
+            "commands": {
+                "implement": {
+                    "enabled": True,
+                    "prompt_name": "implement_from_specs",
+                    "required_field_coverage_validation": {"enabled": False},
+                    "inputs": {
+                        "design_spec_path": str(self.design),
+                        "codebase_dir": ".",
+                        "project_context_filename": "PROJECT_CONTEXT.md",
+                    },
+                    "outputs": {
+                        "agent_runs_dir": {"path": "out/agent_runs", "no_overwrite": False},
+                        "agent_artifacts_dir": {"path": "out/agent_artifacts", "no_overwrite": False},
+                        "backups_dir": {"path": "out/backups", "no_overwrite": False},
+                    },
+                }
+            },
+        }
+        ctx = RuntimeContext(
+            command="implement",
+            dry_run=True,
+            verbose=False,
+            command_only_validation=False,
+            run_id="run-spec-issues-001",
+            project_root=str(self.tmp),
+            config_path=str(self.tmp / "config.yaml"),
+        )
+        return config, ctx
+
+    def _run_dir(self) -> "Path":
+        return self.tmp / "out" / "agent_runs" / "implement" / "run-spec-issues-001"
+
+    @patch("handlers.implement.impl.invoke_with_semantic_retry")
+    def test_spec_issues_written_to_disk_when_present(self, mock_invoke: Any) -> None:
+        """spec_issues.json is written even when escalation blocks execution."""
+        mock_invoke.return_value = self._make_plan(spec_issues=[
+            {
+                "issue_id": "ISSUE-001",
+                "kind": "ambiguity",
+                "affected_spec_ids": ["A1"],
+                "description": "R1 does not specify a return value.",
+                "resolution_hint": "Add expected return type to requirement.",
+            }
+        ])
+        config, ctx = self._make_config_ctx()
+        result = run_implement(config, ctx)
+        # All spec_issue kinds now escalate to blocking manual_resolution_items (step 8)
+        self.assertEqual(result["status"], "blocked")
+        spec_issues_path = self._run_dir() / "spec_issues.json"
+        self.assertTrue(spec_issues_path.exists())
+        data = json.loads(spec_issues_path.read_text(encoding="utf-8"))
+        self.assertEqual(len(data["spec_issues"]), 1)
+        self.assertEqual(data["spec_issues"][0]["issue_id"], "ISSUE-001")
+        self.assertEqual(data["spec_issues"][0]["kind"], "ambiguity")
+
+    @patch("handlers.implement.impl.invoke_with_semantic_retry")
+    def test_spec_issues_empty_file_written_when_no_issues(self, mock_invoke: Any) -> None:
+        """spec_issues.json is written empty when planner emits no spec_issues key."""
+        mock_invoke.return_value = self._make_plan()  # no spec_issues key
+        config, ctx = self._make_config_ctx()
+        result = run_implement(config, ctx)
+        self.assertEqual(result["status"], "completed")
+        spec_issues_path = self._run_dir() / "spec_issues.json"
+        self.assertTrue(spec_issues_path.exists())
+        data = json.loads(spec_issues_path.read_text(encoding="utf-8"))
+        self.assertEqual(data["spec_issues"], [])
+
+    @patch("handlers.implement.impl.invoke_with_semantic_retry")
+    def test_spec_issues_each_logged_at_warn_level(self, mock_invoke: Any) -> None:
+        """Each spec_issue generates a warning-level phase log entry on stderr."""
+        mock_invoke.return_value = self._make_plan(spec_issues=[
+            {
+                "issue_id": "ISSUE-001",
+                "kind": "contradiction",
+                "affected_spec_ids": ["A1"],
+                "description": "Conflicting status codes.",
+            }
+        ])
+        config, ctx = self._make_config_ctx()
+        buf = io.StringIO()
+        with patch.object(sys, "stderr", buf):
+            run_implement(config, ctx)
+        output = buf.getvalue()
+        self.assertIn("ISSUE-001", output)
+        self.assertIn("contradiction", output)
+        self.assertIn("A1", output)
+        self.assertIn("warning", output)
+
+    @patch("handlers.implement.impl.invoke_with_semantic_retry")
+    def test_spec_issues_all_five_kinds_preserved(self, mock_invoke: Any) -> None:
+        """All five issue kinds are preserved when the planner emits one of each."""
+        taxonomy = ["contradiction", "overlap", "dependency_gap", "ambiguity", "orphan_reference"]
+        issues = [
+            {
+                "issue_id": f"ISSUE-00{i + 1}",
+                "kind": kind,
+                "affected_spec_ids": ["A1"],
+                "description": f"Test {kind}.",
+            }
+            for i, kind in enumerate(taxonomy)
+        ]
+        mock_invoke.return_value = self._make_plan(spec_issues=issues)
+        config, ctx = self._make_config_ctx()
+        run_implement(config, ctx)
+        data = json.loads((self._run_dir() / "spec_issues.json").read_text(encoding="utf-8"))
+        kinds = {item["kind"] for item in data["spec_issues"]}
+        self.assertEqual(kinds, set(taxonomy))
 
 
 class ImplementLocalSharedWorkspaceTests(unittest.TestCase):
@@ -1432,8 +1788,9 @@ class ImplementLocalSharedWorkspaceTests(unittest.TestCase):
         }
 
     def test_local_shared_workspace_passed_to_planner_and_batch(self) -> None:
-        """Local provider uses one shared workspace path for planner and batch execution."""
+        """Local provider uses one shared workspace path for planner and batch execution (sequential mode)."""
         config = self._config()
+        config["commands"]["implement"]["budgets"] = {"max_parallel_batches": 1}
         planner_output = {
             "module_plans": [
                 {
@@ -1560,8 +1917,278 @@ class ImplementLocalSharedWorkspaceTests(unittest.TestCase):
                         result = run_implement(config, ctx)
 
         self.assertEqual(result["status"], "failed")
-        self.assertEqual(result["reason"], "planner_invoke_failed")
+        self.assertIn("planner agent failed", result["reason"].lower())
         mock_cleanup.assert_called_once_with(self.shared_workspace)
+
+
+class EscalateSpecIssuesTests(unittest.TestCase):
+    """Tests for _escalate_spec_issues — all spec_issue kinds escalate to blocking items."""
+
+    def _make_selected(self, assignments: dict[str, str]) -> list[dict[str, Any]]:
+        """Build workset rows from {spec_id: module_tag} mapping."""
+        return [{"spec_id": sid, "module_tag": tag} for sid, tag in assignments.items()]
+
+    def test_no_issues_returns_empty(self) -> None:
+        """Empty spec_issues list returns empty escalation list."""
+        result = _escalate_spec_issues([], self._make_selected({"A1": "API"}))
+        self.assertEqual(result, [])
+
+    def test_overlap_kind_is_escalated(self) -> None:
+        """All spec_issue kinds are escalated, including overlap."""
+        issues = [
+            {
+                "issue_id": "I001",
+                "kind": "overlap",
+                "affected_spec_ids": ["A1", "A2"],
+                "description": "Overlap issue",
+            }
+        ]
+        selected = self._make_selected({"A1": "API", "A2": "OBS"})
+        result = _escalate_spec_issues(issues, selected)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["item_id"], "I001")
+        self.assertIn("Overlapping responsibilities", result[0]["blocking_reason"])
+
+    def test_single_module_gap_is_escalated(self) -> None:
+        """A dependency_gap in the same module is still escalated (no module filter)."""
+        issues = [
+            {
+                "issue_id": "I001",
+                "kind": "dependency_gap",
+                "affected_spec_ids": ["A1", "A2"],
+                "description": "Single module gap",
+            }
+        ]
+        selected = self._make_selected({"A1": "API", "A2": "API"})
+        result = _escalate_spec_issues(issues, selected)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["item_id"], "I001")
+
+    def test_dependency_gap_is_escalated(self) -> None:
+        """A dependency_gap is escalated to a blocking manual_resolution_item."""
+        issues = [
+            {
+                "issue_id": "I001",
+                "kind": "dependency_gap",
+                "affected_spec_ids": ["A1", "D1", "D2"],
+                "description": "Export flow missing history retrieval step",
+                "resolution_hint": "Amend A1 to require history retrieval before calling D1",
+            }
+        ]
+        selected = self._make_selected({"A1": "API", "D1": "DATA", "D2": "DATA"})
+        result = _escalate_spec_issues(issues, selected)
+        self.assertEqual(len(result), 1)
+        item = result[0]
+        self.assertEqual(item["item_id"], "I001")
+        self.assertEqual(item["required"], True)
+        self.assertIn("Dependency gap", item["blocking_reason"])
+        self.assertEqual(item["evidence_refs"], ["A1", "D1", "D2"])
+        self.assertEqual(item["options"], [])
+        self.assertEqual(item["resolution_mode"], "edit_spec")
+        self.assertEqual(item["spec_amendment_hints"], "Amend A1 to require history retrieval before calling D1")
+
+    def test_no_hint_has_empty_options(self) -> None:
+        """An issue with no resolution_hint produces empty options list."""
+        issues = [
+            {
+                "issue_id": "I002",
+                "kind": "dependency_gap",
+                "affected_spec_ids": ["A1", "C1"],
+                "description": "Missing intermediary step",
+            }
+        ]
+        selected = self._make_selected({"A1": "API", "C1": "CORE"})
+        result = _escalate_spec_issues(issues, selected)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["options"], [])
+
+    def test_title_truncated_to_120_chars(self) -> None:
+        """Title is truncated to 120 characters from description."""
+        long_desc = "X" * 200
+        issues = [
+            {
+                "issue_id": "I003",
+                "kind": "dependency_gap",
+                "affected_spec_ids": ["A1", "B1"],
+                "description": long_desc,
+            }
+        ]
+        selected = self._make_selected({"A1": "API", "B1": "CORE"})
+        result = _escalate_spec_issues(issues, selected)
+        self.assertEqual(len(result[0]["title"]), 120)
+
+    def test_all_kinds_escalated(self) -> None:
+        """All 5 spec_issue kinds (contradiction, overlap, dependency_gap, ambiguity, orphan_reference) escalate."""
+        kinds = ["contradiction", "overlap", "dependency_gap", "ambiguity", "orphan_reference"]
+        issues = [
+            {"issue_id": f"I{i:03d}", "kind": k, "affected_spec_ids": ["A1", "A2"], "description": f"{k} issue"}
+            for i, k in enumerate(kinds)
+        ]
+        selected = self._make_selected({"A1": "API", "A2": "CORE"})
+        result = _escalate_spec_issues(issues, selected)
+        self.assertEqual(len(result), 5)
+        result_ids = {item["item_id"] for item in result}
+        self.assertEqual(result_ids, {"I000", "I001", "I002", "I003", "I004"})
+
+    def test_blocking_reason_includes_kind(self) -> None:
+        """Each kind has a distinct blocking_reason template."""
+        expected_snippets = {
+            "contradiction": "Mutually exclusive",
+            "overlap": "Overlapping responsibilities",
+            "dependency_gap": "Dependency gap",
+            "ambiguity": "Ambiguous requirement",
+            "orphan_reference": "Orphan reference",
+        }
+        for kind, snippet in expected_snippets.items():
+            issues = [{"issue_id": "I001", "kind": kind, "affected_spec_ids": ["A1"], "description": "test"}]
+            selected = self._make_selected({"A1": "API"})
+            result = _escalate_spec_issues(issues, selected)
+            self.assertEqual(len(result), 1, f"kind={kind} should produce 1 item")
+            self.assertIn(snippet, result[0]["blocking_reason"], f"kind={kind}")
+
+
+class TestContractFieldNullableMetadata(unittest.TestCase):
+    """Tests for nullable enforcement in stage 11 (contract_field_consistency) and stage 12/17."""
+
+    _HEADERS = ["spec_id", "module_tag", "requirement", "acceptance_criteria"]
+
+    def _spec(self, spec_id: str, module: str, req: str = "x") -> dict[str, Any]:
+        return {"spec_id": spec_id, "module_tag": module, "requirement": req, "acceptance_criteria": ""}
+
+    # --- Stage 11 structural pre-pass ---
+
+    def test_stage11_rejects_field_missing_nullable(self) -> None:
+        """Field with name+type_name but no nullable triggers a missing_nullable item."""
+        contracts = [{
+            "contract_id": "my_dto",
+            "owning_module": "SHARED",
+            "consumed_by_specs": ["A1"],
+            "fields": [{"name": "user_id", "type_name": "string"}],  # no nullable
+        }]
+        spec_rows = [self._spec("A1", "SHARED", "user_id field for my_dto")]
+        result = _validate_contract_field_consistency(
+            contracts, spec_rows, self._HEADERS, match_score_threshold=0.8
+        )
+        self.assertEqual(result["status"], "failed")
+        item_ids = [item["item_id"] for item in result.get("manual_resolution_items", [])]
+        self.assertTrue(any("missing_nullable" in iid for iid in item_ids), item_ids)
+
+    def test_stage11_accepts_field_with_nullable_true_and_false(self) -> None:
+        """Fields with explicit nullable=true/false emit no structural items."""
+        contracts = [{
+            "contract_id": "my_dto",
+            "owning_module": "SHARED",
+            "consumed_by_specs": ["A1"],
+            "fields": [
+                {"name": "user_id", "type_name": "string", "nullable": False},
+                {"name": "display_name", "type_name": "string", "nullable": True},
+            ],
+        }]
+        spec_rows = [self._spec("A1", "SHARED", "user_id display_name fields for my_dto")]
+        result = _validate_contract_field_consistency(
+            contracts, spec_rows, self._HEADERS, match_score_threshold=0.8
+        )
+        items = result.get("manual_resolution_items", [])
+        structural_items = [
+            item for item in items
+            if "missing_nullable" in item.get("item_id", "")
+            or "duplicate_field" in item.get("item_id", "")
+        ]
+        self.assertEqual(structural_items, [], structural_items)
+
+    def test_stage11_rejects_duplicate_field_names(self) -> None:
+        """Two fields with identical names in one contract trigger a duplicate_field item."""
+        contracts = [{
+            "contract_id": "my_dto",
+            "owning_module": "SHARED",
+            "consumed_by_specs": ["A1"],
+            "fields": [
+                {"name": "user_id", "type_name": "string", "nullable": False},
+                {"name": "user_id", "type_name": "integer", "nullable": False},  # duplicate
+            ],
+        }]
+        spec_rows = [self._spec("A1", "SHARED", "user_id field")]
+        result = _validate_contract_field_consistency(
+            contracts, spec_rows, self._HEADERS, match_score_threshold=0.8
+        )
+        self.assertEqual(result["status"], "failed")
+        item_ids = [item["item_id"] for item in result.get("manual_resolution_items", [])]
+        self.assertTrue(any("duplicate_field" in iid for iid in item_ids), item_ids)
+
+    # --- Stage 12 providerless handling ---
+
+    def test_stage12_manual_block_on_no_provider(self) -> None:
+        """No provider spec always emits manual_resolution_item and fails."""
+        contracts = [{
+            "contract_id": "shared_filter",
+            "owning_module": "DOMAIN",
+            "consumed_by_specs": ["U3"],  # U3 is UI, not DOMAIN
+            "fields": [{"name": "status", "type_name": "string", "nullable": True}],
+        }]
+        spec_rows = [self._spec("U3", "UI", "status filter for shared_filter")]
+        result = _validate_required_field_coverage(contracts, spec_rows, self._HEADERS)
+        self.assertEqual(result["status"], "failed")
+        items = result.get("manual_resolution_items", [])
+        self.assertGreater(len(items), 0, "Expected at least one manual_resolution_item")
+        item_ids = [item["item_id"] for item in items]
+        self.assertTrue(any("no_provider_spec_shared_filter" in iid for iid in item_ids), item_ids)
+        checks = result.get("checks", [])
+        self.assertTrue(any("manual_block_no_provider_spec" in c for c in checks), checks)
+
+    def test_stage12_allowlist_skips_providerless(self) -> None:
+        """Contract in allowlist is skipped even though it has no provider spec."""
+        contracts = [{
+            "contract_id": "shared_filter",
+            "owning_module": "DOMAIN",
+            "consumed_by_specs": ["U3"],
+            "fields": [{"name": "status", "type_name": "string", "nullable": True}],
+        }]
+        spec_rows = [self._spec("U3", "UI", "status filter")]
+        result = _validate_required_field_coverage(
+            contracts,
+            spec_rows,
+            self._HEADERS,
+            providerless_contract_allowlist={"shared_filter"},
+        )
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result.get("manual_resolution_items", []), [])
+        checks = result.get("checks", [])
+        self.assertTrue(any("skipped_allowlisted" in c for c in checks), checks)
+
+    # --- Stage 17 nullable check in brief scoping ---
+
+    def test_stage17_rejects_field_missing_nullable_in_brief(self) -> None:
+        """Brief with a contract field missing nullable causes scope validation to fail."""
+        briefs = [{
+            "batch_id": "B0",
+            "spec_rows": [{"spec_id": "A1"}],
+            "planned_anchors": [],
+            "shared_contracts": [{
+                "contract_id": "my_dto",
+                "consumed_by_specs": ["A1"],
+                "fields": [{"name": "user_id", "type_name": "string"}],  # no nullable
+            }],
+        }]
+        result = _validate_brief_scoping(briefs)
+        self.assertEqual(result["status"], "failed")
+        reasons = result.get("reasons", [])
+        self.assertTrue(any("nullable" in r for r in reasons), reasons)
+
+    def test_stage17_passes_when_all_fields_have_nullable(self) -> None:
+        """Brief with all contract fields having nullable passes scope validation."""
+        briefs = [{
+            "batch_id": "B0",
+            "spec_rows": [{"spec_id": "A1"}],
+            "planned_anchors": [],
+            "shared_contracts": [{
+                "contract_id": "my_dto",
+                "consumed_by_specs": ["A1"],
+                "fields": [{"name": "user_id", "type_name": "string", "nullable": False}],
+            }],
+        }]
+        result = _validate_brief_scoping(briefs)
+        self.assertEqual(result["status"], "passed")
+        self.assertIn("contract_fields_have_nullable", result.get("checks", []))
 
 
 if __name__ == "__main__":

@@ -25,7 +25,16 @@ from core.errors import (
 )
 from core.logger import RUN_LOGGER_NAME, init_run_logger
 from core.time_utils import generate_run_id
-from core.pika_paths import get_config_schema_path
+from core.lifecycle import (
+    find_most_recent_blocked_run_id,
+    resolve_agent_runs_dir_for_command,
+)
+from core.pika_paths import get_config_schema_path, resolve_prompts_path, resolve_schema_path
+from core.resolution import (
+    build_resolved_decisions_context,
+    load_resolution_file,
+    validate_resolutions,
+)
 from core.prompt_registry import PromptRegistry
 from core.pika_config import get_pika_config
 from core.safety import validate_command_preconditions
@@ -137,8 +146,6 @@ def _validate_referenced_files_exist(
     config: dict[str, Any], *, source: str, workspace_root: Path
 ) -> None:
     """Validate all referenced files exist. Prompts from PIKA root; schemas workspace then PIKA."""
-    from core.pika_paths import resolve_prompts_path, resolve_schema_path
-
     prompts_section = config.get("prompts")
     prompt_file = prompts_section.get("prompt_file") if isinstance(prompts_section, dict) else None
     if isinstance(prompt_file, str) and prompt_file.strip():
@@ -208,6 +215,7 @@ def _execute_command(
     command_only_validation: bool,
     input_overrides: dict[str, str] | None = None,
     resume_run_id: str | None = None,
+    auto_resume: bool = False,
 ) -> None:
     """Execute command with config load, validation, and dispatch."""
     resolved_workspace_root = _resolve_workspace_root(project_root)
@@ -245,12 +253,27 @@ def _execute_command(
             return
 
         overrides = input_overrides or {}
+
+        if auto_resume and not resume_run_id:
+            auto_run_id = find_most_recent_blocked_run_id(
+                config_data, resolved_workspace_root, command_name
+            )
+            if auto_run_id:
+                typer.secho(
+                    f"Auto-resuming most recent blocked run: {auto_run_id}",
+                    fg=typer.colors.CYAN,
+                    err=True,
+                )
+                resume_run_id = auto_run_id
+            else:
+                raise ValueError(
+                    f"--resume specified but no blocked run found for command '{command_name}'."
+                )
+
         run_id = resume_run_id or generate_run_id()
         resolved_decisions: str | None = None
         if resume_run_id:
-            from core.lifecycle import resolve_agent_runs_dir_for_command
-            from core.resolution import build_resolved_decisions_context, load_resolution_file, validate_resolutions
-            if command_name in ("implement", "plan", "map", "resolve_plan"):
+            if command_name in ("implement", "plan", "map", "resolve_plan", "refine"):
                 run_dir = resolve_agent_runs_dir_for_command(
                     config_data, Path(resolved_workspace_root), command_name, resume_run_id
                 )
@@ -290,20 +313,20 @@ def _execute_command(
                     raise ValueError(
                         f"Cannot resume: resolutions.yaml is not fully resolved for run_id '{resume_run_id}': {preview}"
                     )
-                done_count = 0
+                edit_count = 0
                 for item in data.get("items", []):
                     if not isinstance(item, dict):
                         continue
                     if item.get("source") != "validation":
                         continue
-                    if not bool(item.get("acknowledged")):
+                    if not (item.get("manual_edit_text") or "").strip():
                         continue
-                    done_count += 1
-                if done_count > 0:
+                    edit_count += 1
+                if edit_count > 0:
                     typer.secho(
                         "WARNING: "
-                        f"{done_count} item(s) were marked DONE (spec edits acknowledged). "
-                        "Resume will re-validate and may block again if the spec edits were not applied.",
+                        f"{edit_count} item(s) have manual spec edits. "
+                        "Resume will re-validate and may block again if edits are insufficient.",
                         fg=typer.colors.YELLOW,
                         err=True,
                     )
@@ -376,6 +399,20 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+
+
+@app.callback(invoke_without_command=True)
+def _root_callback(
+    ctx: typer.Context,
+    version: bool = typer.Option(False, "--version", "-V", help="Show version and exit."),
+) -> None:
+    """Root callback: handle --version before dispatching to subcommands."""
+    if version:
+        v = get_pika_config().get("version", "0.0.0")
+        typer.echo(v)
+        raise typer.Exit(0)
+
+
 agent_app = typer.Typer(
     help="Agent workflow commands (plan, format, review, map, implement, resolve_plan).",
     no_args_is_help=True,
@@ -533,7 +570,8 @@ def agent_implement_command(
     design_spec: str | None = typer.Option(None, "--design-spec", help="Path to Formatted SADS. Relative to project root or absolute."),
     codebase_dir: str | None = typer.Option(None, "--codebase-dir", help="Path to codebase/source directory. Absolute or relative to project root."),
     project_context: str | None = typer.Option(None, "--project-context", help="Path to project context file (e.g. PROJECT_CONTEXT.md). Absolute or relative to project root."),
-    resume: str | None = typer.Option(None, "--resume", help="Resume a blocked run by run ID (after resolving manual items)."),
+    resume: bool = typer.Option(False, "--resume", help="Resume the most recent blocked run. Use --run to specify a run ID."),
+    run: str | None = typer.Option(None, "--run", help="Specific run ID to resume (requires --resume)."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Run without side effects."),
     verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logs."),
     command_only_validation: bool = typer.Option(
@@ -541,6 +579,8 @@ def agent_implement_command(
     ),
 ) -> None:
     """Implementer (Phase 1): implement Formatted SADS by producing diffs with spec_id traceability."""
+    if run and not resume:
+        raise typer.BadParameter("--run requires --resume to be set.", param_hint="'--run'")
     overrides = {}
     if design_spec:
         overrides["design_spec_path"] = design_spec
@@ -556,13 +596,14 @@ def agent_implement_command(
         verbose=verbose,
         command_only_validation=command_only_validation,
         input_overrides=overrides if overrides else None,
-        resume_run_id=resume,
+        resume_run_id=run if resume else None,
+        auto_resume=resume and not run,
     )
 
 
 @agent_app.command("resolve")
 def agent_resolve_command(
-    run: str = typer.Option(..., "--run", help="Run ID to resolve (blocked run)."),
+    run: str | None = typer.Option(None, "--run", help="Run ID to resolve. Omit to auto-resolve the most recent blocked run."),
     config: str | None = typer.Option(None, "--config", help="Path to config YAML."),
     project_root: str = typer.Option(..., "--project-root", help="Workspace root (required)."),
     verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logs."),
@@ -575,7 +616,39 @@ def agent_resolve_command(
         dry_run=False,
         verbose=verbose,
         command_only_validation=False,
-        input_overrides={"run_id": run},
+        input_overrides={"run_id": run} if run else None,
+    )
+
+
+@agent_app.command("refine")
+def agent_refine_command(
+    config: str | None = typer.Option(None, "--config", help="Path to config YAML."),
+    project_root: str = typer.Option(..., "--project-root", help="Workspace root (required): directory containing project config and outputs."),
+    design_spec: str | None = typer.Option(None, "--design-spec", help="Path to design spec (SADS CSV). Relative to project root or absolute."),
+    resume: bool = typer.Option(False, "--resume", help="Resume the most recent blocked run. Use --run to specify a run ID."),
+    run: str | None = typer.Option(None, "--run", help="Specific run ID to resume (requires --resume)."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Run without side effects."),
+    verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logs."),
+    command_only_validation: bool = typer.Option(
+        False, "--command-only-validation", help="Validate only; skip execution."
+    ),
+) -> None:
+    """Spec quality review: ambiguity detection, testability audit, and refinement suggestions."""
+    if run and not resume:
+        raise typer.BadParameter("--run requires --resume to be set.", param_hint="'--run'")
+    overrides = {}
+    if design_spec:
+        overrides["design_spec_path"] = design_spec
+    _execute_command(
+        "refine",
+        config=config,
+        project_root=project_root,
+        dry_run=dry_run,
+        verbose=verbose,
+        command_only_validation=command_only_validation,
+        input_overrides=overrides if overrides else None,
+        resume_run_id=run if resume else None,
+        auto_resume=resume and not run,
     )
 
 

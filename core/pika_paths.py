@@ -14,14 +14,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from core.pika_config import get_pika_config
+
 # PIKA root: parent of core/ (the PIKA project directory, same as parent of cli.py)
 # Always contains: config/, core/, handlers/, prompts/, schemas/, docs/, tests/
 PIKA_ROOT = Path(__file__).resolve().parent.parent
 
 def _pika_path(key: str) -> Path:
     """Return path from pika config paths section, else built-in default."""
-    from core.pika_config import get_pika_config
-
     paths = get_pika_config().get("paths", {})
     defaults = {
         "config_schema": "config/config.schema.json",
@@ -56,8 +56,6 @@ def get_default_prompts_path() -> Path:
 
 def get_default_schema_path(schema_name: str) -> Path | None:
     """Return default path to a schema file under PIKA root, or None if unknown."""
-    from core.pika_config import get_pika_config
-
     cfg = get_pika_config()
     schema_map = cfg.get("schema_map", {})
     schemas_dir = cfg.get("paths", {}).get("schemas_dir", "schemas/agent_outputs")

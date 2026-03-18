@@ -55,6 +55,7 @@ def _validate_required_config(cfg: dict[str, Any]) -> None:
     """Validate that all required PIKA config sections and fields are present."""
     missing: list[str] = []
 
+    _require_non_empty_string(cfg.get("version"), "version", missing)
     _require(isinstance(cfg.get("paths"), dict), "paths", missing)
     _require(isinstance(cfg.get("schema_map"), dict), "schema_map", missing)
     _require(isinstance(cfg.get("config_candidates"), list), "config_candidates", missing)
@@ -111,6 +112,15 @@ def _validate_required_config(cfg: dict[str, Any]) -> None:
         _require(isinstance(local.get("exec_timeout_sec"), (int, float)), "local.exec_timeout_sec", missing)
         _require_non_empty_string(local.get("temp_workspace_prefix"), "local.temp_workspace_prefix", missing)
         _require(isinstance(local.get("temp_workspace_ttl_sec"), (int, float)), "local.temp_workspace_ttl_sec", missing)
+        model = local.get("model")
+        if model is None:
+            missing.append("local.model")
+        elif isinstance(model, str):
+            _require_non_empty_string(model, "local.model", missing)
+        elif isinstance(model, dict):
+            _require_non_empty_string(model.get("default"), "local.model.default", missing)
+        else:
+            missing.append("local.model (must be string or object with default)")
 
     if isinstance(cfg.get("default_outputs"), dict):
         default_outputs = cfg["default_outputs"]
