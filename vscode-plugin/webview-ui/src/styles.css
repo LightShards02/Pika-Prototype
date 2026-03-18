@@ -306,14 +306,19 @@
   overflow: hidden;
 }
 
-.progress-bar-fill {
-  height: 100%;
-  background: var(--vscode-activityBarBadge-background, #007acc);
-  transition: width 0.3s ease;
+<<<<<<< HEAD
+.icon-button:disabled,
+.secondary-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
-/* Subunits */
-.subunit-list {
+.status {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+=======
+.status {
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -341,29 +346,16 @@
   align-items: center;
   flex-wrap: wrap;
   gap: 4px;
-  font-size: 12px;
-  padding: 6px 0;
-}
-
-.phase-step {
-  padding: 2px 8px;
-  border-radius: 10px;
+>>>>>>> origin/cursor/plugin-design-spec-mapping-51a2
   border: 1px solid var(--vscode-panel-border);
+  padding: 8px;
 }
 
-.phase-step--done    { opacity: 0.5; }
-.phase-step--active  { background: var(--vscode-activityBarBadge-background); color: var(--vscode-activityBarBadge-foreground); font-weight: 600; border-color: transparent; }
-.phase-step--pending { opacity: 0.35; }
-.phase-arrow         { opacity: 0.4; }
-
-/* Batch list */
-.batch-list {
+<<<<<<< HEAD
+.document-column {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-}
-
-.batch-row {
+  gap: 6px;
   border: 1px solid var(--vscode-panel-border);
 }
 
@@ -416,56 +408,159 @@
   word-break: break-all;
 }
 
-.stream-line {
-  line-height: 1.4;
-  opacity: 0.9;
+.document-column h3 {
+  margin: 0;
+  font-size: 14px;
 }
 
-/* ── Manual resolution block ─────────────────────────────────────────────── */
-
-.manual-block {
-  border: 2px solid var(--vscode-editorWarning-foreground, #cc9900);
-  padding: 12px;
+.document-row {
   display: flex;
-  flex-direction: column;
-  gap: 10px;
-  background: var(--vscode-editorWidget-background, rgba(255,255,255,0.03));
-}
-
-.manual-block__header {
-  display: flex;
-  align-items: center;
+  align-items: stretch;
   gap: 8px;
 }
 
-.manual-block__icon  { font-size: 16px; }
-.manual-block__title { font-weight: 600; font-size: 14px; }
-.manual-block__count { margin-left: auto; font-size: 12px; opacity: 0.7; }
-.manual-block__desc  { margin: 0; font-size: 12px; opacity: 0.8; }
-
-.resolution-card {
+.document-bar {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
   border: 1px solid var(--vscode-panel-border);
-  padding: 10px;
+  background: var(--vscode-editorWidget-background);
+  color: var(--vscode-foreground);
+  text-align: left;
+  padding: 6px 8px;
+}
+
+.document-bar.imported {
+  border-color: var(--vscode-testing-iconPassed);
+}
+
+.document-bar.empty {
+  border-color: var(--vscode-editorWarning-foreground);
+}
+
+.document-title {
+  font-weight: 700;
+}
+
+.document-icon {
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.document-labels {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
 }
 
-.resolution-card--resolved {
-  opacity: 0.65;
-  border-style: dashed;
+.document-path {
+  opacity: 0.85;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  width: 100%;
 }
 
-.resolution-card__header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.document-import-button {
+  width: 64px;
+}
+
+.document-hint {
+  margin: 0;
+  opacity: 0.8;
   font-size: 12px;
 }
 
-.resolution-card__index  { opacity: 0.6; }
-.resolution-card__entity { font-weight: 600; font-family: var(--vscode-editor-font-family, monospace); }
-.resolution-card__check  { margin-left: auto; color: #4caf50; font-weight: 600; }
+@media (max-width: 245px) {
+  .document-labels,
+  .document-hint {
+    display: none;
+  }
+
+  .document-bar {
+    justify-content: center;
+    padding: 6px;
+  }
+}
+
+.mapping-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mapping-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.mapping-badge.running {
+  background: var(--vscode-progressBar-background);
+  color: var(--vscode-editor-background);
+}
+
+.mapping-badge.idle {
+  background: var(--vscode-descriptionForeground);
+  color: var(--vscode-editor-background);
+}
+
+.validation-status {
+  color: var(--vscode-descriptionForeground);
+}
+
+.codex-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.codex-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.codex-badge.ready {
+  background: var(--vscode-testing-iconPassed);
+  color: var(--vscode-editor-background);
+}
+
+.codex-badge.missing {
+  background: var(--vscode-testing-iconFailed);
+  color: var(--vscode-editor-background);
+}
+
+.secondary-button {
+  width: fit-content;
+}
+
+=======
+>>>>>>> origin/cursor/plugin-design-spec-mapping-51a2
+.error {
+  color: var(--vscode-errorForeground);
+}
 
 .resolution-card__reason  { font-size: 12px; }
 .resolution-card__details { font-size: 11px; opacity: 0.75; font-style: italic; }

@@ -1,41 +1,363 @@
-import React from "react";
-import { SidebarPanel } from "./panels/SidebarPanel";
-import { MapPanel } from "./panels/MapPanel";
-import { ImplementPanel } from "./panels/ImplementPanel";
-import type { PikaBootstrap, PanelOutgoingMessage, SidebarOutgoingMessage } from "./types";
-
-declare global {
-  interface Window {
-    __PIKA__: PikaBootstrap;
-    acquireVsCodeApi: () => { postMessage: (msg: unknown) => void };
-  }
-}
+import React, { useEffect, useMemo, useState } from "react";
+import {
+<<<<<<< HEAD
+  CodexValidationRuntimePayload,
+  CodexRuntimePayload,
+  CodeReference,
+  CursorContextMapping,
+  ExtensionStatePayload,
+  ImportedDocumentOpenPayload,
+  MappingRuntimePayload,
+=======
+  CodeReference,
+  CursorContextMapping,
+  ExtensionStatePayload,
+>>>>>>> origin/cursor/plugin-design-spec-mapping-51a2
+  SpecCodeMapping,
+  WebviewIncomingMessage,
+} from "./types";
 
 interface AppProps {
-  postMessage: (message: unknown) => void;
+  postMessage: (message: {
+<<<<<<< HEAD
+    type:
+      | "chooseDesignSpec"
+      | "chooseIssueTracker"
+      | "chooseTestingPlan"
+      | "requestCodeMapping"
+      | "refreshMappings"
+      | "openCodeReference"
+      | "openImportedDocument"
+      | "configureCodexPath"
+      | "configureCodeDirectory";
+    payload?: CodeReference | ImportedDocumentOpenPayload;
+  }) => void;
 }
 
+const DEFAULT_CODEX_RUNTIME: CodexRuntimePayload = {
+  status: "missing",
+  source: "none",
+  message: "Codex executable status is still being resolved.",
+};
+
+const DEFAULT_MAPPING_RUNTIME: MappingRuntimePayload = {
+  isRunning: false,
+  message: "Idle",
+};
+
+const DEFAULT_CODEX_VALIDATION_RUNTIME: CodexValidationRuntimePayload = {
+  isValidating: false,
+  message: "",
+};
+
+function formatLastMappedDisplay(lastMappedAt?: number): string {
+  if (typeof lastMappedAt !== "number" || !Number.isFinite(lastMappedAt)) {
+    return "Not mapped yet";
+  }
+  const timestamp = new Date(lastMappedAt);
+  if (Number.isNaN(timestamp.getTime())) {
+    return "Not mapped yet";
+  }
+  const month = String(timestamp.getMonth() + 1).padStart(2, "0");
+  const day = String(timestamp.getDate()).padStart(2, "0");
+  const hours = String(timestamp.getHours()).padStart(2, "0");
+  const minutes = String(timestamp.getMinutes()).padStart(2, "0");
+  return `${month}-${day} ${hours}:${minutes}`;
+}
+
+=======
+    type: "chooseDesignSpec" | "requestCodeMapping" | "refreshMappings" | "openCodeReference";
+    payload?: CodeReference;
+  }) => void;
+}
+
+>>>>>>> origin/cursor/plugin-design-spec-mapping-51a2
 /**
  * Root React component.  Reads window.__PIKA__.view to decide which panel to
  * render:  "sidebar" | "map" | "implement"
  */
 export function App({ postMessage }: AppProps): React.ReactElement {
-  const view = window.__PIKA__?.view ?? "sidebar";
+  const [statePayload, setStatePayload] = useState<ExtensionStatePayload>({
+    rows: [],
+    specToCodeMappings: [],
+<<<<<<< HEAD
+    codexRuntime: DEFAULT_CODEX_RUNTIME,
+    codexValidationRuntime: DEFAULT_CODEX_VALIDATION_RUNTIME,
+    mappingRuntime: DEFAULT_MAPPING_RUNTIME,
+=======
+>>>>>>> origin/cursor/plugin-design-spec-mapping-51a2
+  });
+  const [cursorContext, setCursorContext] = useState<CursorContextMapping>({
+    filePath: "",
+    symbolName: "",
+    symbolKind: "unknown",
+    matchedSpecs: [],
+    source: "placeholder",
+    message: "Move cursor into a function or class to view mapped specs.",
+  });
+  const [error, setError] = useState<string>("");
 
-  if (view === "map") {
-    return (
-      <MapPanel postMessage={(msg: PanelOutgoingMessage) => postMessage(msg)} />
-    );
-  }
+  useEffect(() => {
+    const onMessage = (event: MessageEvent<WebviewIncomingMessage>) => {
+      const message = event.data;
+      if (message.type === "stateUpdated" && message.payload) {
+<<<<<<< HEAD
+        const payload = message.payload as ExtensionStatePayload;
+        setStatePayload({
+          ...payload,
+          codexRuntime: payload.codexRuntime ?? DEFAULT_CODEX_RUNTIME,
+          codexValidationRuntime:
+            payload.codexValidationRuntime ?? DEFAULT_CODEX_VALIDATION_RUNTIME,
+          mappingRuntime: payload.mappingRuntime ?? DEFAULT_MAPPING_RUNTIME,
+        });
+=======
+        setStatePayload(message.payload as ExtensionStatePayload);
+>>>>>>> origin/cursor/plugin-design-spec-mapping-51a2
+        setError("");
+      } else if (message.type === "cursorContextUpdated" && message.payload) {
+        setCursorContext(message.payload as CursorContextMapping);
+      } else if (message.type === "error") {
+        setError(message.message ?? "Unexpected extension error.");
+      }
+    };
 
-  if (view === "implement") {
-    return (
-      <ImplementPanel postMessage={(msg: PanelOutgoingMessage) => postMessage(msg)} />
-    );
-  }
+    window.addEventListener("message", onMessage);
+    postMessage({ type: "requestCodeMapping" });
+    return () => {
+      window.removeEventListener("message", onMessage);
+    };
+  }, [postMessage]);
 
-  // Default: sidebar
+  const mappingBySpecId = useMemo(() => {
+    const map = new Map<string, SpecCodeMapping>();
+    for (const mapping of statePayload.specToCodeMappings) {
+      map.set(mapping.specId, mapping);
+    }
+    return map;
+  }, [statePayload.specToCodeMappings]);
+<<<<<<< HEAD
+  const codexReady = statePayload.codexRuntime.status === "ready";
+  const mappingRunning = statePayload.mappingRuntime.isRunning;
+  const documentRows = [
+    {
+      id: "designSpec" as const,
+      title: "Design Spec",
+      iconText: "DS",
+      path: statePayload.importedFilePath,
+      importMessageType: "chooseDesignSpec" as const,
+      importDisabled: mappingRunning,
+    },
+    {
+      id: "issueTracker" as const,
+      title: "Issue Tracking Sheet",
+      iconText: "IT",
+      path: statePayload.issueTrackerFilePath,
+      importMessageType: "chooseIssueTracker" as const,
+      importDisabled: false,
+    },
+    {
+      id: "testingPlan" as const,
+      title: "Testing Plan",
+      iconText: "TP",
+      path: statePayload.testingPlanFilePath,
+      importMessageType: "chooseTestingPlan" as const,
+      importDisabled: false,
+    },
+  ];
+=======
+>>>>>>> origin/cursor/plugin-design-spec-mapping-51a2
+
   return (
-    <SidebarPanel postMessage={(msg: SidebarOutgoingMessage) => postMessage(msg)} />
+    <div className="app">
+      <header className="toolbar">
+        <h2>Design Spec Mapper (MVP)</h2>
+        <div className="actions">
+          <button
+            type="button"
+            className="icon-button"
+<<<<<<< HEAD
+            title="Refresh mappings and preview file"
+            aria-label="Refresh mappings"
+            disabled={mappingRunning || !codexReady}
+=======
+            title="Import design spec CSV"
+            aria-label="Import design spec CSV"
+            onClick={() => postMessage({ type: "chooseDesignSpec" })}
+          >
+            ⭱
+          </button>
+          <button
+            type="button"
+            className="icon-button"
+            title="Refresh mappings and preview file"
+            aria-label="Refresh mappings"
+>>>>>>> origin/cursor/plugin-design-spec-mapping-51a2
+            onClick={() => postMessage({ type: "refreshMappings" })}
+          >
+            ↻
+          </button>
+        </div>
+      </header>
+
+<<<<<<< HEAD
+      <section className="document-column">
+        <h3>Documents</h3>
+        {documentRows.map((row) => (
+          <div className="document-row" key={row.id}>
+            <button
+              type="button"
+              className={`document-bar ${row.path ? "imported" : "empty"}`}
+              title={row.path ? `Double-click to quick-open ${row.title}` : `${row.title} is not imported yet`}
+              aria-label={`${row.title} document bar`}
+              onDoubleClick={() =>
+                postMessage({
+                  type: "openImportedDocument",
+                  payload: { documentType: row.id },
+                })
+              }
+            >
+              <span className="document-icon" aria-hidden="true">
+                {row.iconText}
+              </span>
+              <span className="document-labels">
+                <span className="document-title">{row.title}</span>
+                <span className="document-path">{row.path ?? "Not imported"}</span>
+              </span>
+            </button>
+            <button
+              type="button"
+              className="secondary-button document-import-button"
+              disabled={row.importDisabled}
+              onClick={() => postMessage({ type: row.importMessageType })}
+            >
+              Import
+            </button>
+          </div>
+        ))}
+        <p className="document-hint">Double-click a document bar to quick-open the imported file.</p>
+      </section>
+
+      <section className="status">
+        <div className="mapping-status-row">
+          <strong>Mapping status:</strong>
+          <span className={`mapping-badge ${mappingRunning ? "running" : "idle"}`}>
+            {mappingRunning ? "Running..." : "Idle"}
+          </span>
+        </div>
+        <div>
+          <strong>Mapping details:</strong> {statePayload.mappingRuntime.message}
+        </div>
+        <div>
+          <strong>Last mapped:</strong> {formatLastMappedDisplay(statePayload.lastMappedAt)}
+        </div>
+        {statePayload.codexValidationRuntime.isValidating ? (
+          <div className="validation-status">
+            <strong>Validation:</strong> {statePayload.codexValidationRuntime.message}
+          </div>
+        ) : null}
+        <div className="codex-status-row">
+          <strong>Agent readiness:</strong>
+          <span className={`codex-badge ${codexReady ? "ready" : "missing"}`}>
+            {codexReady ? "Ready" : "Not ready"}
+          </span>
+        </div>
+        <div>
+          <strong>Codex executable:</strong> {statePayload.codexRuntime.effectivePath ?? "Not detected"}
+        </div>
+        <div>
+          <strong>Codex details:</strong> {statePayload.codexRuntime.message}
+        </div>
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={statePayload.codexValidationRuntime.isValidating}
+          onClick={() => postMessage({ type: "configureCodexPath" })}
+        >
+          Configure Codex Path
+        </button>
+        <div>
+          <strong>Code directory:</strong> {statePayload.codeDirectoryPath ?? "Not resolved"}
+        </div>
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={mappingRunning}
+          onClick={() => postMessage({ type: "configureCodeDirectory" })}
+        >
+          Configure Code Directory
+        </button>
+        <div>
+          <strong>Spec preview tab:</strong> {statePayload.importedPreviewPath ?? "Not generated yet"}
+=======
+      <section className="status">
+        <div>
+          <strong>Imported CSV:</strong> {statePayload.importedFilePath ?? "Not imported yet"}
+        </div>
+        <div>
+          <strong>Spec tab file:</strong> {statePayload.importedPreviewPath ?? "Not generated yet"}
+>>>>>>> origin/cursor/plugin-design-spec-mapping-51a2
+        </div>
+        {error ? <div className="error">Error: {error}</div> : null}
+      </section>
+
+      <section className="panel">
+        <h3>Real-time Cursor Mapping</h3>
+        {!cursorContext.symbolName ? (
+          <p className="empty">
+            {cursorContext.message ?? "Move cursor into a function or class to view mapped specs."}
+          </p>
+        ) : (
+          <>
+            <div className="code-file">
+              <strong>Current {cursorContext.symbolKind}:</strong> {cursorContext.symbolName}
+            </div>
+            {cursorContext.matchedSpecs.length === 0 ? (
+              <p className="empty">{cursorContext.message ?? "No specs mapped to the current symbol."}</p>
+            ) : (
+              <ul className="mapping-list">
+                {cursorContext.matchedSpecs.map((match) => (
+                  <li key={`${cursorContext.filePath}-${cursorContext.symbolName}-${match.specId}`}>
+                    <span className="spec-id">{match.specId}</span>
+                    <span className="meta">confidence={match.confidence}</span>
+                    <div className="spec-content">
+                      <div>
+                        <strong>Title:</strong> {match.title}
+                      </div>
+                      <div>
+                        <strong>Requirement:</strong> {match.requirement || "N/A"}
+                      </div>
+                      <div>
+                        <strong>Acceptance:</strong> {match.acceptanceCriteria || "N/A"}
+                      </div>
+                      <div>
+                        <strong>Mapped Function/Class:</strong>{" "}
+                        {(() => {
+                          const rowMapping = mappingBySpecId.get(match.specId);
+                          const firstReference: CodeReference | undefined = rowMapping?.references?.[0];
+                          if (!firstReference) {
+                            return "N/A";
+                          }
+                          return (
+                            <a
+                              href="#"
+                              onClick={(event) => {
+                                event.preventDefault();
+                                postMessage({ type: "openCodeReference", payload: firstReference });
+                              }}
+                            >
+                              {`${firstReference.filePath.split("/")[firstReference.filePath.split("/").length - 1] ?? firstReference.filePath}/${firstReference.symbol}`}
+                            </a>
+                          );
+                        })()}
+                      </div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
+        )}
+      </section>
+    </div>
   );
 }

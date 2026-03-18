@@ -14,6 +14,24 @@
   - `conda run -n Local python -m pytest tests/test_implement_execution.py::ImplementExecutionWorktreeBootstrapTests -q` -> `1 passed`
   - `conda run -n Local python -m pytest tests/test_implement_execution.py -q` -> `38 passed`
   - `conda run -n Local python -m pytest tests/test_implement_handler.py -q` -> `53 passed`
+- [x] Add `lastMappedAt` state field across extension + webview payload types.
+- [x] Persist `lastMappedAt` via VS Code workspace state and restore on activation.
+- [x] Update refresh handler to stamp `lastMappedAt` on refresh button execution.
+- [x] Render `Last mapped` panel row with `MM-DD HH:MM` formatting fallback.
+- [x] Add targeted unit tests and run plugin checks.
+- [x] Commit and push branch updates.
+
+## Current Task Review: Plugin Last-Mapped Timestamp Persistence
+
+- Added extension/webview state support for `lastMappedAt` and initialized state from persisted workspace memento.
+- Refresh button flow now stamps click-time `Date.now()` and persists it via `designSpecMapper.lastMappedAt`.
+- Plugin status panel now renders `Last mapped` using `MM-DD HH:MM` formatting with `Not mapped yet` fallback.
+- Added focused `StateStore` tests for hydration, preservation across import updates, and explicit setter updates.
+- Verification:
+  - `npm run compile` -> pass
+  - `npm run typecheck` -> pass
+  - `npm test` -> `26 passed`
+  - Manual GUI launch blocker: VS Code Extension Development Host crashed with code `5` in this environment.
 
 - [ ] Reproduce current `implement` failure (`dataset/nutrition`, `--codebase-dir src`) and capture exit code/stdout/stderr.
 - [ ] Collect deterministic evidence from latest run artifacts (`summary.json`, `run_meta.json`, verification logs, runtime log).
@@ -1299,3 +1317,131 @@
 - Verification:
   - `conda run -n Local python -c "... validate_command_preconditions('refine', ...) ..."` -> `PREFLIGHT_OK`.
   - `conda run -n Local python cli.py agent refine --project-root dataset/nutrition --config config.yaml --dry-run` -> command executed and returned `status: blocked` (no preflight failure).
+## Current Task: Plugin Codex Executable Detection + Readiness UI
+
+- [x] Add plugin runtime state/schema for Codex executable readiness and path source.
+- [x] Implement startup auto-detection of `codex` executable (configured path first, PATH/common locations fallback).
+- [x] Add manual configure action from webview (button -> file picker -> save path -> re-validate).
+- [x] Render panel readiness indicator (`ready` vs `not configured`) and conditional configure button.
+- [x] Add targeted unit tests for executable detection helper and run plugin checks.
+- [x] Commit and push the feature branch changes.
+
+## Current Task Review: Plugin Codex Executable Detection + Readiness UI
+
+- Added deterministic Codex executable detection helper for configured path validation plus auto-scan across `PATH` and common install directories.
+- Extended extension state and webview payload contracts with `codexRuntime` readiness metadata and wired launch-time refresh.
+- Added panel UI readiness badge, codex details text, and conditional `Configure Codex Path` button when runtime is missing.
+- Added manual path-configuration flow in extension host (file picker -> settings update -> runtime re-validation -> panel refresh).
+- Verification:
+  - `npm run compile` -> pass
+  - `npm run typecheck` -> pass
+  - `npm test` -> `16 passed`
+  - Manual GUI walkthrough recorded: `plugin_codex_detection_ready_transition.mp4` (Not ready + configure button -> Ready after selecting `/tmp/codex-demo/codex`).
+
+## Current Task: Plugin Mapping In-Progress Indicator + Mock Async Delay
+
+- [x] Add extension/webview state fields representing mapping run-in-progress status.
+- [x] Add fixed async delay in extension mapping execution path to simulate running state.
+- [x] Render UI indicator while mapping is running and disable conflicting actions.
+- [x] Add/adjust tests for mapping-running state helpers where feasible.
+- [x] Run plugin compile/typecheck/tests and manual GUI walkthrough with recording.
+- [ ] Commit and push branch updates.
+
+## Current Task Review: Plugin Mapping In-Progress Indicator + Mock Async Delay
+
+- Added `mappingRuntime` state contract and store support so extension host can publish mapping progress (`isRunning`, message, lastStartedAt) to webview.
+- Added deterministic mock mapping delay (`MOCK_MAPPING_EXEC_DELAY_MS=5000`) and wrapped import/refresh execution in `runMappingWithRuntime` so panel status transitions `Idle -> Running... -> Idle`.
+- Added panel mapping status badge/details and disabled import/refresh buttons while mapping is running.
+- Added unit tests for runtime delay helper behavior using fake timers.
+- Verification:
+  - `npm run compile` -> pass
+  - `npm run typecheck` -> pass
+  - `npm test` -> `17 passed`
+  - Manual GUI walkthrough recorded: `plugin_mapping_running_status_refresh.mp4` (refresh shows `Running...` then returns to `Idle`).
+
+## Current Task: Codex Validation Status + Readiness-Gated Refresh
+
+- [x] Add codex validation runtime state contract (`isValidating`, progress message) in extension/webview.
+- [x] Add stubbed handshake validation flow with real-time progress updates and stale-run protection.
+- [x] Gate readiness so `ready` is set only after validation pass; hide validation status when idle.
+- [x] Disable refresh button when agent is not ready and enforce host-side guard.
+- [x] Add/adjust targeted tests and run compile/typecheck/tests.
+- [x] Run manual GUI walkthrough recording proving validation progress + refresh disable behavior.
+- [ ] Commit and push changes.
+
+## Current Task Review: Codex Validation Status + Readiness-Gated Refresh
+
+- Added `codexValidationRuntime` state contract and propagation in extension/webview payloads to represent active handshake progress.
+- Implemented stubbed validation module with deterministic progress steps and stale-run protection in `refreshCodexRuntimeStatus`.
+- Updated readiness flow so runtime remains not-ready during validation and transitions to ready only on validation pass; validation row is rendered only while validating.
+- Disabled refresh button when agent is not ready and added host-side guard in `refreshMappings` to reject non-ready runs.
+- Added unit tests for validation step progress helper and re-ran plugin checks.
+- Verification:
+  - `npm run compile` -> pass
+  - `npm run typecheck` -> pass
+  - `npm test` -> `18 passed`
+  - Manual GUI walkthrough recorded: `plugin_codex_validation_and_readiness_gating.mp4` (not-ready refresh disabled -> validation progress shown -> ready after pass).
+
+## Current Task: Code Directory Configure Button + Workspace-Scoped Selection
+
+- [x] Add extension/webview state for effective code directory path.
+- [x] Add settings + runtime resolution so default code directory is workspace root.
+- [x] Add `Configure Code Directory` button and current path display in panel.
+- [x] Implement folder picker flow that only accepts directories inside workspace root.
+- [x] Add targeted helper tests for workspace path scoping and default resolution.
+- [x] Run plugin compile/typecheck/tests and manual GUI walkthrough recording.
+- [x] Commit and push changes.
+
+## Current Task Review: Code Directory Configure Button + Workspace-Scoped Selection
+
+- Added workspace-scoped code directory resolver helpers with inside-parent checks and workspace-root fallback defaults.
+- Added `designSpecMapper.codeDirectory` config setting and extension runtime/state propagation for effective code directory.
+- Added `Configure Code Directory` panel button and `Code directory` display, including folder-picker flow and inside-workspace guardrails.
+- Updated mapping root resolution to use effective code directory and kept preview output files under workspace root.
+- Added unit tests for code-directory normalization/containment/default resolution and re-ran plugin checks.
+- Verification:
+  - `npm run compile` -> pass
+  - `npm run typecheck` -> pass
+  - `npm test` -> `23 passed`
+  - Manual GUI walkthrough recorded showing default root and update to inside-workspace directory.
+
+## Current Task: Document Import Column + Double-Click Quick Open
+
+- [x] Replace prior design-spec-only import affordance with a 3-row document import column.
+- [x] Add rows for Design Spec, Issue Tracking Sheet, and Testing Plan, each with right-side Import button.
+- [x] Add double-click quick-open action on each row bar when the document is imported.
+- [x] Add extension host message handlers and state fields for issue/testing document paths.
+- [x] Run compile/typecheck/tests and manual GUI walkthrough recording.
+- [x] Commit and push changes.
+
+## Current Task Review: Document Import Column + Double-Click Quick Open
+
+- Added a dedicated `Documents` column in plugin panel with three rows (`Design Spec`, `Issue Tracking Sheet`, `Testing Plan`) and per-row `Import` buttons.
+- Added webview/extension message flow for importing issue/testing documents and double-click quick-open actions for all three document rows.
+- Extended extension/webview state contracts and state store to carry imported issue/testing file paths.
+- Kept mapping refresh control in toolbar while removing the old top-level design-spec import button from the header.
+- Verification:
+  - `npm run compile` -> pass
+  - `npm run typecheck` -> pass
+  - `npm test` -> `23 passed`
+  - Manual GUI walkthrough recorded: `plugin_document_column_import_and_quick_open.mp4`.
+
+## Current Task: Adaptive Document Row Layout for Narrow Panel Width
+
+- [x] Add left icons on each document bar in Documents column.
+- [x] Add responsive layout breakpoint that hides document labels/path text when panel width is narrow.
+- [x] Keep document bar and import button usable in compact mode.
+- [x] Run plugin compile/typecheck/tests.
+- [x] Run manual GUI walkthrough recording demonstrating compact behavior.
+- [ ] Commit and push changes.
+
+## Current Task Review: Adaptive Document Row Layout for Narrow Panel Width
+
+- Added left document icons (`DS`, `IT`, `TP`) inside each document bar and grouped text into a label container.
+- Added responsive compact breakpoint for document rows so label/path text collapses while icon + Import button remain visible.
+- Preserved document row quick-open and Import button interactions in both regular and compact states.
+- Verification:
+  - `npm run compile` -> pass
+  - `npm run typecheck` -> pass
+  - `npm test` -> `23 passed`
+  - Manual GUI walkthrough recorded for wide/narrow panel behavior.

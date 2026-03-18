@@ -111,61 +111,50 @@ export interface ImplementResults {
   moduleBreakdown?: Record<string, number>;
 }
 
-// ---------------------------------------------------------------------------
-// Message types
-// ---------------------------------------------------------------------------
-
-/** From extension to panel webview. */
-export type PanelIncomingMessage =
-  | { type: "init"; command: "map" | "implement"; config: PikaConfigSnapshot; workset?: WorksetInfo }
-  | { type: "stream"; text: string; elapsed: number; tokens?: number }
-  | { type: "progress"; data: ProgressData }
-  | { type: "manualResolution"; items: ManualResolutionItem[] }
-  | { type: "complete"; results: MapResults | ImplementResults }
-  | { type: "failed"; message: string; exitCode?: number }
-  | { type: "browse"; field: string; value: string };
-
-/** From panel webview to extension. */
-export type PanelOutgoingMessage =
-  | { type: "runMap"; options: MapRunOptions }
-  | { type: "runImplement"; options: ImplementRunOptions }
-  | { type: "cancelRun" }
-  | { type: "resolveItems"; resolutions: ManualResolution[] }
-  | { type: "openFile"; path: string; line?: number }
-  | { type: "browseFile"; field: string }
-  | { type: "browseDir"; field: string };
-
-/** From extension to sidebar webview. */
-export type SidebarIncomingMessage =
-  | { type: "specStats"; data: SpecStats }
-  | { type: "runHistory"; entries: RunHistoryEntry[] }
-  | { type: "activeRun"; command: "map" | "implement" | null };
-
-/** From sidebar webview to extension. */
-export type SidebarOutgoingMessage =
-  | { type: "openPanel"; command: "map" | "implement"; dryRun?: boolean }
-  | { type: "refresh" };
-
-// Run option shapes
-export interface MapRunOptions {
-  designSpecPath: string;
-  codebaseDir: string;
-  projectContextPath?: string;
-  skipMapped: boolean;
-  maxSpecsPerSubunit: number;
-  minConfidenceThreshold: number;
-  extraInstructions?: string;
-  dryRun?: boolean;
+export interface ExtensionStatePayload {
+  importedFilePath?: string;
+  importedPreviewPath?: string;
+<<<<<<< HEAD
+  issueTrackerFilePath?: string;
+  testingPlanFilePath?: string;
+  codeDirectoryPath?: string;
+  lastMappedAt?: number;
+  rows: DesignSpecRow[];
+  specToCodeMappings: SpecCodeMapping[];
+  codexRuntime: CodexRuntimePayload;
+  codexValidationRuntime: CodexValidationRuntimePayload;
+  mappingRuntime: MappingRuntimePayload;
 }
 
-export interface ImplementRunOptions {
-  designSpecPath: string;
-  codebaseDir: string;
-  projectContextPath?: string;
-  dryRun?: boolean;
+export interface CodexRuntimePayload {
+  status: "ready" | "missing";
+  source: "configured" | "auto" | "none";
+  configuredPath?: string;
+  effectivePath?: string;
+  message: string;
 }
 
-// Bootstrap object injected into window.__PIKA__
-export interface PikaBootstrap {
-  view: "sidebar" | "map" | "implement";
+export interface MappingRuntimePayload {
+  isRunning: boolean;
+  message: string;
+  lastStartedAt?: number;
+}
+
+export interface CodexValidationRuntimePayload {
+  isValidating: boolean;
+  message: string;
+}
+
+export interface ImportedDocumentOpenPayload {
+  documentType: "designSpec" | "issueTracker" | "testingPlan";
+=======
+  rows: DesignSpecRow[];
+  specToCodeMappings: SpecCodeMapping[];
+>>>>>>> origin/cursor/plugin-design-spec-mapping-51a2
+}
+
+export interface WebviewIncomingMessage {
+  type: "stateUpdated" | "cursorContextUpdated" | "error";
+  payload?: ExtensionStatePayload | CursorContextMapping;
+  message?: string;
 }
