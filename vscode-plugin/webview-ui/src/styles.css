@@ -43,6 +43,7 @@ button:hover {
   line-height: 1;
 }
 
+<<<<<<< HEAD
 .icon-button:disabled,
 .secondary-button:disabled {
   opacity: 0.6;
@@ -53,10 +54,17 @@ button:hover {
   display: flex;
   flex-direction: column;
   gap: 6px;
+=======
+.status {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+>>>>>>> origin/cursor/plugin-design-spec-mapping-51a2
   border: 1px solid var(--vscode-panel-border);
   padding: 8px;
 }
 
+<<<<<<< HEAD
 .document-column {
   display: flex;
   flex-direction: column;
@@ -213,6 +221,8 @@ button:hover {
   width: fit-content;
 }
 
+=======
+>>>>>>> origin/cursor/plugin-design-spec-mapping-51a2
 .error {
   color: var(--vscode-errorForeground);
 }

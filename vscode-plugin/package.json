@@ -38,6 +38,7 @@
           "type": "webview"
         }
       ]
+<<<<<<< HEAD
     },
     "configuration": {
       "title": "Design Spec Mapper",
@@ -55,6 +56,8 @@
           "scope": "machine-overridable"
         }
       }
+=======
+>>>>>>> origin/cursor/plugin-design-spec-mapping-51a2
     }
   },
   "scripts": {

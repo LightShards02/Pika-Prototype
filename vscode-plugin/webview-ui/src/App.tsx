@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
+<<<<<<< HEAD
   CodexValidationRuntimePayload,
   CodexRuntimePayload,
   CodeReference,
@@ -7,12 +8,18 @@ import {
   ExtensionStatePayload,
   ImportedDocumentOpenPayload,
   MappingRuntimePayload,
+=======
+  CodeReference,
+  CursorContextMapping,
+  ExtensionStatePayload,
+>>>>>>> origin/cursor/plugin-design-spec-mapping-51a2
   SpecCodeMapping,
   WebviewIncomingMessage,
 } from "./types";
 
 interface AppProps {
   postMessage: (message: {
+<<<<<<< HEAD
     type:
       | "chooseDesignSpec"
       | "chooseIssueTracker"
@@ -58,6 +65,13 @@ function formatLastMappedDisplay(lastMappedAt?: number): string {
   return `${month}-${day} ${hours}:${minutes}`;
 }
 
+=======
+    type: "chooseDesignSpec" | "requestCodeMapping" | "refreshMappings" | "openCodeReference";
+    payload?: CodeReference;
+  }) => void;
+}
+
+>>>>>>> origin/cursor/plugin-design-spec-mapping-51a2
 /**
  * Renders the design-spec import, preview, and bidirectional mapping UI.
  */
@@ -65,9 +79,12 @@ export function App({ postMessage }: AppProps): React.ReactElement {
   const [statePayload, setStatePayload] = useState<ExtensionStatePayload>({
     rows: [],
     specToCodeMappings: [],
+<<<<<<< HEAD
     codexRuntime: DEFAULT_CODEX_RUNTIME,
     codexValidationRuntime: DEFAULT_CODEX_VALIDATION_RUNTIME,
     mappingRuntime: DEFAULT_MAPPING_RUNTIME,
+=======
+>>>>>>> origin/cursor/plugin-design-spec-mapping-51a2
   });
   const [cursorContext, setCursorContext] = useState<CursorContextMapping>({
     filePath: "",
@@ -83,6 +100,7 @@ export function App({ postMessage }: AppProps): React.ReactElement {
     const onMessage = (event: MessageEvent<WebviewIncomingMessage>) => {
       const message = event.data;
       if (message.type === "stateUpdated" && message.payload) {
+<<<<<<< HEAD
         const payload = message.payload as ExtensionStatePayload;
         setStatePayload({
           ...payload,
@@ -91,6 +109,9 @@ export function App({ postMessage }: AppProps): React.ReactElement {
             payload.codexValidationRuntime ?? DEFAULT_CODEX_VALIDATION_RUNTIME,
           mappingRuntime: payload.mappingRuntime ?? DEFAULT_MAPPING_RUNTIME,
         });
+=======
+        setStatePayload(message.payload as ExtensionStatePayload);
+>>>>>>> origin/cursor/plugin-design-spec-mapping-51a2
         setError("");
       } else if (message.type === "cursorContextUpdated" && message.payload) {
         setCursorContext(message.payload as CursorContextMapping);
@@ -113,6 +134,7 @@ export function App({ postMessage }: AppProps): React.ReactElement {
     }
     return map;
   }, [statePayload.specToCodeMappings]);
+<<<<<<< HEAD
   const codexReady = statePayload.codexRuntime.status === "ready";
   const mappingRunning = statePayload.mappingRuntime.isRunning;
   const documentRows = [
@@ -141,6 +163,8 @@ export function App({ postMessage }: AppProps): React.ReactElement {
       importDisabled: false,
     },
   ];
+=======
+>>>>>>> origin/cursor/plugin-design-spec-mapping-51a2
 
   return (
     <div className="app">
@@ -150,9 +174,23 @@ export function App({ postMessage }: AppProps): React.ReactElement {
           <button
             type="button"
             className="icon-button"
+<<<<<<< HEAD
             title="Refresh mappings and preview file"
             aria-label="Refresh mappings"
             disabled={mappingRunning || !codexReady}
+=======
+            title="Import design spec CSV"
+            aria-label="Import design spec CSV"
+            onClick={() => postMessage({ type: "chooseDesignSpec" })}
+          >
+            ⭱
+          </button>
+          <button
+            type="button"
+            className="icon-button"
+            title="Refresh mappings and preview file"
+            aria-label="Refresh mappings"
+>>>>>>> origin/cursor/plugin-design-spec-mapping-51a2
             onClick={() => postMessage({ type: "refreshMappings" })}
           >
             ↻
@@ -160,6 +198,7 @@ export function App({ postMessage }: AppProps): React.ReactElement {
         </div>
       </header>
 
+<<<<<<< HEAD
       <section className="document-column">
         <h3>Documents</h3>
         {documentRows.map((row) => (
@@ -248,6 +287,14 @@ export function App({ postMessage }: AppProps): React.ReactElement {
         </button>
         <div>
           <strong>Spec preview tab:</strong> {statePayload.importedPreviewPath ?? "Not generated yet"}
+=======
+      <section className="status">
+        <div>
+          <strong>Imported CSV:</strong> {statePayload.importedFilePath ?? "Not imported yet"}
+        </div>
+        <div>
+          <strong>Spec tab file:</strong> {statePayload.importedPreviewPath ?? "Not generated yet"}
+>>>>>>> origin/cursor/plugin-design-spec-mapping-51a2
         </div>
         {error ? <div className="error">Error: {error}</div> : null}
       </section>

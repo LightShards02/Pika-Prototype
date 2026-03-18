@@ -39,6 +39,7 @@ export interface CursorContextMapping {
 export interface ExtensionStatePayload {
   importedFilePath?: string;
   importedPreviewPath?: string;
+<<<<<<< HEAD
   issueTrackerFilePath?: string;
   testingPlanFilePath?: string;
   codeDirectoryPath?: string;
@@ -71,6 +72,10 @@ export interface CodexValidationRuntimePayload {
 
 export interface ImportedDocumentOpenPayload {
   documentType: "designSpec" | "issueTracker" | "testingPlan";
+=======
+  rows: DesignSpecRow[];
+  specToCodeMappings: SpecCodeMapping[];
+>>>>>>> origin/cursor/plugin-design-spec-mapping-51a2
 }
 
 export interface WebviewIncomingMessage {

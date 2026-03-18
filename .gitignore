@@ -233,3 +233,7 @@ Sample-Spec.xlsx
 # Test artifacts
 *.pkl
 out
+
+
+/vscode-plugin/node_modules
+/desktop-app/node_modules
