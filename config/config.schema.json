@@ -431,9 +431,8 @@
               }
             },
             "planner_manual_resolution_gate": { "$ref": "#/$defs/implement_step_toggle" },
-            "dependency_gap_escalation": { "$ref": "#/$defs/implement_step_toggle" },
+            "spec_issue_escalation": { "$ref": "#/$defs/implement_step_toggle" },
             "unified_plan_validation": { "$ref": "#/$defs/implement_step_toggle" },
-            "intra_spec_conflict_validation": { "$ref": "#/$defs/implement_step_toggle" },
             "contract_field_consistency_validation": {
               "type": "object",
               "additionalProperties": false,
@@ -465,7 +464,6 @@
                 }
               }
             },
-            "match_ambiguity_validation": { "$ref": "#/$defs/implement_step_toggle" },
             "batch_plan_construction": { "$ref": "#/$defs/implement_step_toggle" },
             "batch_plan_dependency_validation": { "$ref": "#/$defs/implement_step_toggle" },
             "batch_brief_build": { "$ref": "#/$defs/implement_step_toggle" },

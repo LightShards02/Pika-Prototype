@@ -158,16 +158,14 @@ commands:
     #   enabled: true
     #   semantic_validation_retries: 2
     # planner_manual_resolution_gate: { enabled: true }
-    # dependency_gap_escalation: { enabled: true }  # Escalate cross-module dependency_gap spec_issues to blocking manual resolution items
+    # spec_issue_escalation: { enabled: true }  # Escalate all spec_issues (contradiction, overlap, dependency_gap, ambiguity, orphan_reference) to blocking manual resolution items
     # unified_plan_validation: { enabled: true }
-    # intra_spec_conflict_validation: { enabled: true }
     # contract_field_consistency_validation:
     #   enabled: true
     #   field_match_score_threshold: 0.80  # Normalized similarity score (0..1)
     # required_field_coverage_validation:
     #   enabled: true
     #   providerless_contract_allowlist: []  # contract_ids intentionally exempt from providerless manual-block
-    # match_ambiguity_validation: { enabled: true }
     # batch_plan_construction: { enabled: true }
     # batch_plan_dependency_validation: { enabled: true }
     # batch_brief_build: { enabled: true }

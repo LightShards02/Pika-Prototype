@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from core.command_router import dispatch
+from core.contracts import get_design_spec_required_columns
 from core.context import RuntimeContext
 from core.errors import SafetyPreconditionError
 from core.safety import validate_command_preconditions
@@ -451,6 +452,62 @@ class CommandRouterTests(unittest.TestCase):
             self.assertIn("purpose", msg)
             self.assertIn("overview", msg)
             self.assertIn("workflow", msg)
+        finally:
+            if root.exists():
+                shutil.rmtree(root, ignore_errors=True)
+
+    def test_preflight_refine_command_is_supported(self) -> None:
+        """Preflight accepts refine for valid config/input instead of treating it as unsupported."""
+        root = Path(__file__).parent / "test_data_preflight_refine"
+        root.mkdir(parents=True, exist_ok=True)
+        csv_file = root / "design_spec.csv"
+        context_file = root / "PROJECT_CONTEXT.md"
+        try:
+            required = list(get_design_spec_required_columns())
+            row = []
+            for col in required:
+                if col == "spec_id":
+                    row.append("A1")
+                elif col == "title":
+                    row.append("Test title")
+                elif col == "requirement":
+                    row.append("Test requirement")
+                else:
+                    row.append("x")
+            csv_file.write_text(
+                ",".join(required) + "\n" + ",".join(row) + "\n",
+                encoding="utf-8",
+            )
+            context_file.write_text(
+                "### Purpose\nProject purpose.\n\n### Overview\nOverview.\n\n### Workflow\nWorkflow.\n",
+                encoding="utf-8",
+            )
+            config = {
+                "project": {
+                    "name": "test",
+                    "root_dir": ".",
+                    "state": {
+                        "design_spec_path": str(csv_file),
+                        "id_registry_path": str(root / "out" / "state" / "id_registry.json"),
+                        "sads_id_mapping_path": str(root / "out" / "state" / "sads_id_mapping.json"),
+                    },
+                },
+                "commands": {
+                    "refine": {
+                        "enabled": True,
+                        "inputs": {
+                            "design_spec_path": str(csv_file),
+                            "project_context_filename": "PROJECT_CONTEXT.md",
+                        },
+                        "outputs": {
+                            "backups_dir": {"path": str(root / "out" / "backups"), "no_overwrite": False},
+                            "logs_dir": {"path": str(root / "out" / "logs"), "no_overwrite": False},
+                        },
+                    },
+                },
+            }
+            ctx = self._make_ctx("refine", project_root=str(root))
+            validate_command_preconditions("refine", config, ctx)
         finally:
             if root.exists():
                 shutil.rmtree(root, ignore_errors=True)

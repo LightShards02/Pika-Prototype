@@ -17,6 +17,7 @@ import csv
 import io
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -28,6 +29,8 @@ from core.time_utils import format_timestamp_local_minutes
 from pathlib import Path
 from typing import Any, Callable
 
+from core.pika_config import get_pika_config
+from core.resolution import generate_resolution_template
 from core.agent_invoker import (
     check_local_available,
     render_prompt,
@@ -35,7 +38,7 @@ from core.agent_invoker import (
     run_local_exec,
 )
 from core.context import RuntimeContext
-from core.errors import SafetyPreconditionError
+from core.errors import AgentInvocationError, AgentSchemaError, SafetyPreconditionError
 from core.pika_paths import resolve_schema_path
 from core.prompt_registry import PromptRegistry
 from core.vocab_loader import resolve_control_vocab_content
@@ -278,7 +281,6 @@ def resolve_input_path(
         state_path = resolve_project_state_path(config, project_root, "design_spec_path")
         if state_path is not None:
             return state_path
-        from core.pika_config import get_pika_config
 
         default = (
             get_pika_config()
@@ -350,7 +352,6 @@ def resolve_format_output_path(
     state_path = resolve_project_state_path(config, project_root, "design_spec_path")
     if state_path is not None:
         return state_path
-    from core.pika_config import get_pika_config
 
     default = (
         get_pika_config()
@@ -512,6 +513,72 @@ def resolve_agent_runs_dir_for_command(
     return path.resolve()
 
 
+def find_most_recent_blocked_run_id_across_commands(
+    config: dict[str, Any],
+    project_root: Path,
+    commands: list[str],
+) -> str | None:
+    """Return run_id of the most recently modified blocked run across multiple commands.
+
+    Iterates all run directories for each command and returns the run_id whose
+    run_meta.json has a non-empty blocked_at_stage and the highest mtime.
+    """
+    best_mtime: float = -1.0
+    best_run_id: str | None = None
+    for cmd in commands:
+        runs_base = resolve_agent_runs_dir_for_command(config, project_root, cmd)
+        if not runs_base.is_dir():
+            continue
+        for run_dir in runs_base.iterdir():
+            if not run_dir.is_dir():
+                continue
+            meta_path = run_dir / "run_meta.json"
+            if not meta_path.exists():
+                continue
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not str(meta.get("blocked_at_stage", "")).strip():
+                continue
+            mtime = run_dir.stat().st_mtime
+            if mtime > best_mtime:
+                best_mtime = mtime
+                best_run_id = run_dir.name
+    return best_run_id
+
+
+def find_most_recent_blocked_run_id(
+    config: dict[str, Any],
+    project_root: Path,
+    command_name: str,
+) -> str | None:
+    """Return the run_id of the most recently modified blocked run for command, or None.
+
+    Scans subdirectories of the command's runs base dir, sorted by mtime descending,
+    and returns the first whose run_meta.json has a non-empty blocked_at_stage.
+    """
+    runs_base = resolve_agent_runs_dir_for_command(config, project_root, command_name)
+    if not runs_base.is_dir():
+        return None
+    candidates = sorted(
+        (d for d in runs_base.iterdir() if d.is_dir()),
+        key=lambda d: d.stat().st_mtime,
+        reverse=True,
+    )
+    for run_dir in candidates:
+        meta_path = run_dir / "run_meta.json"
+        if not meta_path.exists():
+            continue
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if str(meta.get("blocked_at_stage", "")).strip():
+            return run_dir.name
+    return None
+
+
 def resolve_agent_artifacts_dir_for_command(
     config: dict[str, Any],
     project_root: Path,
@@ -580,8 +647,6 @@ def persist_manual_resolution_block_for_run(
     - run-scoped template: manual_resolution/resolutions.yaml
     - run_meta updates: blocked_at_stage, completed_stages, resolution_status
     """
-    from core.resolution import generate_resolution_template
-
     run_dir = resolve_agent_runs_dir_for_command(config, project_root, command_name, run_id)
     manual_dir = run_dir / "manual_resolution"
     manual_dir.mkdir(parents=True, exist_ok=True)
@@ -629,8 +694,6 @@ def resolve_intermediate_map_dir(
     Uses commands.map.outputs.intermediate_map_dir or outputs.intermediate_map_dir
     if configured; otherwise falls back to pika_config default_outputs.
     """
-    from core.pika_config import get_pika_config
-
     resolved = resolve_output_path(
         config, project_root, "intermediate_map_dir", command=command
     )
@@ -651,8 +714,6 @@ def resolve_agent_input_codebase_content_dir(
     otherwise falls back to pika_config default_outputs.agent_input_codebase_content_dir
     (out/agent_input/codebase_content).
     """
-    from core.pika_config import get_pika_config
-
     resolved = resolve_output_path(
         config, project_root, "agent_input_codebase_content_dir", command=command
     )
@@ -757,7 +818,7 @@ def validate_output_against_schema(
     errors = list(validator.iter_errors(output))
     if errors:
         first = errors[0]
-        raise ValueError(
+        raise AgentSchemaError(
             f"Output schema validation failed: {first.message} at {list(first.path)}"
         ) from first
     return output
@@ -787,8 +848,6 @@ def get_agent_provider(config: dict[str, Any]) -> str:
 
 def get_local_command(config: dict[str, Any]) -> str:
     """Return local CLI executable name from config. Default 'codex'."""
-    from core.pika_config import get_pika_config
-
     agent = config.get("agent")
     if not isinstance(agent, dict):
         return get_pika_config().get("local", {}).get("command", "codex")
@@ -806,8 +865,6 @@ def get_local_exec_timeout_sec(config: dict[str, Any]) -> int:
     2) pika default `local.exec_timeout_sec`,
     3) hard default `600`.
     """
-    from core.pika_config import get_pika_config
-
     agent = config.get("agent")
     if isinstance(agent, dict):
         override = agent.get("local_exec_timeout_sec")
@@ -829,8 +886,6 @@ def get_reasoning_effort(config: dict[str, Any], prompt_name: str) -> str:
     Returns:
         One of: low, medium, high, xhigh.
     """
-    from core.pika_config import get_pika_config
-
     agent = config.get("agent")
     project_effort: dict[str, str] = {}
     if isinstance(agent, dict):
@@ -866,8 +921,6 @@ def get_local_model(config: dict[str, Any], prompt_name: str) -> str:
     Returns:
         Model ID string (e.g. gpt-5-codex).
     """
-    from core.pika_config import get_pika_config
-
     def _from_obj(obj: dict[str, str], key: str) -> str | None:
         val = obj.get(key) or obj.get("default")
         return str(val).strip() if isinstance(val, str) and val.strip() else None
@@ -900,10 +953,6 @@ def get_local_model(config: dict[str, Any], prompt_name: str) -> str:
 
 def get_api_config(config: dict[str, Any]) -> dict[str, Any]:
     """Return API config (api_key_env, url, model) from workspace + pika config."""
-    import os
-
-    from core.pika_config import get_pika_config
-
     pika = get_pika_config()
     api_defaults = pika.get("api", {})
     agent = config.get("agent")
@@ -918,7 +967,7 @@ def get_api_config(config: dict[str, Any]) -> dict[str, Any]:
 
     key = os.environ.get(env_var)
     if not key or not str(key).strip():
-        raise RuntimeError(
+        raise AgentInvocationError(
             f"API provider requires {env_var} environment variable to be set. "
             "Get an API key from your provider (e.g. https://build.nvidia.com/explore/discover)"
         )
@@ -938,8 +987,6 @@ def _safe_workspace_token(value: str, fallback: str) -> str:
 
 def _resolve_local_agent_temp_base_dir(config: dict[str, Any], project_root: Path) -> Path:
     """Resolve base directory for local agent isolated temp workspaces."""
-    from core.pika_config import get_pika_config
-
     pika_local = get_pika_config().get("local", {})
     agent = config.get("agent")
     configured = None
@@ -957,8 +1004,6 @@ def _resolve_local_agent_temp_base_dir(config: dict[str, Any], project_root: Pat
 
 def _resolve_local_agent_temp_ttl_sec(config: dict[str, Any]) -> int:
     """Resolve stale isolated workspace TTL in seconds."""
-    from core.pika_config import get_pika_config
-
     pika_local = get_pika_config().get("local", {})
     default_ttl = pika_local.get("temp_workspace_ttl_sec", 86_400)
     agent = config.get("agent")
@@ -975,8 +1020,6 @@ def _resolve_local_agent_temp_ttl_sec(config: dict[str, Any]) -> int:
 
 def _resolve_local_agent_temp_prefix(config: dict[str, Any]) -> str:
     """Resolve isolated workspace directory name prefix."""
-    from core.pika_config import get_pika_config
-
     pika_local = get_pika_config().get("local", {})
     configured = pika_local.get("temp_workspace_prefix")
     if isinstance(configured, str) and configured.strip():
@@ -1070,8 +1113,10 @@ def _create_local_agent_temp_workspace(
                 _cleanup_local_agent_temp_workspace(created_workspace)
 
     if last_error is not None:
-        raise last_error
-    raise RuntimeError("Unable to create local agent temp workspace")
+        raise AgentInvocationError(
+            f"Unable to create local agent temp workspace: {last_error}"
+        ) from last_error
+    raise AgentInvocationError("Unable to create local agent temp workspace")
 
 
 def _cleanup_local_agent_temp_workspace(path: Path | None) -> None:
@@ -1117,7 +1162,7 @@ def sync_local_agent_workspace(source_dir: Path, workspace_dir: Path) -> None:
     source = source_dir.resolve()
     workspace = workspace_dir.resolve()
     if not source.exists() or not source.is_dir():
-        raise ValueError(f"Local workspace sync source must be an existing directory: {source}")
+        raise AgentInvocationError(f"Local workspace sync source must be an existing directory: {source}")
     logger = get_run_logger()
     workspace.mkdir(parents=True, exist_ok=True)
 
@@ -1222,7 +1267,7 @@ def invoke_agent_local(
     local_model = get_local_model(config, prompt_name)
     try:
         if not check_local_available(local_cmd):
-            raise RuntimeError(
+            raise AgentInvocationError(
                 "Local provider authentication is unavailable. "
                 "Run `codex login status` and `codex login` if needed, then retry."
             )
@@ -1294,7 +1339,7 @@ def invoke_agent_local(
                 "error": exc.stderr or exc.stdout or "no output",
             },
         )
-        raise RuntimeError(
+        raise AgentInvocationError(
             f"Local CLI exec failed (exit {exc.returncode}): {exc.stderr or exc.stdout or 'no output'}"
         ) from exc
     finally:
@@ -1513,7 +1558,7 @@ def invoke_agent_with_schema_retry(
                 },
             )
             return output
-        except ValueError as exc:
+        except (ValueError, AgentSchemaError) as exc:
             last_error = exc
             log_lifecycle_event(
                 "lifecycle_validate_output",
@@ -1583,8 +1628,6 @@ def _stub_map_mappings_from_csv(csv_content: str) -> dict[str, dict[str, Any]]:
     Returns {spec_id: {status, code_refs, assumptions}} per schema. Falls back to A1 if
     no spec_ids found.
     """
-    import re
-
     pattern = re.compile(r"^[A-Za-z][0-9]+$")
     result: dict[str, dict[str, Any]] = {}
     if not csv_content or not isinstance(csv_content, str):
@@ -1641,8 +1684,6 @@ def invoke_agent_stub(
     }
     if ctx.command == "plan":
         base["milestones"] = [{"id": "M1", "title": "Stub milestone", "description": "Stub", "dependencies": []}]
-        from core.pika_config import get_pika_config
-
         stub_path = get_pika_config().get("stub", {}).get(
             "plan_proposed_sads", "out/agent_artifacts/stub/plan_proposed_sads.csv"
         )

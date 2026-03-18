@@ -16,7 +16,7 @@ from unittest.mock import patch
 from core.context import RuntimeContext
 from core.pika_config import reset_pika_config_cache
 from handlers.implement import (
-    _escalate_dependency_gap_issues,
+    _escalate_spec_issues,
     _report_implement_phase,
     _build_batches,
     _build_briefs,
@@ -28,8 +28,6 @@ from handlers.implement import (
     _validate_brief_scoping,
     _validate_contract_field_consistency,
     _validate_dependency_context_edges,
-    _validate_intra_spec_behavior_conflicts,
-    _validate_match_ambiguity,
     _validate_required_field_coverage,
     _validate_unified_plan,
     run_implement,
@@ -106,6 +104,9 @@ class UnifiedPlanValidationTests(unittest.TestCase):
         self.assertIn("spec_dependencies_acyclic", result["checks"])
         self.assertIn("spec_dependency_refs_valid", result["checks"])
         self.assertIn("all_modules_planned", result["checks"])
+        self.assertEqual(result["retryable_reasons"], [])
+        self.assertEqual(result["blocking_reasons"], [])
+        self.assertIsNone(result["cycle_path"])
 
     def test_validate_unified_plan_detects_uncovered_specs(self) -> None:
         plan = {
@@ -126,6 +127,8 @@ class UnifiedPlanValidationTests(unittest.TestCase):
         result = _validate_unified_plan(plan, all_spec_ids, module_catalog)
         self.assertEqual(result["status"], "failed")
         self.assertTrue(any("A2001" in r for r in result["reasons"]))
+        self.assertTrue(any("A2001" in r for r in result["retryable_reasons"]))
+        self.assertEqual(result["blocking_reasons"], [])
 
     def test_validate_unified_plan_detects_cycle(self) -> None:
         plan = {
@@ -159,6 +162,9 @@ class UnifiedPlanValidationTests(unittest.TestCase):
         result = _validate_unified_plan(plan, all_spec_ids, module_catalog)
         self.assertEqual(result["status"], "failed")
         self.assertTrue(any("cycle" in r.lower() for r in result["reasons"]))
+        self.assertTrue(len(result["blocking_reasons"]) > 0)
+        self.assertIsNotNone(result["cycle_path"])
+        self.assertEqual(result["retryable_reasons"], [])
 
     def test_validate_unified_plan_detects_unknown_spec_refs(self) -> None:
         plan = {
@@ -181,6 +187,8 @@ class UnifiedPlanValidationTests(unittest.TestCase):
         result = _validate_unified_plan(plan, all_spec_ids, module_catalog)
         self.assertEqual(result["status"], "failed")
         self.assertTrue(any("A9999" in r for r in result["reasons"]))
+        self.assertTrue(any("A9999" in r for r in result["retryable_reasons"]))
+        self.assertEqual(result["blocking_reasons"], [])
 
     def test_validate_unified_plan_detects_missing_module(self) -> None:
         plan = {
@@ -204,6 +212,8 @@ class UnifiedPlanValidationTests(unittest.TestCase):
         result = _validate_unified_plan(plan, all_spec_ids, module_catalog)
         self.assertEqual(result["status"], "failed")
         self.assertTrue(any("CORE" in r for r in result["reasons"]))
+        self.assertTrue(any("CORE" in r for r in result["retryable_reasons"]))
+        self.assertEqual(result["blocking_reasons"], [])
 
 
 class ImplementConfigTests(unittest.TestCase):
@@ -338,6 +348,22 @@ class ImplementConfigTests(unittest.TestCase):
         reset_pika_config_cache()
         impl = {}
         self.assertEqual(_resolve_min_confidence_threshold(impl), 0.7)
+
+    def test_get_impl_cfg_rejects_max_files_below_min(self) -> None:
+        """budgets.max_files below pika.yaml implement.min_max_files raises ValueError."""
+        reset_pika_config_cache()
+        cfg = {
+            "commands": {
+                "implement": {
+                    "enabled": True,
+                    "prompt_name": "implement_from_specs",
+                    "budgets": {"max_files": 1},
+                }
+            }
+        }
+        with self.assertRaises(ValueError) as ctx:
+            _get_impl_cfg(cfg)
+        self.assertIn("min_max_files", str(ctx.exception))
 
 
 class ImplementBatchPlanTests(unittest.TestCase):
@@ -1129,29 +1155,6 @@ class ContractFieldConsistencyTests(unittest.TestCase):
 class PlannedValidationChecksTests(unittest.TestCase):
     """Tests for v0.0.1 planned deterministic validation checks."""
 
-    def test_intra_spec_behavior_conflict_detects_mismatched_status(self) -> None:
-        headers = ["spec_id", "module_tag", "requirement", "acceptance_criteria"]
-        spec_rows = [
-            {
-                "spec_id": "A1001",
-                "module_tag": "API",
-                "requirement": "When authentication fails return status 401.",
-                "acceptance_criteria": "",
-            },
-            {
-                "spec_id": "A2001",
-                "module_tag": "CORE",
-                "requirement": "On authentication failure return status 403.",
-                "acceptance_criteria": "",
-            },
-        ]
-        spec_dependencies = [
-            {"consumer_spec_id": "A1001", "provider_spec_ids": ["A2001"]},
-        ]
-        result = _validate_intra_spec_behavior_conflicts(spec_dependencies, spec_rows, headers)
-        self.assertEqual(result["status"], "failed")
-        self.assertTrue(any("A1001" in reason for reason in result.get("reasons", [])))
-
     def test_required_field_coverage_passes_with_alias_resolution(self) -> None:
         headers = ["spec_id", "module_tag", "requirement", "acceptance_criteria"]
         spec_rows = [
@@ -1207,36 +1210,6 @@ class PlannedValidationChecksTests(unittest.TestCase):
         ]
         result = _validate_required_field_coverage(shared_contracts, spec_rows, headers)
         self.assertEqual(result["status"], "passed")
-
-    def test_match_ambiguity_detects_near_equal_field_candidates(self) -> None:
-        headers = ["spec_id", "module_tag", "requirement", "acceptance_criteria"]
-        spec_rows = [
-            {
-                "spec_id": "A1001",
-                "module_tag": "API",
-                "requirement": "Response includes status_codee and status_codes.",
-                "acceptance_criteria": "",
-            },
-        ]
-        shared_contracts = [
-            {
-                "contract_id": "response_contract",
-                "owning_module": "API",
-                "planned_file_path": "shared/types/response.py",
-                "consumed_by_specs": ["A1001"],
-                "fields": [
-                    {"name": "status_code", "type_name": "integer", "nullable": False},
-                ],
-            }
-        ]
-        result = _validate_match_ambiguity(
-            shared_contracts,
-            spec_rows,
-            headers,
-            match_score_threshold=0.80,
-        )
-        self.assertEqual(result["status"], "failed")
-        self.assertGreater(len(result.get("manual_resolution_items", [])), 0)
 
     def test_dependency_context_edge_validation_detects_missing_edge(self) -> None:
         briefs = [
@@ -1688,7 +1661,7 @@ class SpecIssuesExtractionTests(ImplementDryRunTests):
 
     @patch("handlers.implement.impl.invoke_with_semantic_retry")
     def test_spec_issues_written_to_disk_when_present(self, mock_invoke: Any) -> None:
-        """spec_issues.json is written and contains all issues when planner emits them."""
+        """spec_issues.json is written even when escalation blocks execution."""
         mock_invoke.return_value = self._make_plan(spec_issues=[
             {
                 "issue_id": "ISSUE-001",
@@ -1700,7 +1673,8 @@ class SpecIssuesExtractionTests(ImplementDryRunTests):
         ])
         config, ctx = self._make_config_ctx()
         result = run_implement(config, ctx)
-        self.assertEqual(result["status"], "completed")
+        # All spec_issue kinds now escalate to blocking manual_resolution_items (step 8)
+        self.assertEqual(result["status"], "blocked")
         spec_issues_path = self._run_dir() / "spec_issues.json"
         self.assertTrue(spec_issues_path.exists())
         data = json.loads(spec_issues_path.read_text(encoding="utf-8"))
@@ -1943,12 +1917,12 @@ class ImplementLocalSharedWorkspaceTests(unittest.TestCase):
                         result = run_implement(config, ctx)
 
         self.assertEqual(result["status"], "failed")
-        self.assertEqual(result["reason"], "planner_invoke_failed")
+        self.assertIn("planner agent failed", result["reason"].lower())
         mock_cleanup.assert_called_once_with(self.shared_workspace)
 
 
-class EscalateDependencyGapIssuesTests(unittest.TestCase):
-    """Tests for _escalate_dependency_gap_issues."""
+class EscalateSpecIssuesTests(unittest.TestCase):
+    """Tests for _escalate_spec_issues — all spec_issue kinds escalate to blocking items."""
 
     def _make_selected(self, assignments: dict[str, str]) -> list[dict[str, Any]]:
         """Build workset rows from {spec_id: module_tag} mapping."""
@@ -1956,13 +1930,11 @@ class EscalateDependencyGapIssuesTests(unittest.TestCase):
 
     def test_no_issues_returns_empty(self) -> None:
         """Empty spec_issues list returns empty escalation list."""
-        from handlers.implement import _escalate_dependency_gap_issues
-        result = _escalate_dependency_gap_issues([], self._make_selected({"A1": "API"}))
+        result = _escalate_spec_issues([], self._make_selected({"A1": "API"}))
         self.assertEqual(result, [])
 
-    def test_non_dependency_gap_kind_not_escalated(self) -> None:
-        """Issues with kind != 'dependency_gap' are ignored."""
-        from handlers.implement import _escalate_dependency_gap_issues
+    def test_overlap_kind_is_escalated(self) -> None:
+        """All spec_issue kinds are escalated, including overlap."""
         issues = [
             {
                 "issue_id": "I001",
@@ -1972,12 +1944,13 @@ class EscalateDependencyGapIssuesTests(unittest.TestCase):
             }
         ]
         selected = self._make_selected({"A1": "API", "A2": "OBS"})
-        result = _escalate_dependency_gap_issues(issues, selected)
-        self.assertEqual(result, [])
+        result = _escalate_spec_issues(issues, selected)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["item_id"], "I001")
+        self.assertIn("Overlapping responsibilities", result[0]["blocking_reason"])
 
-    def test_single_module_gap_not_escalated(self) -> None:
-        """A dependency_gap where all affected specs are in the same module is not escalated."""
-        from handlers.implement import _escalate_dependency_gap_issues
+    def test_single_module_gap_is_escalated(self) -> None:
+        """A dependency_gap in the same module is still escalated (no module filter)."""
         issues = [
             {
                 "issue_id": "I001",
@@ -1987,12 +1960,12 @@ class EscalateDependencyGapIssuesTests(unittest.TestCase):
             }
         ]
         selected = self._make_selected({"A1": "API", "A2": "API"})
-        result = _escalate_dependency_gap_issues(issues, selected)
-        self.assertEqual(result, [])
+        result = _escalate_spec_issues(issues, selected)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["item_id"], "I001")
 
-    def test_multi_module_gap_is_escalated(self) -> None:
-        """A dependency_gap spanning 2 modules is escalated to a blocking manual_resolution_item."""
-        from handlers.implement import _escalate_dependency_gap_issues
+    def test_dependency_gap_is_escalated(self) -> None:
+        """A dependency_gap is escalated to a blocking manual_resolution_item."""
         issues = [
             {
                 "issue_id": "I001",
@@ -2003,20 +1976,19 @@ class EscalateDependencyGapIssuesTests(unittest.TestCase):
             }
         ]
         selected = self._make_selected({"A1": "API", "D1": "DATA", "D2": "DATA"})
-        result = _escalate_dependency_gap_issues(issues, selected)
+        result = _escalate_spec_issues(issues, selected)
         self.assertEqual(len(result), 1)
         item = result[0]
         self.assertEqual(item["item_id"], "I001")
         self.assertEqual(item["required"], True)
-        self.assertIn("API", item["blocking_reason"])
-        self.assertIn("DATA", item["blocking_reason"])
+        self.assertIn("Dependency gap", item["blocking_reason"])
         self.assertEqual(item["evidence_refs"], ["A1", "D1", "D2"])
-        self.assertEqual(len(item["options"]), 1)
-        self.assertEqual(item["options"][0]["option_id"], "apply_hint")
+        self.assertEqual(item["options"], [])
+        self.assertEqual(item["resolution_mode"], "edit_spec")
+        self.assertEqual(item["spec_amendment_hints"], "Amend A1 to require history retrieval before calling D1")
 
-    def test_multi_module_gap_no_hint_has_empty_options(self) -> None:
-        """A multi-module gap with no resolution_hint produces empty options list."""
-        from handlers.implement import _escalate_dependency_gap_issues
+    def test_no_hint_has_empty_options(self) -> None:
+        """An issue with no resolution_hint produces empty options list."""
         issues = [
             {
                 "issue_id": "I002",
@@ -2026,13 +1998,12 @@ class EscalateDependencyGapIssuesTests(unittest.TestCase):
             }
         ]
         selected = self._make_selected({"A1": "API", "C1": "CORE"})
-        result = _escalate_dependency_gap_issues(issues, selected)
+        result = _escalate_spec_issues(issues, selected)
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["options"], [])
 
     def test_title_truncated_to_120_chars(self) -> None:
         """Title is truncated to 120 characters from description."""
-        from handlers.implement import _escalate_dependency_gap_issues
         long_desc = "X" * 200
         issues = [
             {
@@ -2043,21 +2014,37 @@ class EscalateDependencyGapIssuesTests(unittest.TestCase):
             }
         ]
         selected = self._make_selected({"A1": "API", "B1": "CORE"})
-        result = _escalate_dependency_gap_issues(issues, selected)
+        result = _escalate_spec_issues(issues, selected)
         self.assertEqual(len(result[0]["title"]), 120)
 
-    def test_mixed_issues_only_multi_module_gaps_escalated(self) -> None:
-        """Only multi-module dependency_gap issues are escalated; others are skipped."""
-        from handlers.implement import _escalate_dependency_gap_issues
+    def test_all_kinds_escalated(self) -> None:
+        """All 5 spec_issue kinds (contradiction, overlap, dependency_gap, ambiguity, orphan_reference) escalate."""
+        kinds = ["contradiction", "overlap", "dependency_gap", "ambiguity", "orphan_reference"]
         issues = [
-            {"issue_id": "I001", "kind": "overlap", "affected_spec_ids": ["A1", "A2"], "description": "overlap"},
-            {"issue_id": "I002", "kind": "dependency_gap", "affected_spec_ids": ["A1", "A2"], "description": "same module"},
-            {"issue_id": "I003", "kind": "dependency_gap", "affected_spec_ids": ["A1", "C1"], "description": "cross module"},
+            {"issue_id": f"I{i:03d}", "kind": k, "affected_spec_ids": ["A1", "A2"], "description": f"{k} issue"}
+            for i, k in enumerate(kinds)
         ]
-        selected = self._make_selected({"A1": "API", "A2": "API", "C1": "CORE"})
-        result = _escalate_dependency_gap_issues(issues, selected)
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["item_id"], "I003")
+        selected = self._make_selected({"A1": "API", "A2": "CORE"})
+        result = _escalate_spec_issues(issues, selected)
+        self.assertEqual(len(result), 5)
+        result_ids = {item["item_id"] for item in result}
+        self.assertEqual(result_ids, {"I000", "I001", "I002", "I003", "I004"})
+
+    def test_blocking_reason_includes_kind(self) -> None:
+        """Each kind has a distinct blocking_reason template."""
+        expected_snippets = {
+            "contradiction": "Mutually exclusive",
+            "overlap": "Overlapping responsibilities",
+            "dependency_gap": "Dependency gap",
+            "ambiguity": "Ambiguous requirement",
+            "orphan_reference": "Orphan reference",
+        }
+        for kind, snippet in expected_snippets.items():
+            issues = [{"issue_id": "I001", "kind": kind, "affected_spec_ids": ["A1"], "description": "test"}]
+            selected = self._make_selected({"A1": "API"})
+            result = _escalate_spec_issues(issues, selected)
+            self.assertEqual(len(result), 1, f"kind={kind} should produce 1 item")
+            self.assertIn(snippet, result[0]["blocking_reason"], f"kind={kind}")
 
 
 class TestContractFieldNullableMetadata(unittest.TestCase):

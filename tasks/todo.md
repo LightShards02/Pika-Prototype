@@ -1261,3 +1261,41 @@
 - Added skill `implement-problem-sourcing` at:
   - `.codex/skills/implement-problem-sourcing/SKILL.md`
   - `%USERPROFILE%/.codex/skills/implement-problem-sourcing/SKILL.md`
+
+## Current Task: Fix preflight support for `refine`
+
+- [x] Reproduce and locate preflight command support failure for `refine`.
+- [x] Apply minimal safety validation updates to support `refine`.
+- [x] Add regression test coverage for `refine` preflight support.
+- [x] Run targeted tests and verify `agent refine` no longer fails preflight with unsupported-command error.
+- [x] Document root cause, fix, and verification.
+
+## Current Task Review: Fix preflight support for `refine`
+
+- Root cause: `refine` existed in CLI/dispatch but was missing from `core/safety.py` supported-command gate (`_run_step_7_unsupported_command`), which caused deterministic preflight failure before execution.
+- Minimal fix:
+  - Added `refine` to preflight supported commands.
+  - Included `refine` in safety input-path resolution and design-spec CSV contract validation paths.
+  - Included `refine` in project-context preflight contract scope to align with `run_refine` runtime behavior.
+- Regression coverage:
+  - Added `test_preflight_refine_command_is_supported` to `tests/test_command_router.py`.
+- Verification:
+  - `conda run -n Local python -m pytest tests/test_command_router.py -q` -> `13 passed`.
+  - CLI smoke run no longer reports `Unsupported command for safety validation: refine`; next validation now proceeds to actual config requirements.
+
+## Current Task: Make `dataset/nutrition/config.yaml` pass refine preflight
+
+- [x] Add minimal `commands.refine` config block with required inputs.
+- [x] Ensure block matches config schema for refine outputs.
+- [x] Validate preflight directly via `validate_command_preconditions`.
+- [x] Validate via CLI run that no preflight error is raised.
+
+## Current Task Review: Make `dataset/nutrition/config.yaml` pass refine preflight
+
+- Added `commands.refine` with:
+  - `inputs.design_spec_path: state/DESIGN-SPEC.csv`
+  - `inputs.project_context_filename: PROJECT_CONTEXT.md`
+  - schema-valid `outputs` keys only (`root_dir`, `agent_runs_dir`, `design_spec_path`).
+- Verification:
+  - `conda run -n Local python -c "... validate_command_preconditions('refine', ...) ..."` -> `PREFLIGHT_OK`.
+  - `conda run -n Local python cli.py agent refine --project-root dataset/nutrition --config config.yaml --dry-run` -> command executed and returned `status: blocked` (no preflight failure).

@@ -337,7 +337,7 @@ class GetLocalExecTimeoutTests(unittest.TestCase):
     def test_falls_back_to_pika_default(self) -> None:
         """When workspace override is absent, uses pika local.exec_timeout_sec."""
         with patch(
-            "core.pika_config.get_pika_config",
+            "core.lifecycle.get_pika_config",
             return_value={"local": {"exec_timeout_sec": 777}},
         ):
             self.assertEqual(get_local_exec_timeout_sec({"agent": {}}), 777)
@@ -345,7 +345,7 @@ class GetLocalExecTimeoutTests(unittest.TestCase):
     def test_invalid_values_fall_back_to_hard_default(self) -> None:
         """Invalid workspace+pika values fall back to 600 seconds."""
         with patch(
-            "core.pika_config.get_pika_config",
+            "core.lifecycle.get_pika_config",
             return_value={"local": {"exec_timeout_sec": "bad"}},
         ):
             self.assertEqual(
@@ -378,15 +378,25 @@ class GetReasoningEffortTests(unittest.TestCase):
     def test_pika_defaults(self) -> None:
         """Pika defaults apply when no project override."""
         config = {}
-        # implement_from_specs defaults to high in pika
-        self.assertEqual(get_reasoning_effort(config, "implement_from_specs"), "high")
-        # map_spec_to_code defaults to medium in pika
-        self.assertEqual(get_reasoning_effort(config, "map_spec_to_code"), "medium")
+        with patch("core.lifecycle.get_pika_config") as m:
+            m.return_value = {
+                "local": {
+                    "reasoning_effort": {
+                        "implement_from_specs": "high",
+                        "map_spec_to_code": "medium",
+                    }
+                }
+            }
+            # implement_from_specs defaults to high in pika
+            self.assertEqual(get_reasoning_effort(config, "implement_from_specs"), "high")
+            # map_spec_to_code defaults to medium in pika
+            self.assertEqual(get_reasoning_effort(config, "map_spec_to_code"), "medium")
 
     def test_fallback_medium(self) -> None:
         """Unknown prompt with no config falls back to medium."""
         config = {}
-        self.assertEqual(get_reasoning_effort(config, "nonexistent_prompt"), "medium")
+        with patch("core.lifecycle.get_pika_config", return_value={"local": {}}):
+            self.assertEqual(get_reasoning_effort(config, "nonexistent_prompt"), "medium")
 
 
 class GetLocalModelTests(unittest.TestCase):
@@ -395,7 +405,7 @@ class GetLocalModelTests(unittest.TestCase):
     def test_project_override_string(self) -> None:
         """Project config local_model (string) overrides pika for all prompts."""
         config = {"agent": {"local_model": "gpt-5-codex"}}
-        with patch("core.pika_config.get_pika_config") as m:
+        with patch("core.lifecycle.get_pika_config") as m:
             m.return_value = {"local": {"model": {"default": "gpt-4-codex"}}}
             self.assertEqual(get_local_model(config, "implement_from_specs"), "gpt-5-codex")
             self.assertEqual(get_local_model(config, "map_spec_to_code"), "gpt-5-codex")
@@ -410,7 +420,7 @@ class GetLocalModelTests(unittest.TestCase):
                 }
             }
         }
-        with patch("core.pika_config.get_pika_config") as m:
+        with patch("core.lifecycle.get_pika_config") as m:
             m.return_value = {"local": {"model": {"default": "gpt-5-codex"}}}
             self.assertEqual(get_local_model(config, "implement_from_specs"), "gpt-4-codex")
             self.assertEqual(get_local_model(config, "map_spec_to_code"), "gpt-5-codex")
@@ -418,14 +428,14 @@ class GetLocalModelTests(unittest.TestCase):
     def test_pika_fallback_string(self) -> None:
         """Pika local.model (string) used when project has no override."""
         config = {}
-        with patch("core.pika_config.get_pika_config") as m:
+        with patch("core.lifecycle.get_pika_config") as m:
             m.return_value = {"local": {"model": "gpt-5-codex"}}
             self.assertEqual(get_local_model(config, "implement_from_specs"), "gpt-5-codex")
 
     def test_pika_fallback_per_prompt(self) -> None:
         """Pika local.model (object) used per prompt when project has no override."""
         config = {}
-        with patch("core.pika_config.get_pika_config") as m:
+        with patch("core.lifecycle.get_pika_config") as m:
             m.return_value = {
                 "local": {
                     "model": {
@@ -440,7 +450,7 @@ class GetLocalModelTests(unittest.TestCase):
     def test_ignores_empty_string_falls_back_to_pika(self) -> None:
         """Project local_model empty string falls back to pika."""
         config = {"agent": {"local_model": "   "}}
-        with patch("core.pika_config.get_pika_config") as m:
+        with patch("core.lifecycle.get_pika_config") as m:
             m.return_value = {"local": {"model": "gpt-5-codex"}}
             self.assertEqual(get_local_model(config, "implement_from_specs"), "gpt-5-codex")
 
@@ -486,7 +496,8 @@ class ApiConfigTests(unittest.TestCase):
 
         orig = os.environ.pop("NVIDIA_API_KEY", None)
         try:
-            with self.assertRaises(RuntimeError) as ctx:
+            from core.errors import AgentInvocationError
+            with self.assertRaises(AgentInvocationError) as ctx:
                 get_api_config({"agent": {"provider": "api"}})
             self.assertIn("NVIDIA_API_KEY", str(ctx.exception))
         finally:
@@ -868,12 +879,14 @@ class InvokeAgentLocalIsolationTests(unittest.TestCase):
             config_path=str(root / "config.yaml"),
         )
 
+        from core.errors import AgentInvocationError
+
         with patch("core.lifecycle.Path.mkdir"):
             with patch("core.lifecycle.load_prompt_registry", return_value=_Registry()):
                 with patch("core.lifecycle.check_local_available", return_value=False):
                     with patch("core.lifecycle.run_local_exec") as mock_exec:
                         with patch.object(Path, "exists", lambda p: p == schema_path):
-                            with self.assertRaises(RuntimeError) as exc_ctx:
+                            with self.assertRaises(AgentInvocationError) as exc_ctx:
                                 invoke_agent_local(
                                     prompt_name="map_spec_to_code",
                                     template_vars={"value": "x"},

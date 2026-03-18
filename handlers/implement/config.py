@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from core.constants import ContractKind
+from core.errors import ConfigParseError
 from core.lifecycle import get_agent_provider
 from core.pika_config import get_pika_config
 
@@ -53,12 +54,10 @@ _DETERMINISTIC_IMPLEMENT_STEPS_IN_ORDER: tuple[str, ...] = (
     "planner_path_contract_prep",
     "planner_semantic_validation",
     "planner_manual_resolution_gate",
-    "dependency_gap_escalation",
+    "spec_issue_escalation",
     "unified_plan_validation",
-    "intra_spec_conflict_validation",
     "contract_field_consistency_validation",
     "required_field_coverage_validation",
-    "match_ambiguity_validation",
     "batch_plan_construction",
     "batch_plan_dependency_validation",
     "batch_brief_build",
@@ -123,26 +122,26 @@ def _normalize_disallowed_link_policy(value: Any) -> dict[str, set[str]]:
             for role, kinds in _DEFAULT_DISALLOWED_LINK_KINDS_BY_REQUIRED_ROLE.items()
         }
     if not isinstance(value, dict):
-        raise ValueError("implement.disallowed_link_kinds_by_required_role must be an object")
+        raise ConfigParseError("implement.disallowed_link_kinds_by_required_role must be an object")
     normalized: dict[str, set[str]] = {}
     known_roles = set(_DEFAULT_ROLES)
     known_kinds = set(_CONTRACT_KINDS)
     for raw_role, raw_kinds in value.items():
         role = str(raw_role).strip().lower()
         if role not in known_roles:
-            raise ValueError(
+            raise ConfigParseError(
                 "implement.disallowed_link_kinds_by_required_role contains unknown role: "
                 f"{raw_role}"
             )
         if not isinstance(raw_kinds, list):
-            raise ValueError(
+            raise ConfigParseError(
                 "implement.disallowed_link_kinds_by_required_role entries must be arrays of contract kind strings"
             )
         kinds: set[str] = set()
         for raw_kind in raw_kinds:
             kind = str(raw_kind).strip()
             if kind not in known_kinds:
-                raise ValueError(
+                raise ConfigParseError(
                     "implement.disallowed_link_kinds_by_required_role contains unknown contract kind "
                     f"'{raw_kind}' for role '{role}'"
                 )
@@ -162,7 +161,7 @@ def _normalize_leaf_dependency_roles(value: Any) -> set[str]:
     if value is None:
         return set()
     if not isinstance(value, list):
-        raise ValueError("implement.leaf_dependency_roles must be an array of role strings")
+        raise ConfigParseError("implement.leaf_dependency_roles must be an array of role strings")
     normalized: set[str] = set()
     known_roles = set(_DEFAULT_ROLES)
     for raw_role in value:
@@ -170,7 +169,7 @@ def _normalize_leaf_dependency_roles(value: Any) -> set[str]:
         if not role:
             continue
         if role not in known_roles:
-            raise ValueError(f"implement.leaf_dependency_roles contains unknown role: {raw_role}")
+            raise ConfigParseError(f"implement.leaf_dependency_roles contains unknown role: {raw_role}")
         normalized.add(role)
     return normalized
 
@@ -183,13 +182,13 @@ def _normalize_leaf_dependency_policy(value: Any) -> dict[str, Any]:
             "track_external_dependencies": _DEFAULT_TRACK_EXTERNAL_DEPENDENCIES,
         }
     if not isinstance(value, dict):
-        raise ValueError("implement.leaf_dependency_policy must be an object")
+        raise ConfigParseError("implement.leaf_dependency_policy must be an object")
     mode = str(value.get("mode", _DEFAULT_LEAF_DEPENDENCY_POLICY_MODE)).strip().lower()
     if mode != "auto_drop":
-        raise ValueError("implement.leaf_dependency_policy.mode must be 'auto_drop'")
+        raise ConfigParseError("implement.leaf_dependency_policy.mode must be 'auto_drop'")
     track = value.get("track_external_dependencies", _DEFAULT_TRACK_EXTERNAL_DEPENDENCIES)
     if not isinstance(track, bool):
-        raise ValueError(
+        raise ConfigParseError(
             "implement.leaf_dependency_policy.track_external_dependencies must be boolean"
         )
     return {"mode": mode, "track_external_dependencies": track}
@@ -201,21 +200,21 @@ def _normalize_contract_kind_definitions(value: Any) -> dict[str, str]:
     if value is None:
         return definitions
     if not isinstance(value, dict):
-        raise ValueError("implement.contract_kind_definitions must be an object")
+        raise ConfigParseError("implement.contract_kind_definitions must be an object")
     known_kinds = set(_CONTRACT_KINDS)
     for raw_kind, raw_info in value.items():
         kind = str(raw_kind).strip()
         if kind not in known_kinds:
-            raise ValueError(
+            raise ConfigParseError(
                 f"implement.contract_kind_definitions contains unknown kind: {raw_kind}"
             )
         if not isinstance(raw_info, dict):
-            raise ValueError(
+            raise ConfigParseError(
                 f"implement.contract_kind_definitions.{kind} must be an object with a definition field"
             )
         definition = str(raw_info.get("definition", "")).strip()
         if not definition:
-            raise ValueError(
+            raise ConfigParseError(
                 f"implement.contract_kind_definitions.{kind}.definition must be non-empty"
             )
         definitions[kind] = definition
@@ -230,14 +229,14 @@ def _normalize_type_shape_match(value: Any) -> dict[str, float]:
             "tie_margin": _DEFAULT_TIE_MARGIN,
         }
     if not isinstance(value, dict):
-        raise ValueError("implement.type_shape_match must be an object")
+        raise ConfigParseError("implement.type_shape_match must be an object")
     min_score = value.get("min_auto_bind_score", _DEFAULT_MIN_AUTO_BIND_SCORE)
     tie_margin = value.get("tie_margin", _DEFAULT_TIE_MARGIN)
     try:
         min_score_f = float(min_score)
         tie_margin_f = float(tie_margin)
     except (TypeError, ValueError) as exc:
-        raise ValueError(
+        raise ConfigParseError(
             "implement.type_shape_match values must be numeric"
         ) from exc
     min_score_f = max(0.0, min(1.0, min_score_f))
@@ -250,7 +249,7 @@ def _parse_providerless_contract_allowlist(value: Any) -> list[str]:
     if value is None:
         return []
     if not isinstance(value, list):
-        raise ValueError(
+        raise ConfigParseError(
             "implement.required_field_coverage_validation.providerless_contract_allowlist must be an array"
         )
     result: list[str] = []
@@ -365,6 +364,12 @@ def _get_impl_cfg(config: dict[str, Any]) -> dict[str, Any]:
         value = raw_budgets.get(key, default)
         if isinstance(value, int) and value > 0:
             budgets[key] = value
+    pika_min_max_files = get_pika_config().get("implement", {}).get("min_max_files", 5)
+    if budgets["max_files"] < pika_min_max_files:
+        raise ConfigParseError(
+            f"budgets.max_files ({budgets['max_files']}) is below the minimum "
+            f"allowed value ({pika_min_max_files}) from pika.yaml implement.min_max_files"
+        )
     roles = impl.get("allowed_module_roles", list(_DEFAULT_ROLES))
     if not isinstance(roles, list) or not roles:
         roles = list(_DEFAULT_ROLES)

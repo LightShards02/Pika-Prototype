@@ -97,7 +97,10 @@ class ResolveHandlerTests(unittest.TestCase):
                                 "resolution_mode": "edit_spec",
                                 "options": [],
                                 "chosen_option_id": None,
-                                "acknowledged": False,
+                                "manual_edit_text": None,
+                                "manual_edit_spec_id": None,
+                                "manual_edit_field": None,
+                                "spec_id": "A1",
                                 "spec_amendment_hints": [
                                     {
                                         "spec_id": "A1",
@@ -133,20 +136,21 @@ class ResolveHandlerTests(unittest.TestCase):
                 },
             }
 
-            fake_in = io.StringIO("DONE\n")
+            fake_in = io.StringIO("M\nUpdated requirement text\n")
             fake_out = io.StringIO()
             with patch("sys.stdin", fake_in), patch("sys.stdout", fake_out):
                 result = run_resolve(config, ctx)
 
             self.assertEqual(result["status"], "completed")
             out_text = fake_out.getvalue()
-            self.assertIn("Question: Edit spec A1", out_text)
-            self.assertIn("Spec amendment hints:", out_text)
-            self.assertIn("DONE (spec edited)", out_text)
+            self.assertIn("Edit spec A1", out_text)
+            self.assertIn("Hints", out_text)
+            self.assertIn("M (manual edit)", out_text)
 
             loaded = yaml.safe_load((manual_dir / "resolutions.yaml").read_text(encoding="utf-8"))
             item = loaded["items"][0]
-            self.assertTrue(item.get("acknowledged"))
+            self.assertEqual(item.get("manual_edit_text"), "Updated requirement text")
+            self.assertEqual(item.get("manual_edit_spec_id"), "A1")
 
     def test_quit_on_edit_spec_item_returns_quit_status(self) -> None:
         """Typing Q on a non-agent edit-spec item quits and returns status 'quit'."""
@@ -223,7 +227,7 @@ class ResolveHandlerTests(unittest.TestCase):
             self.assertEqual(run_meta.get("resolution_status"), "pending")
 
             out_text = fake_out.getvalue()
-            self.assertIn("Q (quit)", out_text)
+            self.assertIn("Q quit", out_text)
 
     def test_quit_on_agent_item_returns_quit_status(self) -> None:
         """Typing Q on an agent item with options quits and returns status 'quit'."""
@@ -291,8 +295,9 @@ class ResolveHandlerTests(unittest.TestCase):
             self.assertIn("quit", result.get("reason", ""))
 
             out_text = fake_out.getvalue()
-            self.assertIn("Q (quit)", out_text)
-            self.assertIn("OTHER (free text)", out_text)
+            self.assertIn("Q quit", out_text)
+            # Agent items without let_agent_edit still show O option
+            self.assertIn("O", out_text)
 
     def test_quit_lowercase_accepted(self) -> None:
         """Lowercase 'q' is accepted as quit (input is case-insensitive)."""

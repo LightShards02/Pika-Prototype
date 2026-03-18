@@ -16,30 +16,7 @@ _WORD_TOKEN_PATTERN = re.compile(r"\b([A-Za-z][A-Za-z0-9_-]*)\b")
 _WORD_SPLIT_PATTERN = re.compile(r"[_-]+")
 _CAMEL_PART_PATTERN = re.compile(r"[A-Z]+(?=[A-Z][a-z]|[0-9]|$)|[A-Z]?[a-z]+|[0-9]+")
 _SAFE_TOKEN_PATTERN = re.compile(r"[^a-z0-9_]+")
-_HTTP_STATUS_TOKEN_PATTERN = re.compile(
-    r"\b(?:http\s*)?status(?:\s*code)?\s*[:=]?\s*(\d{3})\b",
-    re.IGNORECASE,
-)
-_HTTP_RETURN_STATUS_PATTERN = re.compile(
-    r"\b(?:return|returns|respond|responds|response|with)\s+(?:http\s*)?(\d{3})\b",
-    re.IGNORECASE,
-)
-_HTTP_ROUTE_PATTERN = re.compile(
-    r"\b(GET|POST|PUT|PATCH|DELETE)\s+(/[A-Za-z0-9_./{}:-]+)",
-    re.IGNORECASE,
-)
 
-_FAILURE_CLASS_KEYWORDS: dict[str, set[str]] = {
-    "validation_error": {"invalid", "validation", "malformed", "badrequest", "bad_request"},
-    "not_found": {"notfound", "not_found", "missing", "absent"},
-    "unauthorized": {"unauthorized", "authentication", "auth"},
-    "forbidden": {"forbidden", "denied", "accessdenied", "access_denied", "permission"},
-    "conflict": {"conflict", "duplicate", "alreadyexists", "already_exists"},
-    "timeout": {"timeout", "timedout", "timed_out", "deadline"},
-    "rate_limit": {"ratelimit", "rate_limit", "throttle", "throttled", "toomanyrequests", "too_many_requests"},
-    "unavailable": {"unavailable", "serviceunavailable", "service_unavailable", "down"},
-    "server_error": {"error", "failure", "failed", "exception"},
-}
 
 _AMBIGUITY_TIE_MARGIN = 0.03
 
@@ -49,21 +26,25 @@ def _validate_unified_plan(
     all_spec_ids: set[str],
     module_catalog: ModuleCatalog,
 ) -> dict[str, Any]:
-    """Validate the unified planner output: spec coverage and DAG acyclicity.
+    """Validate the unified planner output with differentiated failure handling.
 
-    Checks:
+    Checks (retryable — planner omission, share planner retry counter):
     1. Every spec_id in the workset appears in at least one planned_anchor.
-    2. spec_dependencies form a DAG (no cycles).
     3. All spec_ids referenced in spec_dependencies exist in the workset.
     4. Every module in module_catalog has a corresponding module_plan.
+
+    Checks (blocking — requires human judgment):
+    2. spec_dependencies form a DAG (no cycles).
     """
-    reasons: list[str] = []
+    retryable_reasons: list[str] = []
+    blocking_reasons: list[str] = []
     checks: list[str] = []
+    cycle_path: list[str] | None = None
 
     module_plans = plan.get("module_plans", [])
     spec_deps = plan.get("spec_dependencies", [])
 
-    # Check 1: spec coverage
+    # Check 1 (retryable): spec coverage
     covered_specs: set[str] = set()
     for mp in module_plans:
         if not isinstance(mp, dict):
@@ -76,11 +57,11 @@ def _validate_unified_plan(
 
     uncovered = sorted(all_spec_ids - covered_specs)
     if uncovered:
-        reasons.append(f"Specs not covered by any planned_anchor: {', '.join(uncovered)}")
+        retryable_reasons.append(f"Specs not covered by any planned_anchor: {', '.join(uncovered)}")
     else:
         checks.append("all_specs_covered")
 
-    # Check 2: DAG acyclicity via DFS
+    # Check 2 (blocking): DAG acyclicity via DFS
     dep_graph: dict[str, set[str]] = {}
     all_referenced: set[str] = set()
     for dep in spec_deps:
@@ -101,18 +82,19 @@ def _validate_unified_plan(
 
     cycle = _find_cycle(dep_graph)
     if cycle:
-        reasons.append(f"Spec dependency cycle detected: {' -> '.join(cycle)}")
+        cycle_path = cycle
+        blocking_reasons.append(f"Spec dependency cycle detected: {' -> '.join(cycle)}")
     else:
         checks.append("spec_dependencies_acyclic")
 
-    # Check 3: all referenced spec_ids exist in workset
+    # Check 3 (retryable): all referenced spec_ids exist in workset
     unknown_refs = sorted(all_referenced - all_spec_ids)
     if unknown_refs:
-        reasons.append(f"spec_dependencies reference unknown spec_ids: {', '.join(unknown_refs)}")
+        retryable_reasons.append(f"spec_dependencies reference unknown spec_ids: {', '.join(unknown_refs)}")
     else:
         checks.append("spec_dependency_refs_valid")
 
-    # Check 4: module coverage
+    # Check 4 (retryable): module coverage
     catalog_tags = {
         str(m.get("module_tag", "")).strip()
         for m in module_catalog.get("modules", [])
@@ -125,14 +107,18 @@ def _validate_unified_plan(
     }
     missing_modules = sorted(catalog_tags - plan_tags)
     if missing_modules:
-        reasons.append(f"Modules in catalog but missing from plan: {', '.join(missing_modules)}")
+        retryable_reasons.append(f"Modules in catalog but missing from plan: {', '.join(missing_modules)}")
     else:
         checks.append("all_modules_planned")
 
+    all_reasons = retryable_reasons + blocking_reasons
     return {
-        "status": ImplementStatus.PASSED if not reasons else ImplementStatus.FAILED,
+        "status": ImplementStatus.PASSED if not all_reasons else ImplementStatus.FAILED,
         "checks": checks,
-        "reasons": reasons,
+        "reasons": all_reasons,
+        "retryable_reasons": retryable_reasons,
+        "blocking_reasons": blocking_reasons,
+        "cycle_path": cycle_path,
     }
 
 
@@ -729,6 +715,54 @@ def _validate_contract_field_consistency(
                     f"(score={score:.3f}, distance={distance}, score_threshold={match_score_threshold:.3f})"
                 )
 
+            # Tie-detection: for each non-exact field, find all candidates and
+            # check for near-equal scores (ambiguity that needs human clarification).
+            for field_name in contract_fields:
+                if field_name in exact_matches:
+                    continue
+                candidates: list[dict[str, Any]] = []
+                for source_word in spec_words:
+                    row = _build_high_match_row(
+                        source_word,
+                        field_name,
+                        score_threshold=match_score_threshold,
+                    )
+                    if row is not None:
+                        candidates.append(row)
+                candidates_sorted = sorted(candidates, key=_match_sort_key)
+                if len(candidates_sorted) < 2:
+                    continue
+                top = candidates_sorted[0]
+                second = candidates_sorted[1]
+                score_delta = abs(
+                    float(top.get("score", 0.0)) - float(second.get("score", 0.0))
+                )
+                if score_delta > _AMBIGUITY_TIE_MARGIN:
+                    continue
+                tie_item_id = (
+                    f"match_ambiguity_{contract_id}_{spec_id}_{_safe_item_token(field_name)}"
+                )
+                items.append({
+                    "item_id": tie_item_id,
+                    "title": f"Ambiguous contract field match: {contract_id} / {spec_id}",
+                    "question": (
+                        f"Spec {spec_id} has near-equal word matches for contract field "
+                        f"'{field_name}': {_format_high_match_pairs([top, second])}. "
+                        "Edit the spec text to use one unambiguous field name."
+                    ),
+                    "resolution_mode": "edit_spec",
+                    "options": [],
+                    "required": True,
+                    "blocking_reason": (
+                        f"Near-equal candidate words for {field_name} in spec {spec_id} "
+                        f"(delta={score_delta:.3f})"
+                    ),
+                })
+                reasons.append(
+                    f"Spec {spec_id} has ambiguous high-match candidates for "
+                    f"{contract_id}.{field_name}"
+                )
+
             # Provider check: evaluate missing contract fields by high-distance matches.
             if is_provider and provider_spec_id:
                 missing_in_spec = sorted(contract_fields - spec_words)
@@ -776,141 +810,6 @@ def _validate_contract_field_consistency(
     }
 
 
-def _spec_text_lookup(
-    spec_rows: list[dict[str, Any]],
-    headers: list[str],
-) -> dict[str, dict[str, Any]]:
-    """Return spec_id -> normalized text/context metadata."""
-    req_col = _find_col(headers, "requirement")
-    ac_col = _find_col(headers, "acceptance_criteria")
-    spec_col = _find_col(headers, "spec_id")
-    module_col = _find_col(headers, "module_tag")
-    if not spec_col:
-        return {}
-
-    by_spec: dict[str, dict[str, Any]] = {}
-    for row in spec_rows:
-        if not isinstance(row, dict):
-            continue
-        spec_id = str(row.get(spec_col, "")).strip()
-        if not spec_id:
-            continue
-        requirement = str(row.get(req_col or "requirement", "") or "")
-        acceptance = str(row.get(ac_col or "acceptance_criteria", "") or "")
-        text = f"{requirement} {acceptance}".strip()
-        by_spec[spec_id] = {
-            "module_tag": str(row.get(module_col or "module_tag", "")).strip(),
-            "text": text,
-        }
-    return by_spec
-
-
-def _collect_status_codes(text: str) -> set[int]:
-    """Collect HTTP status codes from free text using explicit status phrases."""
-    values: set[int] = set()
-    if not text:
-        return values
-    for match in _HTTP_STATUS_TOKEN_PATTERN.finditer(text):
-        try:
-            values.add(int(match.group(1)))
-        except (TypeError, ValueError):
-            continue
-    for match in _HTTP_RETURN_STATUS_PATTERN.finditer(text):
-        try:
-            values.add(int(match.group(1)))
-        except (TypeError, ValueError):
-            continue
-    return {v for v in values if 100 <= v <= 599}
-
-
-def _normalize_keyword_token(token: str) -> str:
-    """Normalize token for failure-class keyword matching."""
-    parts = _split_word_parts(token)
-    return "".join(parts)
-
-
-def _collect_failure_classes(text: str) -> set[str]:
-    """Collect failure classes referenced by a spec text."""
-    words = {_normalize_keyword_token(w) for w in _extract_words(text)}
-    classes: set[str] = set()
-    for class_name, keywords in _FAILURE_CLASS_KEYWORDS.items():
-        if words & keywords:
-            classes.add(class_name)
-    return classes
-
-
-def _validate_intra_spec_behavior_conflicts(
-    spec_dependencies: list[dict[str, Any]],
-    spec_rows: list[dict[str, Any]],
-    headers: list[str],
-) -> dict[str, Any]:
-    """Detect conflicting linked-spec failure behaviors from explicit status semantics.
-
-    A conflict is emitted when consumer/provider specs are dependency-linked, both
-    mention the same failure class, and each has exactly one explicit status code
-    but the codes differ.
-    """
-    spec_by_id = _spec_text_lookup(spec_rows, headers)
-    reasons: list[str] = []
-    checks: list[str] = []
-    conflicts: list[dict[str, Any]] = []
-
-    for dep in spec_dependencies:
-        if not isinstance(dep, dict):
-            continue
-        consumer_spec_id = str(dep.get("consumer_spec_id", "")).strip()
-        provider_ids = dep.get("provider_spec_ids", [])
-        if not consumer_spec_id or not isinstance(provider_ids, list):
-            continue
-        consumer_info = spec_by_id.get(consumer_spec_id)
-        if consumer_info is None:
-            continue
-        consumer_text = str(consumer_info.get("text", ""))
-        consumer_classes = _collect_failure_classes(consumer_text)
-        consumer_status = sorted(_collect_status_codes(consumer_text))
-        if len(consumer_status) != 1:
-            continue
-
-        for provider_spec_id_raw in provider_ids:
-            provider_spec_id = str(provider_spec_id_raw).strip()
-            if not provider_spec_id:
-                continue
-            provider_info = spec_by_id.get(provider_spec_id)
-            if provider_info is None:
-                continue
-            provider_text = str(provider_info.get("text", ""))
-            provider_classes = _collect_failure_classes(provider_text)
-            provider_status = sorted(_collect_status_codes(provider_text))
-            if len(provider_status) != 1:
-                continue
-            overlap_classes = sorted(consumer_classes & provider_classes)
-            if not overlap_classes:
-                continue
-            if consumer_status[0] == provider_status[0]:
-                continue
-            conflict = {
-                "consumer_spec_id": consumer_spec_id,
-                "provider_spec_id": provider_spec_id,
-                "failure_classes": overlap_classes,
-                "consumer_status_code": consumer_status[0],
-                "provider_status_code": provider_status[0],
-            }
-            conflicts.append(conflict)
-            reasons.append(
-                "Linked specs conflict on failure class "
-                f"{overlap_classes}: {consumer_spec_id}=>{consumer_status[0]} "
-                f"vs {provider_spec_id}=>{provider_status[0]}"
-            )
-
-    if not reasons:
-        checks.append("linked_failure_statuses_consistent")
-    return {
-        "status": ImplementStatus.PASSED if not reasons else ImplementStatus.FAILED,
-        "checks": checks,
-        "reasons": sorted(set(reasons)),
-        "conflicts": conflicts,
-    }
-
 
 def _spec_words_and_parts(text: str) -> tuple[set[str], set[str], set[str]]:
     """Return exact words, normalized words, and split parts from spec text."""
@@ -939,6 +838,35 @@ def _field_is_covered_in_spec(field_name: str, spec_text: str) -> bool:
     if field_parts and all(part in parts for part in field_parts):
         return True
     return False
+
+
+def _spec_text_lookup(
+    spec_rows: list[dict[str, Any]],
+    headers: list[str],
+) -> dict[str, dict[str, Any]]:
+    """Return spec_id -> normalized text/context metadata."""
+    req_col = _find_col(headers, "requirement")
+    ac_col = _find_col(headers, "acceptance_criteria")
+    spec_col = _find_col(headers, "spec_id")
+    module_col = _find_col(headers, "module_tag")
+    if not spec_col:
+        return {}
+
+    by_spec: dict[str, dict[str, Any]] = {}
+    for row in spec_rows:
+        if not isinstance(row, dict):
+            continue
+        spec_id = str(row.get(spec_col, "")).strip()
+        if not spec_id:
+            continue
+        requirement = str(row.get(req_col or "requirement", "") or "")
+        acceptance = str(row.get(ac_col or "acceptance_criteria", "") or "")
+        text = f"{requirement} {acceptance}".strip()
+        by_spec[spec_id] = {
+            "module_tag": str(row.get(module_col or "module_tag", "")).strip(),
+            "text": text,
+        }
+    return by_spec
 
 
 def _validate_required_field_coverage(
@@ -1047,6 +975,21 @@ def _validate_required_field_coverage(
             f"Provider spec(s) {provider_spec_ids} do not explicitly/alias-cover required contract "
             f"fields {missing_fields_sorted} for {contract_id}"
         )
+        manual_resolution_items.append({
+            "item_id": f"uncovered_fields_{contract_id}",
+            "title": f"Uncovered fields in contract {contract_id}",
+            "question": (
+                f"Provider spec(s) {provider_spec_ids} do not cover required fields "
+                f"{missing_fields_sorted} for contract {contract_id}. "
+                "Edit provider spec text to reference these fields."
+            ),
+            "options": [],
+            "required": True,
+            "blocking_reason": (
+                f"Required fields {missing_fields_sorted} not covered "
+                f"in provider spec(s) {provider_spec_ids}."
+            ),
+        })
 
     if not reasons and not manual_resolution_items:
         checks.append("required_contract_fields_covered")
@@ -1063,167 +1006,25 @@ def _validate_required_field_coverage(
     }
 
 
-def _collect_http_routes(text: str) -> list[tuple[str, str]]:
-    """Extract normalized (method, path) route pairs from text."""
-    routes: set[tuple[str, str]] = set()
-    for method, path in _HTTP_ROUTE_PATTERN.findall(text or ""):
-        normalized_path = str(path).strip()
-        if not normalized_path:
-            continue
-        routes.add((str(method).upper(), normalized_path))
-    return sorted(routes)
+
+_SPEC_ISSUE_BLOCKING_REASONS: dict[str, str] = {
+    "contradiction": "Mutually exclusive behaviors in specs {affected}",
+    "overlap": "Overlapping responsibilities in specs {affected}",
+    "dependency_gap": "Dependency gap in specs {affected}",
+    "ambiguity": "Ambiguous requirement in specs {affected}",
+    "orphan_reference": "Orphan reference in specs {affected}",
+}
 
 
-def _route_similarity_score(left_path: str, right_path: str) -> float:
-    """Return normalized Damerau-Levenshtein similarity score for two route paths."""
-    left = str(left_path).strip().lower()
-    right = str(right_path).strip().lower()
-    if not left or not right:
-        return 0.0
-    distance = _damerau_levenshtein_distance(left, right)
-    denom = max(len(left), len(right), 1)
-    return 1.0 - (float(distance) / float(denom))
-
-
-def _validate_match_ambiguity(
-    shared_contracts: list[dict[str, Any]],
-    spec_rows: list[dict[str, Any]],
-    headers: list[str],
-    *,
-    match_score_threshold: float = 0.80,
-) -> dict[str, Any]:
-    """Detect near-equal token/route ambiguities and emit manual resolution items."""
-    threshold = max(0.0, min(1.0, float(match_score_threshold)))
-    spec_by_id = _spec_text_lookup(spec_rows, headers)
-    items: list[dict[str, Any]] = []
-    reasons: list[str] = []
-
-    for contract in shared_contracts:
-        if not isinstance(contract, dict):
-            continue
-        contract_id = str(contract.get("contract_id", "")).strip()
-        if not contract_id:
-            continue
-        fields = contract.get("fields", [])
-        field_names = sorted(
-            {
-                str(field.get("name", "")).strip().lower()
-                for field in fields
-                if isinstance(field, dict) and str(field.get("name", "")).strip()
-            }
-        )
-        if not field_names:
-            continue
-        consumed_specs = [
-            str(spec_id).strip()
-            for spec_id in contract.get("consumed_by_specs", [])
-            if str(spec_id).strip()
-        ]
-
-        for spec_id in consumed_specs:
-            spec_info = spec_by_id.get(spec_id)
-            if spec_info is None:
-                continue
-            spec_text = str(spec_info.get("text", ""))
-            spec_words = {w.lower() for w in _extract_words(spec_text)}
-            exact_words = set(spec_words)
-
-            for field_name in field_names:
-                if field_name in exact_words:
-                    continue
-                candidates: list[dict[str, Any]] = []
-                for source_word in spec_words:
-                    row = _build_high_match_row(
-                        source_word,
-                        field_name,
-                        score_threshold=threshold,
-                    )
-                    if row is not None:
-                        candidates.append(row)
-                candidates_sorted = sorted(candidates, key=_match_sort_key)
-                if len(candidates_sorted) < 2:
-                    continue
-                top = candidates_sorted[0]
-                second = candidates_sorted[1]
-                score_delta = abs(float(top.get("score", 0.0)) - float(second.get("score", 0.0)))
-                if score_delta > _AMBIGUITY_TIE_MARGIN:
-                    continue
-                item_id = (
-                    f"match_ambiguity_{contract_id}_{spec_id}_{_safe_item_token(field_name)}"
-                )
-                items.append(
-                    {
-                        "item_id": item_id,
-                        "title": f"Ambiguous contract field match: {contract_id} / {spec_id}",
-                        "question": (
-                            f"Spec {spec_id} has near-equal word matches for contract field "
-                            f"'{field_name}': {_format_high_match_pairs([top, second])}. "
-                            "Edit the spec text to use one unambiguous field name."
-                        ),
-                        "resolution_mode": "edit_spec",
-                        "options": [],
-                        "required": True,
-                        "blocking_reason": (
-                            f"Near-equal candidate words for {field_name} in spec {spec_id} "
-                            f"(delta={score_delta:.3f})"
-                        ),
-                    }
-                )
-                reasons.append(
-                    f"Spec {spec_id} has ambiguous high-match candidates for {contract_id}.{field_name}"
-                )
-
-            routes = _collect_http_routes(spec_text)
-            if len(routes) < 2:
-                continue
-            for idx, (left_method, left_path) in enumerate(routes):
-                for right_method, right_path in routes[idx + 1 :]:
-                    if left_method != right_method:
-                        continue
-                    if left_path == right_path:
-                        continue
-                    similarity = _route_similarity_score(left_path, right_path)
-                    if similarity < threshold:
-                        continue
-                    route_item_id = (
-                        f"route_conflict_{spec_id}_{_safe_item_token(left_method)}_"
-                        f"{_safe_item_token(left_path)}_{_safe_item_token(right_path)}"
-                    )
-                    items.append(
-                        {
-                            "item_id": route_item_id,
-                            "title": f"Ambiguous route wording in spec {spec_id}",
-                            "question": (
-                                f"Spec {spec_id} references near-equal {left_method} routes "
-                                f"'{left_path}' and '{right_path}' (similarity={similarity:.3f}). "
-                                "Edit the spec to keep one canonical route."
-                            ),
-                            "resolution_mode": "edit_spec",
-                            "options": [],
-                            "required": True,
-                            "blocking_reason": "Near-equal route patterns may cause planner ambiguity.",
-                        }
-                    )
-                    reasons.append(
-                        f"Spec {spec_id} contains near-equal {left_method} routes: "
-                        f"{left_path} vs {right_path}"
-                    )
-
-    return {
-        "status": ImplementStatus.PASSED if not items else ImplementStatus.FAILED,
-        "manual_resolution_items": items,
-        "reasons": reasons,
-    }
-
-
-def _escalate_dependency_gap_issues(
+def _escalate_spec_issues(
     spec_issues: list[dict[str, Any]],
     selected: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Convert multi-module dependency_gap spec_issues to manual_resolution_items.
+    """Convert all spec_issues to blocking manual_resolution_items.
 
-    Only escalates issues where affected_spec_ids span >= 2 distinct module_tags.
-    Single-module gaps remain as spec_issues warnings.
+    All 5 issue kinds (contradiction, overlap, dependency_gap, ambiguity,
+    orphan_reference) are escalated regardless of cross-module scope.
+    For dependency_gap, module detail is included in the blocking_reason.
     """
     spec_id_to_module: dict[str, str] = {}
     for row in selected:
@@ -1234,39 +1035,44 @@ def _escalate_dependency_gap_issues(
 
     items: list[dict[str, Any]] = []
     for issue in spec_issues:
-        if issue.get("kind") != "dependency_gap":
+        kind = str(issue.get("kind", "")).strip()
+        if not kind:
             continue
         affected_ids: list[str] = [
             str(s).strip() for s in issue.get("affected_spec_ids", []) if s
         ]
-        modules = sorted({
-            spec_id_to_module[sid]
-            for sid in affected_ids
-            if sid in spec_id_to_module
-        })
-        if len(modules) < 2:
-            continue
+        affected_str = ", ".join(affected_ids) if affected_ids else "unknown"
         description = str(issue.get("description", "")).strip()
         resolution_hint = str(issue.get("resolution_hint", "")).strip()
-        options: list[dict[str, Any]] = []
-        if resolution_hint:
-            options.append({
-                "option_id": "apply_hint",
-                "label": resolution_hint,
-                "effect": "Proceed after updating specs per resolution hint",
+
+        blocking_reason = _SPEC_ISSUE_BLOCKING_REASONS.get(
+            kind, f"{kind} in specs {{affected}}"
+        ).format(affected=affected_str)
+
+        if kind == "dependency_gap":
+            modules = sorted({
+                spec_id_to_module[sid]
+                for sid in affected_ids
+                if sid in spec_id_to_module
             })
-        items.append({
+            if len(modules) >= 2:
+                blocking_reason = (
+                    f"Dependency gap spanning modules {modules} in specs {affected_str}"
+                )
+
+        item: dict[str, Any] = {
             "item_id": issue.get("issue_id", ""),
             "title": description[:120],
             "question": description,
-            "options": options,
+            "options": [],
             "required": True,
-            "blocking_reason": (
-                f"dependency_gap spans modules {modules}: "
-                "implementation will produce structurally incomplete code"
-            ),
+            "blocking_reason": blocking_reason,
             "evidence_refs": affected_ids,
-        })
+            "resolution_mode": "edit_spec",
+        }
+        if resolution_hint:
+            item["spec_amendment_hints"] = resolution_hint
+        items.append(item)
     return items
 
 

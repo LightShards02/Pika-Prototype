@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from core.context import RuntimeContext
+from core.pika_config import get_pika_config
 
 
 RUN_LOGGER_NAME = "agent_cli.run"
@@ -142,8 +143,6 @@ def _resolve_log_dir(project_root: Path, config: dict[str, Any]) -> Path:
         if isinstance(log_dir, str) and log_dir.strip():
             candidate = Path(log_dir)
             return candidate.resolve() if candidate.is_absolute() else (project_root / candidate).resolve()
-
-    from core.pika_config import get_pika_config
 
     log_dir_rel = get_pika_config().get("default_outputs", {}).get("log_dir", "out/logs")
     return (project_root / log_dir_rel).resolve()

@@ -22,6 +22,13 @@ class PikaConfigTests(unittest.TestCase):
         cfg = load_pika_config()
         self.assertIsInstance(cfg, dict)
 
+    def test_has_version(self) -> None:
+        """Config has version field."""
+        cfg = get_pika_config()
+        self.assertIn("version", cfg)
+        self.assertIsInstance(cfg["version"], str)
+        self.assertTrue(cfg["version"].strip())
+
     def test_has_paths_section(self) -> None:
         """Config has paths section with expected keys."""
         cfg = get_pika_config()

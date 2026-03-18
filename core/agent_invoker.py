@@ -15,10 +15,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-try:
-    import requests  # type: ignore
-except ImportError:
-    requests = None  # type: ignore
+import requests  # type: ignore
+
+from core.pika_config import get_pika_config
 
 _SUBPROCESS_TEXT_ENCODING = "utf-8"
 _SUBPROCESS_TEXT_ERRORS = "replace"
@@ -71,16 +70,12 @@ def _prepare_codex_output_schema(output_schema_path: Path, output_path: Path) ->
 
 def _get_local_ps1_path() -> Path:
     """Return local CLI .ps1 path from pika config (Windows)."""
-    from core.pika_config import get_pika_config
-
     p = get_pika_config().get("local", {}).get("ps1_path_windows", "")
     return Path(p) if p else Path.home() / "AppData" / "Roaming" / "npm" / "codex.ps1"
 
 
 def _get_heartbeat_interval() -> int:
     """Return heartbeat interval in seconds from pika config."""
-    from core.pika_config import get_pika_config
-
     return int(get_pika_config().get("local", {}).get("heartbeat_interval_sec", 30))
 
 
@@ -226,8 +221,6 @@ def _parse_combined_prompt(combined: str) -> tuple[str, str]:
 
 def _get_api_config() -> dict[str, Any]:
     """Return api section from pika config."""
-    from core.pika_config import get_pika_config
-
     return get_pika_config().get("api", {})
 
 
@@ -310,14 +303,9 @@ def run_api_invoke(
         output_tokens when present in the API response (prompt_tokens/completion_tokens).
 
     Raises:
-        RuntimeError: If requests is not installed or API call fails.
+        RuntimeError: If API call fails.
         ValueError: If response cannot be parsed as JSON.
     """
-    if requests is None:
-        raise RuntimeError(
-            "API provider requires the 'requests' package. Install with: pip install requests"
-        )
-
     api_cfg = _get_api_config()
     url = url or api_cfg.get("url", "https://integrate.api.nvidia.com/v1/chat/completions")
     model = model or api_cfg.get("model", "moonshotai/kimi-k2.5")

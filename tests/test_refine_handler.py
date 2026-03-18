@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +10,7 @@ from typing import Any
 from unittest.mock import patch
 
 from core.context import RuntimeContext
+from core.errors import WorksetValidationError
 from handlers.refine.config import _get_refine_cfg
 from handlers.refine.decomposition import (
     _build_decomposition_items,
@@ -21,6 +21,7 @@ from handlers.refine.decomposition import (
 from handlers.refine.impl import (
     _find_col,
     _merge_all_items,
+    _resume_refine,
     _validate_required_columns,
     run_refine,
 )
@@ -290,30 +291,6 @@ class DecompositionItemBuildTests(unittest.TestCase):
         self.assertEqual(_build_decomposition_items(flags), [])
 
 
-class DecompositionCheckSkipTests(unittest.TestCase):
-    """Tests for run_decomposition_check() graceful fallback."""
-
-    def test_skips_when_sentence_transformers_absent(self) -> None:
-        with patch.dict(sys.modules, {"sentence_transformers": None}):
-            result = run_decomposition_check(_SAMPLE_ROWS)
-        self.assertTrue(result.get("skipped"))
-        self.assertEqual(result["split_candidates"], [])
-        self.assertEqual(result["merge_candidates"], [])
-
-    def test_skips_on_import_error(self) -> None:
-        import builtins
-        real_import = builtins.__import__
-
-        def mock_import(name: str, *args: Any, **kwargs: Any) -> Any:
-            if name == "sentence_transformers":
-                raise ImportError("not installed")
-            return real_import(name, *args, **kwargs)
-
-        with patch("builtins.__import__", side_effect=mock_import):
-            result = run_decomposition_check(_SAMPLE_ROWS)
-        self.assertTrue(result.get("skipped"))
-
-
 # ---------------------------------------------------------------------------
 # Group C: Column validation
 # ---------------------------------------------------------------------------
@@ -336,7 +313,7 @@ class RequiredColumnValidationTests(unittest.TestCase):
 
     def test_raises_on_missing_column(self) -> None:
         headers = ["spec_id", "module_tag", "module_role"]
-        with self.assertRaises(ValueError) as cm:
+        with self.assertRaises(WorksetValidationError) as cm:
             _validate_required_columns(
                 headers,
                 ["spec_id", "module_tag", "module_role", "requirement", "acceptance_criteria"],
@@ -344,7 +321,7 @@ class RequiredColumnValidationTests(unittest.TestCase):
         self.assertIn("requirement", str(cm.exception).lower())
 
     def test_error_message_lists_all_missing(self) -> None:
-        with self.assertRaises(ValueError) as cm:
+        with self.assertRaises(WorksetValidationError) as cm:
             _validate_required_columns([], ["spec_id", "requirement"])
         msg = str(cm.exception)
         self.assertIn("spec_id", msg)
@@ -478,12 +455,12 @@ class RunRefineIntegrationTests(unittest.TestCase):
         refined = output_path.read_text(encoding="utf-8")
         self.assertEqual(original.strip(), refined.strip())
 
-    # --- N items → needs_resolution ---
+    # --- N items → blocked ---
 
-    def test_items_returns_needs_resolution(self) -> None:
+    def test_items_returns_blocked(self) -> None:
         with self._mock_both_agents(_ambiguity_items_output(), _testability_items_output()):
             result = run_refine(self._config(), self._ctx())
-        self.assertEqual(result["status"], "needs_resolution")
+        self.assertEqual(result["status"], "blocked")
         self.assertEqual(result["blocking_items"], 2)
 
     def test_items_writes_stage_json(self) -> None:
@@ -510,44 +487,14 @@ class RunRefineIntegrationTests(unittest.TestCase):
         self.assertEqual(run_meta["command"], "refine")
         self.assertEqual(run_meta["run_id"], "test-run")
 
-    # --- decomposition skipped gracefully ---
-
-    def test_decomposition_skipped_when_library_absent(self) -> None:
-        """Refine still completes when sentence-transformers is unavailable."""
-        cfg = self._config()
-        cfg["commands"]["refine"]["decomposition"]["enabled"] = True
-        cfg["commands"]["refine"]["decomposition"]["blocking"] = True
-
-        import builtins
-        real_import = builtins.__import__
-
-        def mock_import(name: str, *args: Any, **kwargs: Any) -> Any:
-            if name == "sentence_transformers":
-                raise ImportError("not installed")
-            return real_import(name, *args, **kwargs)
-
-        with patch("builtins.__import__", side_effect=mock_import):
-            with self._mock_both_agents(_empty_agent_output(), _empty_agent_output()):
-                result = run_refine(cfg, self._ctx())
-
-        self.assertIn(result["status"], {"completed", "needs_resolution"})
-
     def test_decomposition_flags_json_written(self) -> None:
+        """Decomposition check writes decomposition_flags.json when enabled."""
         cfg = self._config()
         cfg["commands"]["refine"]["decomposition"]["enabled"] = True
         run_dir = Path(self.tmp) / "out" / "agent_runs" / "refine" / "test-run"
 
-        import builtins
-        real_import = builtins.__import__
-
-        def mock_import(name: str, *args: Any, **kwargs: Any) -> Any:
-            if name == "sentence_transformers":
-                raise ImportError("not installed")
-            return real_import(name, *args, **kwargs)
-
-        with patch("builtins.__import__", side_effect=mock_import):
-            with self._mock_both_agents(_empty_agent_output(), _empty_agent_output()):
-                run_refine(cfg, self._ctx())
+        with self._mock_both_agents(_empty_agent_output(), _empty_agent_output()):
+            run_refine(cfg, self._ctx())
 
         flags_file = run_dir / "decomposition_flags.json"
         self.assertTrue(flags_file.exists())
@@ -717,6 +664,207 @@ class SchemaValidationTests(unittest.TestCase):
             "rationale": "reason",
             "edits": [],  # minItems: 1
         })
+
+
+class RefineResumeTests(unittest.TestCase):
+    """Group H — resume logic in run_refine / _resume_refine."""
+
+    def _run_dir(self, tmp: str, run_id: str) -> Path:
+        return Path(tmp) / "out" / "agent_runs" / "refine" / run_id
+
+    def _write_run_meta(self, run_dir: Path, meta: dict[str, Any]) -> None:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "run_meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    def test_run_refine_with_resume_run_id_delegates_to_resume(self) -> None:
+        """run_refine with resume_run_id set calls _resume_refine."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _make_config(tmp)
+            ctx = RuntimeContext(
+                command="refine",
+                dry_run=False,
+                verbose=False,
+                command_only_validation=False,
+                run_id="new-run",
+                project_root=tmp,
+                config_path="config/config.yaml",
+                input_overrides={},
+                resume_run_id="missing-run-id",
+            )
+
+            result = run_refine(config, ctx)
+
+            # Should fail gracefully because run_id doesn't exist
+            self.assertEqual(result["status"], "failed")
+            self.assertIn("missing-run-id", result["reason"])
+
+    def test_resume_refine_nonexistent_run_raises_resume_error(self) -> None:
+        """_resume_refine with unknown run_id raises ResumeError."""
+        from core.errors import ResumeError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _make_config(tmp)
+            ctx = _make_ctx(tmp)
+
+            with self.assertRaises(ResumeError) as cm:
+                _resume_refine(config, ctx, Path(tmp), "ghost-run-99")
+            self.assertIn("ghost-run-99", str(cm.exception))
+
+    def test_resume_refine_no_blocked_or_failed_raises_resume_error(self) -> None:
+        """_resume_refine with no blocked_at_stage or failed_at_stage raises ResumeError."""
+        from core.errors import ResumeError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_id = "pending-run"
+            run_dir = self._run_dir(tmp, run_id)
+            self._write_run_meta(run_dir, {
+                "command": "refine",
+                "run_id": run_id,
+                "resolution_status": "pending",
+            })
+            config = _make_config(tmp)
+            ctx = _make_ctx(tmp)
+
+            with self.assertRaises(ResumeError) as cm:
+                _resume_refine(config, ctx, Path(tmp), run_id)
+            self.assertIn("not resumable", str(cm.exception))
+
+    def test_resume_refine_unknown_blocked_stage_raises_resume_error(self) -> None:
+        """_resume_refine with an unrecognised blocked_at_stage raises ResumeError."""
+        from core.errors import ResumeError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_id = "weird-stage-run"
+            run_dir = self._run_dir(tmp, run_id)
+            self._write_run_meta(run_dir, {
+                "command": "refine",
+                "run_id": run_id,
+                "blocked_at_stage": "unknown_stage",
+                "resolution_status": "resolved",
+            })
+            config = _make_config(tmp)
+            ctx = _make_ctx(tmp)
+
+            with self.assertRaises(ResumeError) as cm:
+                _resume_refine(config, ctx, Path(tmp), run_id)
+            self.assertIn("unknown_stage", str(cm.exception))
+
+    def test_resume_refine_agent_review_returns_completed_immediately(self) -> None:
+        """_resume_refine after agent_review block: resolve already applied, return completed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            run_id = "agent-review-run"
+            run_dir = self._run_dir(tmp, run_id)
+            out_csv = str(Path(tmp) / "out" / "REFINED-SPEC.csv")
+            self._write_run_meta(run_dir, {
+                "command": "refine",
+                "run_id": run_id,
+                "blocked_at_stage": "agent_review",
+                "resolution_status": "resolved",
+                "output_design_spec_path": out_csv,
+            })
+            config = _make_config(tmp)
+            ctx = _make_ctx(tmp)
+
+            result = _resume_refine(config, ctx, Path(tmp), run_id)
+
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["run_id"], run_id)
+            self.assertEqual(result["output_path"], out_csv)
+
+    def test_resume_refine_decomposition_missing_output_csv_raises_resume_error(self) -> None:
+        """_resume_refine after decomposition block with no output CSV raises ResumeError."""
+        from core.errors import ResumeError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_id = "decomp-run-no-csv"
+            run_dir = self._run_dir(tmp, run_id)
+            self._write_run_meta(run_dir, {
+                "command": "refine",
+                "run_id": run_id,
+                "blocked_at_stage": "decomposition",
+                "resolution_status": "resolved",
+                # output_design_spec_path deliberately absent
+            })
+            config = _make_config(tmp)
+            ctx = _make_ctx(tmp)
+
+            with self.assertRaises(ResumeError) as cm:
+                _resume_refine(config, ctx, Path(tmp), run_id)
+            self.assertIn("output_design_spec_path", str(cm.exception))
+
+    def test_resume_refine_decomposition_runs_agents_and_completes(self) -> None:
+        """_resume_refine after decomposition block loads restructured CSV and runs agents."""
+        with tempfile.TemporaryDirectory() as tmp:
+            run_id = "decomp-run-ok"
+            run_dir = self._run_dir(tmp, run_id)
+
+            # Write the restructured CSV that resolve would have produced
+            restructured = Path(tmp) / "out" / "RESTRUCTURED-SPEC.csv"
+            _write_design_csv(restructured)
+            _write_project_context(Path(tmp))
+
+            out_csv = str(Path(tmp) / "out" / "REFINED-SPEC.csv")
+            self._write_run_meta(run_dir, {
+                "command": "refine",
+                "run_id": run_id,
+                "input_design_spec_path": str(restructured),
+                "output_design_spec_path": str(restructured),
+                "blocked_at_stage": "decomposition",
+                "resolution_status": "resolved",
+                "completed_stages": ["decomposition"],
+            })
+
+            config = _make_config(tmp, design_csv_path=str(restructured))
+            # Override output path to our tmp location
+            config["commands"]["refine"]["outputs"]["design_spec_path"] = {
+                "path": out_csv,
+                "no_overwrite": False,
+            }
+            ctx = _make_ctx(tmp, run_id=run_id)
+
+            with patch(
+                "handlers.refine.impl.invoke_agent_with_schema_retry",
+                return_value=_empty_agent_output(),
+            ):
+                result = _resume_refine(config, ctx, Path(tmp), run_id)
+
+            # Agents found no issues → completed, output CSV copied
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["run_id"], run_id)
+            self.assertTrue(Path(result["output_path"]).exists())
+
+    def test_resume_refine_decomposition_agents_find_items_blocks_again(self) -> None:
+        """_resume_refine after decomposition block: agents find items → blocked at agent_review."""
+        with tempfile.TemporaryDirectory() as tmp:
+            run_id = "decomp-run-more-issues"
+            run_dir = self._run_dir(tmp, run_id)
+
+            restructured = Path(tmp) / "out" / "RESTRUCTURED-SPEC.csv"
+            _write_design_csv(restructured)
+            _write_project_context(Path(tmp))
+
+            self._write_run_meta(run_dir, {
+                "command": "refine",
+                "run_id": run_id,
+                "input_design_spec_path": str(restructured),
+                "output_design_spec_path": str(restructured),
+                "blocked_at_stage": "decomposition",
+                "resolution_status": "resolved",
+                "completed_stages": ["decomposition"],
+            })
+
+            config = _make_config(tmp, design_csv_path=str(restructured))
+            ctx = _make_ctx(tmp, run_id=run_id)
+
+            with patch(
+                "handlers.refine.impl.invoke_agent_with_schema_retry",
+                return_value=_ambiguity_items_output(),
+            ):
+                result = _resume_refine(config, ctx, Path(tmp), run_id)
+
+            self.assertEqual(result["status"], "blocked")
+            self.assertEqual(result["blocking_stage"], "agent_review")
+            self.assertGreater(result["blocking_items"], 0)
 
 
 if __name__ == "__main__":

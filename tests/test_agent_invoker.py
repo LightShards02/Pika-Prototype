@@ -266,13 +266,6 @@ class RunApiInvokeTests(unittest.TestCase):
             self.assertEqual(usage["input_tokens"], 100)
             self.assertEqual(usage["output_tokens"], 50)
 
-    def test_raises_when_requests_missing(self) -> None:
-        """Raises clear error when requests is not installed."""
-        with patch("core.agent_invoker.requests", None):
-            with self.assertRaises(RuntimeError) as ctx:
-                run_api_invoke("prompt", api_key="x")
-            self.assertIn("requests", str(ctx.exception))
-
     def test_raises_on_api_error(self) -> None:
         """Raises when API returns non-OK status."""
         mock_response = MagicMock()

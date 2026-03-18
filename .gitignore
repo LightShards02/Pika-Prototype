@@ -233,3 +233,6 @@ Sample-Spec.xlsx
 # Test artifacts
 *.pkl
 out
+
+# Node Modules
+**/node_modules/

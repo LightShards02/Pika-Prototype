@@ -55,6 +55,7 @@ def _validate_required_config(cfg: dict[str, Any]) -> None:
     """Validate that all required PIKA config sections and fields are present."""
     missing: list[str] = []
 
+    _require_non_empty_string(cfg.get("version"), "version", missing)
     _require(isinstance(cfg.get("paths"), dict), "paths", missing)
     _require(isinstance(cfg.get("schema_map"), dict), "schema_map", missing)
     _require(isinstance(cfg.get("config_candidates"), list), "config_candidates", missing)

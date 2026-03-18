@@ -1,18 +1,19 @@
 """Deterministic NLP decomposition check for the refine command.
 
-Uses sentence-transformers (optional dependency) to detect specs with mixed
-topic responsibilities (split candidates) and specs that are overly similar
-within the same module (merge candidates).
-
-If sentence-transformers is not installed, returns a skipped result and never
-blocks even when blocking mode is enabled.
+Uses sentence-transformers to detect specs with mixed topic responsibilities
+(split candidates) and specs that are overly similar within the same module
+(merge candidates).
 """
 
 from __future__ import annotations
 
 import re
-import sys
 from typing import Any
+
+try:
+    from sentence_transformers import SentenceTransformer  # type: ignore[import]
+except ImportError:
+    SentenceTransformer = None  # type: ignore[assignment,misc]
 
 
 _MIN_SENTENCES_FOR_VARIANCE = 3
@@ -135,28 +136,13 @@ def run_decomposition_check(
             "merge_candidates": [{"spec_ids", "reason", "similarity"}],
             "skipped": False,
         }
-        or when sentence-transformers is unavailable:
-        {
-            "split_candidates": [],
-            "merge_candidates": [],
-            "skipped": True,
-            "reason": "sentence-transformers not installed",
-        }
     """
-    try:
-        from sentence_transformers import SentenceTransformer  # type: ignore[import]
-    except ImportError:
-        print(
-            "[PIKA] Decomposition: skipped — sentence-transformers not installed",
-            file=sys.stderr,
+    if SentenceTransformer is None:
+        from core.errors import PikaError
+        raise PikaError(
+            "sentence-transformers library is not installed. "
+            "Install it (`pip install sentence-transformers`) or set decomposition.enabled: false in config."
         )
-        return {
-            "split_candidates": [],
-            "merge_candidates": [],
-            "skipped": True,
-            "reason": "sentence-transformers not installed",
-        }
-
     model = SentenceTransformer("all-MiniLM-L6-v2")
 
     req_col = _find_col_lower(rows, "requirement")
