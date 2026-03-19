@@ -663,6 +663,82 @@ def _show_editor_preview(
     return answer == "Y"
 
 
+def _apply_only(
+    run_dir: Path,
+    run_id: str,
+    data: dict[str, Any],
+    items: list[dict[str, Any]],
+    config: dict[str, Any],
+    ctx: Any,
+) -> dict[str, Any]:
+    """Non-interactive apply path: validate pre-filled resolutions.yaml and apply changes.
+
+    Used by the desktop GUI which writes resolutions.yaml directly instead of
+    using the interactive TUI loop.
+    """
+    valid, errors = validate_resolutions(data)
+    if not valid:
+        return {
+            "command": "resolve",
+            "status": "failed",
+            "reason": "validation_failed",
+            "errors": errors,
+        }
+
+    run_meta_path = run_dir / "run_meta.json"
+    run_meta: dict[str, Any] = {}
+    if run_meta_path.exists():
+        run_meta = json.loads(run_meta_path.read_text(encoding="utf-8"))
+    run_meta["resolution_status"] = "resolved"
+    run_meta_path.write_text(json.dumps(run_meta, indent=2), encoding="utf-8")
+
+    cmd = run_meta.get("command", "")
+    if cmd == "refine":
+        try:
+            changes, output_csv = _apply_refine_resolutions(run_dir, config, ctx)
+            return {
+                "command": "resolve",
+                "status": "completed",
+                "run_id": run_id,
+                "items_resolved": len(items),
+                "changes_applied": changes,
+                "output_path": output_csv,
+            }
+        except Exception as exc:
+            return {
+                "command": "resolve",
+                "status": "failed",
+                "reason": f"apply_refine_resolutions: {exc}",
+            }
+
+    if cmd == "implement":
+        try:
+            changes, output_csv = _apply_implement_resolutions(run_dir, config, ctx)
+            result: dict[str, Any] = {
+                "command": "resolve",
+                "status": "completed",
+                "run_id": run_id,
+                "items_resolved": len(items),
+                "changes_applied": changes,
+            }
+            if output_csv:
+                result["output_path"] = output_csv
+            return result
+        except Exception as exc:
+            return {
+                "command": "resolve",
+                "status": "failed",
+                "reason": f"apply_implement_resolutions: {exc}",
+            }
+
+    return {
+        "command": "resolve",
+        "status": "completed",
+        "run_id": run_id,
+        "items_resolved": len(items),
+    }
+
+
 def run_resolve(config: dict[str, Any], ctx: Any) -> dict[str, Any]:
     """Run interactive resolution loop for a blocked run.
 
@@ -751,6 +827,11 @@ def run_resolve(config: dict[str, Any], ctx: Any) -> dict[str, Any]:
             "status": "completed",
             "reason": "no_items",
         }
+
+    # Non-interactive apply-only mode (for desktop GUI).
+    # Validates a pre-filled resolutions.yaml and applies changes without TUI.
+    if ctx.input_overrides.get("apply_only") == "true":
+        return _apply_only(run_dir, run_id, data, items, config, ctx)
 
     spec_lookup = _build_spec_lookup(run_dir)
 

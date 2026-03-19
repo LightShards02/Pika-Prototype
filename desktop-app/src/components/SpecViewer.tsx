@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import { useMemo } from 'react';
 import { Search, Filter, CheckCircle2 } from 'lucide-react';
 import { useStore } from '../store';
 import { clsx } from 'clsx';

@@ -9,7 +9,10 @@
       "Bash(grep -n \"jsonl\\\\|run_summary\" /c/Users/night/Work/Echelondx/Pika/handlers/*.py)",
       "Bash(grep -rn \"\\\\.jsonl\\\\|append.*run_summary\\\\|write.*json\" /c/Users/night/Work/Echelondx/Pika/core/*.py)",
       "Bash(C:/Users/night/miniconda3/envs/Local/python.exe -c \"import csv; rows=list\\(csv.DictReader\\(open\\(''dataset/SRV/out/state/DESIGN-SPEC.csv''\\)\\)\\); print\\(''map_run_id in headers:'', ''map_run_id'' in list\\(rows[0].keys\\(\\)\\) if rows else ''no rows''\\); sym = next\\(\\(r[''mapped_code_symbols''] for r in rows if r.get\\(''mapped_code_symbols''\\)\\), None\\); print\\(''sample:'', sym\\)\")",
-      "Bash(C:/Users/night/miniconda3/envs/Local/python.exe -c \":*)"
+      "Bash(C:/Users/night/miniconda3/envs/Local/python.exe -c \":*)",
+      "Bash(find /c/Users/night/Work/Echelondx/Pika/desktop-app/src -type f -name *.ts -o -name *.tsx -o -name *.js -o -name *.jsx)",
+      "Bash(npm run:*)",
+      "Bash(npm install:*)"
     ]
   }
 }

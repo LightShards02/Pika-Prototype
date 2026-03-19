@@ -1,17 +1,21 @@
-import { ChevronLeft, ChevronRight, CheckCircle2, Wand2, RefreshCcw, SkipForward } from 'lucide-react';
+import { ChevronLeft, ChevronRight, CheckCircle2, Wand2, SkipForward, RefreshCcw } from 'lucide-react';
 import { useStore } from '../store';
 import { clsx } from 'clsx';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 
 export const GatePanel = () => {
-  const { 
-    currentGateItems, 
-    activeItemIndex, 
-    setActiveItemIndex, 
+  const {
+    currentGateItems,
+    activeItemIndex,
+    setActiveItemIndex,
     resolveItem,
     setHighlightedSpecIds,
-    run
+    setCurrentGateItems,
+    run,
+    setRun,
   } = useStore();
+
+  const [isContinuing, setIsContinuing] = useState(false);
 
   const currentItem = currentGateItems[activeItemIndex];
   const allResolved = currentGateItems.every(item => item.selectedOption);
@@ -25,6 +29,72 @@ export const GatePanel = () => {
   if (!currentItem) return null;
 
   const progress = Math.round(((currentGateItems.filter(i => i.selectedOption).length) / currentGateItems.length) * 100);
+
+  const handleContinue = async () => {
+    if (!run.runDir || !run.runId || !run.projectRoot) return;
+    setIsContinuing(true);
+
+    try {
+      // 1. Write resolutions to YAML
+      const resolutions = currentGateItems.map((item, idx) => ({
+        itemIndex: item.itemIndex ?? idx,
+        chosenOptionId: item.selectedOption!,
+      }));
+      await window.electronAPI.writeResolution({ runDir: run.runDir, resolutions });
+
+      // 2. Apply resolutions (resolve --apply-only)
+      // Listen for the apply exit before resuming
+      const waitForExit = () => new Promise<void>((resolve) => {
+        const unsub = window.electronAPI.onPikaExit(() => {
+          unsub();
+          resolve();
+        });
+      });
+
+      await window.electronAPI.applyResolutions({
+        projectRoot: run.projectRoot,
+        runId: run.runId,
+      });
+      await waitForExit();
+
+      // 3. Resume refine
+      setCurrentGateItems([]);
+      setRun({ status: 'running', progress: 90 });
+
+      await window.electronAPI.resumeRefine({
+        projectRoot: run.projectRoot,
+        runId: run.runId,
+      });
+
+      // The exit listener in App.tsx will handle the final status update
+      // But we need a listener here for the resume exit
+      const unsubResume = window.electronAPI.onPikaExit((data) => {
+        unsubResume();
+        const status = data.summary?.status as string | undefined;
+        if (status === 'completed') {
+          setRun({ status: 'completed', progress: 100 });
+        } else {
+          setRun({ status: 'failed' });
+        }
+      });
+    } catch {
+      setRun({ status: 'failed' });
+    } finally {
+      setIsContinuing(false);
+    }
+  };
+
+  const getOptionIcon = (optionId: string) => {
+    switch (optionId) {
+      case 'accept_suggestion': return <CheckCircle2 size={20} />;
+      case 'let_agent_edit': return <Wand2 size={20} />;
+      case 'skip': return <SkipForward size={20} />;
+      // Fallback for legacy mock option IDs
+      case 'accept': return <CheckCircle2 size={20} />;
+      case 'agent': return <Wand2 size={20} />;
+      default: return <SkipForward size={20} />;
+    }
+  };
 
   return (
     <div className="flex flex-col h-full bg-bg-gate-active overflow-hidden">
@@ -41,24 +111,25 @@ export const GatePanel = () => {
 
         <div className="flex items-center gap-4">
           <div className="flex-1 h-2 bg-bg-elevated rounded-full overflow-hidden">
-            <div 
-              className="h-full bg-accent-primary transition-all duration-300" 
-              style={{ width: `${progress}%` }} 
+            <div
+              className="h-full bg-accent-primary transition-all duration-300"
+              style={{ width: `${progress}%` }}
             />
           </div>
           <span className="text-[12px] font-medium text-text-secondary whitespace-nowrap">
             {currentGateItems.filter(i => i.selectedOption).length} / {currentGateItems.length} resolved
           </span>
-          <button 
-            disabled={!allResolved}
+          <button
+            disabled={!allResolved || isContinuing}
+            onClick={handleContinue}
             className={clsx(
               "px-6 py-2 rounded-md text-[13px] font-semibold transition-all cursor-pointer",
-              allResolved 
-                ? "bg-accent-primary text-white hover:bg-accent-deep shadow-md" 
+              allResolved && !isContinuing
+                ? "bg-accent-primary text-white hover:bg-accent-deep shadow-md"
                 : "bg-border-medium text-text-tertiary cursor-not-allowed"
             )}
           >
-            Continue
+            {isContinuing ? 'Applying...' : 'Continue'}
           </button>
         </div>
       </div>
@@ -108,9 +179,7 @@ export const GatePanel = () => {
                     "p-2 rounded-md",
                     currentItem.selectedOption === option.id ? "bg-white/20" : "bg-bg-elevated"
                   )}>
-                    {option.id === 'accept' ? <CheckCircle2 size={20} /> : 
-                     option.id === 'agent' ? <Wand2 size={20} /> : 
-                     <SkipForward size={20} />}
+                    {getOptionIcon(option.id)}
                   </div>
                   <div>
                     <div className="text-[14px] font-semibold">{option.label}</div>
@@ -129,7 +198,7 @@ export const GatePanel = () => {
           </div>
 
           <div className="flex justify-between items-center pt-4">
-            <button 
+            <button
               disabled={activeItemIndex === 0}
               onClick={() => setActiveItemIndex(activeItemIndex - 1)}
               className="flex items-center gap-2 px-4 py-2 text-[14px] font-medium text-text-secondary hover:text-accent-primary disabled:opacity-30 cursor-pointer"
@@ -137,7 +206,7 @@ export const GatePanel = () => {
               <ChevronLeft size={20} />
               Previous Item
             </button>
-            <button 
+            <button
               disabled={activeItemIndex === currentGateItems.length - 1}
               onClick={() => setActiveItemIndex(activeItemIndex + 1)}
               className="flex items-center gap-2 px-4 py-2 text-[14px] font-medium text-text-secondary hover:text-accent-primary disabled:opacity-30 cursor-pointer"

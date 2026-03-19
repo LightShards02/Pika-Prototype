@@ -607,8 +607,14 @@ def agent_resolve_command(
     config: str | None = typer.Option(None, "--config", help="Path to config YAML."),
     project_root: str = typer.Option(..., "--project-root", help="Workspace root (required)."),
     verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logs."),
+    apply_only: bool = typer.Option(False, "--apply-only", help="Skip interactive TUI; validate and apply a pre-filled resolutions.yaml."),
 ) -> None:
     """Interactive manual resolution for blocked runs. Presents items one by one until all are resolved."""
+    overrides: dict[str, str] = {}
+    if run:
+        overrides["run_id"] = run
+    if apply_only:
+        overrides["apply_only"] = "true"
     _execute_command(
         "resolve",
         config=config,
@@ -616,7 +622,7 @@ def agent_resolve_command(
         dry_run=False,
         verbose=verbose,
         command_only_validation=False,
-        input_overrides={"run_id": run} if run else None,
+        input_overrides=overrides if overrides else None,
     )
 
 

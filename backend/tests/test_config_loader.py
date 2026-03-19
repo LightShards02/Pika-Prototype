@@ -13,7 +13,7 @@ from core.errors import ConfigSchemaValidationError
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = REPO_ROOT / "config" / "config.schema.json"
 EXAMPLE_CONFIG_PATH = REPO_ROOT / "config" / "config.example.yaml"
-NUTRITION_CONFIG_PATH = REPO_ROOT / "dataset" / "nutrition" / "config.yaml"
+NUTRITION_CONFIG_PATH = REPO_ROOT.parent / "dataset" / "nutrition" / "config.yaml"
 
 
 class ConfigLoaderImplementPolicyTests(unittest.TestCase):

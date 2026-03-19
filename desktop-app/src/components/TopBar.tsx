@@ -1,10 +1,10 @@
-import { ArrowLeft, X } from 'lucide-react';
+import { ArrowLeft, X, Settings } from 'lucide-react';
 import { useStore } from '../store';
 import { clsx } from 'clsx';
 
 export const TopBar = () => {
-  const { run } = useStore();
-  
+  const { run, setRun, view, setView } = useStore();
+
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'running': return 'bg-indigo-light text-indigo-mid';
@@ -25,28 +25,49 @@ export const TopBar = () => {
     }
   };
 
+  const handleBack = async () => {
+    if (view === 'settings') {
+      setView('main');
+      return;
+    }
+    if (run.status === 'running') {
+      await window.electronAPI.cancelPika();
+    }
+    setRun({ status: 'idle', progress: 0, runId: undefined, runDir: undefined });
+  };
+
+  const handleCancel = async () => {
+    await window.electronAPI.cancelPika();
+    setRun({ status: 'failed' });
+  };
+
   return (
     <div className="h-16 border-b border-border-subtle bg-bg-primary flex items-center px-6 gap-6 shrink-0 z-10">
-      <button className="p-2 hover:bg-bg-elevated rounded-full transition-colors cursor-pointer">
+      <button
+        onClick={handleBack}
+        className="p-2 hover:bg-bg-elevated rounded-full transition-colors cursor-pointer"
+      >
         <ArrowLeft size={20} className="text-text-secondary" />
       </button>
-      
+
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 mb-1">
           <h1 className="text-[15px] font-semibold text-text-primary">Design Improvement</h1>
-          <div className={clsx(
-            "px-2 py-0.5 rounded-full text-[11px] font-medium flex items-center gap-1.5",
-            getStatusColor(run.status)
-          )}>
+          {run.status !== 'idle' && (
             <div className={clsx(
-              "w-1.5 h-1.5 rounded-full",
-              run.status === 'running' ? "bg-accent-primary animate-pulse" : 
-              run.status === 'paused' ? "bg-warning" : 
-              run.status === 'completed' ? "bg-success" : 
-              "bg-error"
-            )} />
-            {getStatusLabel(run.status)}
-          </div>
+              "px-2 py-0.5 rounded-full text-[11px] font-medium flex items-center gap-1.5",
+              getStatusColor(run.status)
+            )}>
+              <div className={clsx(
+                "w-1.5 h-1.5 rounded-full",
+                run.status === 'running' ? "bg-accent-primary animate-pulse" :
+                run.status === 'paused' ? "bg-warning" :
+                run.status === 'completed' ? "bg-success" :
+                "bg-error"
+              )} />
+              {getStatusLabel(run.status)}
+            </div>
+          )}
         </div>
         <div className="text-[12px] text-text-tertiary flex items-center gap-2">
           <span>Run #{run.runId || '—'}</span>
@@ -55,22 +76,39 @@ export const TopBar = () => {
         </div>
       </div>
 
-      <div className="flex-1 max-w-md">
-        <div className="flex justify-between items-end mb-1.5 px-0.5">
-          <span className="text-[11px] font-medium text-text-secondary">{run.progress}%</span>
+      {run.status !== 'idle' && (
+        <div className="flex-1 max-w-md">
+          <div className="flex justify-between items-end mb-1.5 px-0.5">
+            <span className="text-[11px] font-medium text-text-secondary">{run.progress}%</span>
+          </div>
+          <div className="h-1.5 bg-bg-elevated rounded-full overflow-hidden">
+            <div
+              className="h-full bg-accent-primary transition-all duration-500 ease-out"
+              style={{ width: `${run.progress}%` }}
+            />
+          </div>
         </div>
-        <div className="h-1.5 bg-bg-elevated rounded-full overflow-hidden">
-          <div 
-            className="h-full bg-accent-primary transition-all duration-500 ease-out" 
-            style={{ width: `${run.progress}%` }}
-          />
-        </div>
-      </div>
+      )}
 
-      <button className="flex items-center gap-2 px-4 py-2 text-[13px] font-medium text-text-secondary border border-border-medium rounded-md hover:border-error hover:text-error transition-all cursor-pointer">
-        <X size={16} />
-        Cancel Run
-      </button>
+      {(run.status === 'running' || run.status === 'paused') && (
+        <button
+          onClick={handleCancel}
+          className="flex items-center gap-2 px-4 py-2 text-[13px] font-medium text-text-secondary border border-border-medium rounded-md hover:border-error hover:text-error transition-all cursor-pointer"
+        >
+          <X size={16} />
+          Cancel Run
+        </button>
+      )}
+
+      {run.status === 'idle' && view === 'main' && (
+        <button
+          onClick={() => setView('settings')}
+          className="p-2 hover:bg-bg-elevated rounded-full transition-colors cursor-pointer"
+          title="Settings"
+        >
+          <Settings size={20} className="text-text-secondary" />
+        </button>
+      )}
     </div>
   );
 };

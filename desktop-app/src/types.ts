@@ -19,6 +19,12 @@ export interface Phase {
   issuesCount?: number;
 }
 
+export interface ResolutionOption {
+  id: string;
+  label: string;
+  description?: string;
+}
+
 export interface ResolutionItem {
   id: string;
   spec_ids: string[];
@@ -28,12 +34,8 @@ export interface ResolutionItem {
   suggestedText?: string;
   options: ResolutionOption[];
   selectedOption?: string;
-}
-
-export interface ResolutionOption {
-  id: string;
-  label: string;
-  description?: string;
+  field?: string;
+  itemIndex?: number;
 }
 
 export interface RunState {
@@ -43,4 +45,85 @@ export interface RunState {
   runId?: string;
   specPath?: string;
   projectRoot?: string;
+  runDir?: string;
+}
+
+// --- Raw agent output types (from PIKA CLI agent_review.json) ---
+
+export interface RawAgentOption {
+  option_id: string;
+  label: string;
+  effect: string;
+}
+
+export interface RawAmbiguityItem {
+  item_id: string;
+  title: string;
+  spec_id: string;
+  field: 'requirement' | 'acceptance_criteria';
+  vague_phrases: string[];
+  suggested_improvement: string;
+  options: RawAgentOption[];
+}
+
+export interface RawTestabilityItem {
+  item_id: string;
+  title: string;
+  spec_id: string;
+  field: 'acceptance_criteria';
+  untestable_reason: string;
+  suggested_improvement: string;
+  suggested_test_type: string;
+  options: RawAgentOption[];
+}
+
+export type RawAgentItem = RawAmbiguityItem | RawTestabilityItem;
+
+// --- Electron API ---
+
+export interface DialogFilter {
+  name: string;
+  extensions: string[];
+}
+
+export interface PikaExitData {
+  code: number;
+  summary: Record<string, unknown> | null;
+}
+
+export interface ElectronAPI {
+  // Existing file I/O
+  readFile: (filePath: string) => Promise<string>;
+  writeFile: (filePath: string, content: string) => Promise<boolean>;
+  listDirectory: (dirPath: string) => Promise<string[]>;
+
+  // File/folder dialogs
+  openFileDialog: (options?: { filters?: DialogFilter[] }) => Promise<string | null>;
+  openDirDialog: () => Promise<string | null>;
+  saveFileDialog: (options?: { filters?: DialogFilter[]; defaultPath?: string }) => Promise<string | null>;
+
+  // PIKA root path
+  getPikaRoot: () => Promise<string>;
+
+  // PIKA CLI process lifecycle
+  startRefine: (args: { projectRoot: string; configPath?: string; designSpecPath?: string }) => Promise<void>;
+  cancelPika: () => Promise<void>;
+
+  // Gate I/O
+  readGateOutput: (args: { runDir: string }) => Promise<{ stage: string; items: RawAgentItem[] }>;
+  writeResolution: (args: { runDir: string; resolutions: { itemIndex: number; chosenOptionId: string }[] }) => Promise<void>;
+
+  // Resolve + Resume
+  applyResolutions: (args: { projectRoot: string; runId: string; configPath?: string }) => Promise<void>;
+  resumeRefine: (args: { projectRoot: string; runId: string; configPath?: string }) => Promise<void>;
+
+  // Event listeners (main → renderer)
+  onPikaStderr: (callback: (line: string) => void) => () => void;
+  onPikaExit: (callback: (data: PikaExitData) => void) => () => void;
+}
+
+declare global {
+  interface Window {
+    electronAPI: ElectronAPI;
+  }
 }

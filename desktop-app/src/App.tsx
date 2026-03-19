@@ -1,79 +1,124 @@
-import React, { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { TopBar } from './components/TopBar';
 import { SpecViewer } from './components/SpecViewer';
 import { PipelineView } from './components/PipelineView';
 import { GatePanel } from './components/GatePanel';
 import { EntryScreen } from './components/EntryScreen';
+import { SettingsPage } from './components/SettingsPage';
 import { useStore } from './store';
-
-// Mock Data for Demonstration
-const mockSpecs = [
-  { spec_id: 'SPEC-001', module_tag: 'auth', module_role: 'provider', requirement: 'The system shall allow users to log in with email and password.', acceptance_criteria: 'Verify login success with valid credentials.', status: 'done' },
-  { spec_id: 'SPEC-002', module_tag: 'auth', module_role: 'consumer', requirement: 'Users shall receive a JWT token upon successful authentication.', acceptance_criteria: 'Verify JWT presence in response.', status: 'done' },
-  { spec_id: 'SPEC-003', module_tag: 'user_mgmt', module_role: 'provider', requirement: 'The user profile shall be updated when requested.', acceptance_criteria: 'Verify profile changes are persisted.', status: 'pending' },
-  { spec_id: 'SPEC-004', module_tag: 'user_mgmt', module_role: 'consumer', requirement: 'Profiles shall include a display name and avatar URL.', acceptance_criteria: 'Verify fields in profile object.', status: 'pending' },
-  { spec_id: 'SPEC-005', module_tag: 'billing', module_role: 'provider', requirement: 'Invoices shall be generated monthly for active subscriptions.', acceptance_criteria: 'Verify invoice generation logic.', status: 'pending' },
-];
-
-const mockGateItems = [
-  {
-    id: 'item-1',
-    spec_ids: ['SPEC-003'],
-    type: 'Ambiguity: Requirement underspecified',
-    reason: 'No triggering condition, no actor, no latency/consistency spec.',
-    currentText: 'The user profile shall be updated when requested.',
-    suggestedText: 'When an authenticated user submits a profile update request via the PATCH /users/{id} endpoint, the system shall persist the change within 500ms and return the updated profile object.',
-    options: [
-      { id: 'accept', label: 'Accept suggestion', description: 'Accept the AI\'s proposed rewrite of the spec text' },
-      { id: 'agent', label: 'Let agent edit', description: 'Delegate the fix to an AI agent (spec_editor)' },
-      { id: 'skip', label: 'Keep as-is', description: 'Keep the spec unchanged and continue' }
-    ]
-  },
-  {
-    id: 'item-2',
-    spec_ids: ['SPEC-005'],
-    type: 'Testability Gap: Untestable criteria',
-    reason: 'Criteria "Verify invoice generation logic" is too broad and cannot be deterministically verified.',
-    currentText: 'Verify invoice generation logic.',
-    suggestedText: 'Verify that an invoice record is created in the Billing table with status="PENDING" and total_amount matching the sum of active subscription line items.',
-    options: [
-      { id: 'accept', label: 'Accept suggestion', description: 'Accept the AI\'s proposed rewrite of the spec text' },
-      { id: 'agent', label: 'Let agent edit', description: 'Delegate the fix to an AI agent (spec_editor)' },
-      { id: 'skip', label: 'Keep as-is', description: 'Keep the spec unchanged and continue' }
-    ]
-  }
-];
+import {
+  parseStderrLine,
+  mapStderrToPhaseUpdates,
+  computeProgress,
+  transformAgentItems,
+} from './services/pikaService';
+import type { RawAgentItem } from './types';
 
 function App() {
-  const { setSpecs, setCurrentGateItems, setRun, updatePhase } = useStore();
-  const { run } = useStore();
+  const {
+    run, setRun, updatePhase,
+    setCurrentGateItems, setActiveItemIndex,
+    designSpecPath, projectRootPath, configPath,
+    view,
+  } = useStore();
 
+  const cleanupRef = useRef<(() => void) | null>(null);
+
+  // Start refine process when run status transitions to 'running' and no process is active
   useEffect(() => {
-    // Initialize mock data
-    setSpecs(mockSpecs);
-    setCurrentGateItems(mockGateItems);
-    
-    // Simulate initial run state after 1 second
-    const timer = setTimeout(() => {
-      setRun({ 
-        status: 'running', 
-        progress: 15, 
-        runId: '4', 
-        specPath: 'my-spec.csv' 
-      });
-      updatePhase('R1', { status: 'done' });
-      updatePhase('R2', { status: 'done' });
-      updatePhase('R3', { status: 'running' });
-      
-      // Pause at gate after 3 seconds
-      setTimeout(() => {
-        setRun({ status: 'paused', progress: 38 });
-        updatePhase('R3', { status: 'blocked' });
-      }, 2000);
-    }, 1000);
+    if (run.status !== 'running' || !projectRootPath) return;
 
-    return () => clearTimeout(timer);
-  }, []);
+    // Avoid re-triggering if we already have listeners (e.g. after gate resume)
+    if (cleanupRef.current) return;
+
+    const startRefine = async () => {
+      try {
+        await window.electronAPI.startRefine({
+          projectRoot: projectRootPath,
+          designSpecPath: designSpecPath ?? undefined,
+          configPath: configPath ?? undefined,
+        });
+      } catch (err) {
+        setRun({ status: 'failed' });
+        return;
+      }
+
+      const unsubStderr = window.electronAPI.onPikaStderr((line: string) => {
+        const event = parseStderrLine(line);
+        if (!event) return;
+
+        const updates = mapStderrToPhaseUpdates(event);
+        for (const { phaseId, status } of updates) {
+          updatePhase(phaseId, { status });
+        }
+
+        // Update progress based on current phase states
+        const currentPhases = useStore.getState().phases;
+        setRun({ progress: computeProgress(currentPhases) });
+      });
+
+      const unsubExit = window.electronAPI.onPikaExit(async (data) => {
+        const { summary } = data;
+        const status = summary?.status as string | undefined;
+
+        if (status === 'completed') {
+          // Mark all refine phases done
+          for (const id of ['R1', 'R2', 'R3', 'R4']) {
+            updatePhase(id, { status: 'done' });
+          }
+          setRun({ status: 'completed', progress: 100 });
+        } else if (status === 'blocked') {
+          const runId = summary?.run_id as string | undefined;
+          // Construct runDir from project root and run_id
+          const runDir = runId
+            ? `${projectRootPath}/out/agent_runs/refine/${runId}`
+            : undefined;
+
+          if (runDir) {
+            try {
+              const gateData = await window.electronAPI.readGateOutput({ runDir });
+              const items = transformAgentItems(
+                gateData.items as RawAgentItem[],
+                useStore.getState().specs,
+              );
+              setCurrentGateItems(items);
+              setActiveItemIndex(0);
+              setRun({ status: 'paused', runDir, runId });
+            } catch {
+              setRun({ status: 'failed' });
+            }
+          } else {
+            setRun({ status: 'failed' });
+          }
+        } else {
+          setRun({ status: 'failed' });
+        }
+
+        // Clean up listeners after exit
+        cleanup();
+      });
+
+      const cleanup = () => {
+        unsubStderr();
+        unsubExit();
+        cleanupRef.current = null;
+      };
+
+      cleanupRef.current = cleanup;
+    };
+
+    startRefine();
+
+    return () => {
+      if (cleanupRef.current) {
+        cleanupRef.current();
+      }
+    };
+  }, [run.status, projectRootPath]);
+
+  if (view === 'settings') {
+    return <SettingsPage />;
+  }
 
   if (run.status === 'idle') {
     return <EntryScreen />;
@@ -82,7 +127,7 @@ function App() {
   return (
     <div className="flex flex-col h-screen bg-bg-primary select-none">
       <TopBar />
-      
+
       <main className="flex flex-1 overflow-hidden">
         {/* Left Panel: Spec Viewer */}
         <div className="w-[45%] flex-shrink-0">
