@@ -101,12 +101,9 @@ def run_resolve_plan(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, A
 
 
 def _get_map_prompt_name(config: dict[str, Any]) -> str:
-    """Return map prompt name for resolve_plan from config."""
-    commands = config.get("commands", {})
-    rp_cfg = commands.get("resolve_plan") if isinstance(commands, dict) else {}
-    if isinstance(rp_cfg, dict):
-        return rp_cfg.get("map_prompt_name", "map_issues_to_specs")
-    return "map_issues_to_specs"
+    """Return map prompt name for resolve_plan from pika.yaml."""
+    from core.pika_config import get_prompt_name
+    return get_prompt_name("resolve_plan", "map")
 
 
 def _translate_resolve_plan(

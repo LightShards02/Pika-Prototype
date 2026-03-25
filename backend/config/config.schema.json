@@ -6,11 +6,8 @@
   "required": [
     "version",
     "project",
-    "prompts",
-    "schemas",
     "commands",
     "id_generation",
-    "csv_contracts",
     "logging"
   ],
   "properties": {
@@ -39,45 +36,6 @@
         }
       }
     },
-    "inputs": {
-      "type": "object",
-      "additionalProperties": false,
-      "description": "Deprecated. Use commands.<cmd>.inputs as single source of truth.",
-      "properties": {
-        "srs_path": { "type": "string", "minLength": 1 },
-        "design_spec_path": { "type": "string", "minLength": 1 },
-        "codebase_dir": { "type": "string", "minLength": 1, "description": "Path to codebase/source directory for plan, map, implement. Used as fallback dir for project context file. Absolute or relative to project root." },
-        "project_context_filename": { "type": "string", "minLength": 1, "description": "Filename for project context in project root (e.g. PROJECT_CONTEXT.md). Used when --project-context not provided." },
-        "extra_prompt_filename": { "type": "string", "minLength": 1, "description": "Filename for extra prompt in project root (e.g. EXTRA-PROMPT.md). Used by map command when --extra-prompt not provided. Optional; when omitted in both config and CLI, no file is looked for and extra section is empty." },
-        "issue_tracking_path": { "type": "string", "minLength": 1 },
-        "allowed_extensions": {
-          "type": "array",
-          "minItems": 2,
-          "maxItems": 2,
-          "uniqueItems": true,
-          "items": { "type": "string", "enum": [".csv", ".xlsx"] },
-          "allOf": [
-            { "contains": { "const": ".csv" } },
-            { "contains": { "const": ".xlsx" } }
-          ]
-        }
-      }
-    },
-    "outputs": {
-      "type": "object",
-      "additionalProperties": false,
-      "description": "Deprecated. Use commands.<cmd>.outputs as single source of truth.",
-      "properties": {
-        "root_dir": { "$ref": "#/$defs/output_target" },
-        "backups_dir": { "$ref": "#/$defs/output_target" },
-        "agent_runs_dir": { "$ref": "#/$defs/output_target" },
-        "agent_artifacts_dir": { "$ref": "#/$defs/output_target" },
-        "logs_dir": { "$ref": "#/$defs/output_target" },
-        "agent_view_csv": { "$ref": "#/$defs/output_target" },
-        "intermediate_map_dir": { "$ref": "#/$defs/output_target" },
-        "agent_input_codebase_content_dir": { "$ref": "#/$defs/output_target" }
-      }
-    },
     "agent": {
       "type": "object",
       "additionalProperties": false,
@@ -85,7 +43,7 @@
         "provider": {
           "type": "string",
           "enum": ["stub", "api", "local"],
-          "description": "Agent provider: stub (mock), api (remote HTTP chat completions), or local (CLI subprocess e.g. Codex)."
+          "description": "Agent provider: stub (mock), api (remote HTTP chat completions), or local (Loca in-process LLM agent; not the codex CLI)."
         },
         "schema_validation_retries": {
           "type": "integer",
@@ -99,12 +57,13 @@
         "local_command": {
           "type": "string",
           "minLength": 1,
-          "description": "Executable name or path when provider is local. Default: codex."
+          "deprecated": true,
+          "description": "Deprecated. Historically used for the codex CLI; PIKA does not read this for provider=local (Loca). Kept for backward-compatible configs."
         },
         "local_exec_timeout_sec": {
           "type": "integer",
           "minimum": 1,
-          "description": "Timeout (seconds) for local provider subprocess executions. Overrides pika local.exec_timeout_sec for this workspace."
+          "description": "Timeout (seconds) for Loca agent calls when provider is local. Overrides pika local.exec_timeout_sec for this workspace."
         },
         "local_model": {
           "oneOf": [
@@ -115,7 +74,7 @@
               "description": "Per-prompt model ID. Keys: prompt_name (map_spec_to_code, implement_unified_planner, implement_from_specs) or default."
             }
           ],
-          "description": "Codex model ID when provider is local. String = same for all prompts. Object = per-prompt overrides. Overrides pika local.model."
+          "description": "Model ID for Loca when provider is local (e.g. gpt-5-codex). String = same for all prompts. Object = per-prompt overrides. Overrides pika local.model."
         },
         "api_key_env": {
           "type": "string",
@@ -137,56 +96,62 @@
           "additionalProperties": {
             "type": "string",
             "enum": ["low", "medium", "high", "xhigh"],
-            "description": "Codex model_reasoning_effort: low, medium, high, or xhigh."
+            "description": "Loca model_reasoning_effort: low, medium, high, or xhigh."
           },
-          "description": "Per-prompt reasoning effort for Codex (provider=local). Keys: prompt_name (e.g. map_spec_to_code, implement_unified_planner, implement_from_specs) or 'default'. Values: low, medium, high, xhigh. Map and planner default to medium; implementer to high."
+          "description": "Per-prompt reasoning effort for Loca (provider=local). Keys: prompt_name (e.g. map_spec_to_code, implement_unified_planner, implement_from_specs) or 'default'. Values: low, medium, high, xhigh. Map and planner default to medium; implementer to high."
+        },
+        "local_model_verbosity": {
+          "oneOf": [
+            { "type": "string", "minLength": 1 },
+            {
+              "type": "object",
+              "additionalProperties": { "type": "string", "minLength": 1 },
+              "description": "Per-prompt model_verbosity. Keys: prompt_name or default."
+            }
+          ],
+          "description": "Loca model_verbosity (e.g. low, medium, high). Overrides pika local.model_verbosity."
+        },
+        "local_web_search": {
+          "oneOf": [
+            { "type": "boolean" },
+            {
+              "type": "object",
+              "additionalProperties": { "type": "boolean" },
+              "description": "Per-prompt web_search. Keys: prompt_name or default."
+            }
+          ],
+          "description": "Enable web search for Loca when provider is local. Overrides pika local.web_search."
+        },
+        "local_provider": {
+          "type": "string",
+          "enum": ["openai", "openai-codex"],
+          "description": "Loca LLM sub-provider for local agent: openai (API key) or openai-codex (ChatGPT OAuth subscription). Default: openai-codex."
+        },
+        "local_temperature": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Sampling temperature for local provider (null = provider default). Ignored when reasoning_effort is set."
+        },
+        "local_top_p": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Nucleus sampling probability for local provider (null = provider default). Ignored when reasoning_effort is set."
         }
-      }
-    },
-    "prompts": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["prompt_file"],
-      "properties": { "prompt_file": { "type": "string", "minLength": 1 } }
-    },
-    "schemas": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "map_output",
-        "implement_output",
-        "resolve_plan_map_output",
-        "resolve_plan_output"
-      ],
-      "properties": {
-        "plan_output": { "type": "string", "minLength": 1 },
-        "map_output": { "type": "string", "minLength": 1 },
-        "implement_output": { "type": "string", "minLength": 1 },
-        "resolve_plan_map_output": { "type": "string", "minLength": 1 },
-        "resolve_plan_output": { "type": "string", "minLength": 1 }
       }
     },
     "commands": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["format", "map", "implement", "resolve_plan"],
+      "required": ["format", "map", "implement", "resolve_plan", "refine"],
       "properties": {
         "plan": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["enabled", "prompt_name"],
+          "required": ["enabled"],
           "properties": {
             "enabled": { "type": "boolean" },
-            "prompt_name": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Deprecated alias of implement.implementer.prompt_name."
-            },
-            "unified_planner_prompt_name": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Deprecated alias of implement.unified_planner.prompt_name."
-            },
             "inputs": {
               "type": "object",
               "additionalProperties": false,
@@ -205,11 +170,6 @@
                 "agent_artifacts_dir": { "$ref": "#/$defs/output_target" },
                 "logs_dir": { "$ref": "#/$defs/output_target" }
               }
-            },
-            "schemas": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": { "plan_output": { "type": "string", "minLength": 1 } }
             }
           }
         },
@@ -254,10 +214,9 @@
         "review": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["enabled", "prompt_name"],
+          "required": ["enabled"],
           "properties": {
             "enabled": { "type": "boolean" },
-            "prompt_name": { "type": "string", "minLength": 1 },
             "inputs": {
               "type": "object",
               "additionalProperties": false,
@@ -277,21 +236,15 @@
                 "agent_artifacts_dir": { "$ref": "#/$defs/output_target" },
                 "logs_dir": { "$ref": "#/$defs/output_target" }
               }
-            },
-            "schemas": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": { "review_output": { "type": "string", "minLength": 1 } }
             }
           }
         },
         "map": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["enabled", "prompt_name"],
+          "required": ["enabled"],
           "properties": {
             "enabled": { "type": "boolean" },
-            "prompt_name": { "type": "string", "minLength": 1 },
             "inputs": {
               "type": "object",
               "additionalProperties": false,
@@ -315,11 +268,6 @@
                 "intermediate_map_dir": { "$ref": "#/$defs/output_target" },
                 "agent_input_codebase_content_dir": { "$ref": "#/$defs/output_target" }
               }
-            },
-            "schemas": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": { "map_output": { "type": "string", "minLength": 1 } }
             },
             "skip_mapped": {
               "type": "boolean",
@@ -355,7 +303,6 @@
           "required": ["enabled"],
           "properties": {
             "enabled": { "type": "boolean" },
-            "prompt_name": { "type": "string", "minLength": 1 },
             "inputs": {
               "type": "object",
               "additionalProperties": false,
@@ -378,16 +325,10 @@
                 "agent_input_codebase_content_dir": { "$ref": "#/$defs/output_target" }
               }
             },
-            "schemas": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": { "implement_output": { "type": "string", "minLength": 1 } }
-            },
             "unified_planner": {
               "type": "object",
               "additionalProperties": false,
               "properties": {
-                "prompt_name": { "type": "string", "minLength": 1 },
                 "disallowed_link_kinds_by_required_role": {
                   "$ref": "#/properties/commands/properties/implement/properties/disallowed_link_kinds_by_required_role"
                 },
@@ -406,13 +347,6 @@
                 "min_confidence_threshold": {
                   "$ref": "#/properties/commands/properties/implement/properties/min_confidence_threshold"
                 }
-              }
-            },
-            "implementer": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "prompt_name": { "type": "string", "minLength": 1 }
               }
             },
             "workset_schema_validation": { "$ref": "#/$defs/implement_step_toggle" },
@@ -443,27 +377,10 @@
                   "minimum": 0,
                   "maximum": 1,
                   "description": "Step-level normalized similarity threshold (0..1) for contract/spec high-match pairs."
-                },
-                "field_match_distance_threshold": {
-                  "type": "number",
-                  "minimum": 0,
-                  "maximum": 1,
-                  "description": "Deprecated alias of field_match_score_threshold for this step."
                 }
               }
             },
-            "required_field_coverage_validation": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "enabled": { "type": "boolean" },
-                "providerless_contract_allowlist": {
-                  "type": "array",
-                  "items": { "type": "string" },
-                  "description": "Contract IDs intentionally exempt from the providerless manual-block check (always skipped)."
-                }
-              }
-            },
+            "required_field_coverage_validation": { "$ref": "#/$defs/implement_step_toggle" },
             "batch_plan_construction": { "$ref": "#/$defs/implement_step_toggle" },
             "batch_plan_dependency_validation": { "$ref": "#/$defs/implement_step_toggle" },
             "batch_brief_build": { "$ref": "#/$defs/implement_step_toggle" },
@@ -623,18 +540,6 @@
                 }
               }
             },
-            "field_match_score_threshold": {
-              "type": "number",
-              "minimum": 0,
-              "maximum": 1,
-              "description": "Deprecated top-level alias of implement.contract_field_consistency_validation.field_match_score_threshold."
-            },
-            "field_match_distance_threshold": {
-              "type": "number",
-              "minimum": 0,
-              "maximum": 1,
-              "description": "Deprecated alias of field_match_score_threshold. Kept for backward compatibility."
-            },
             "issue_tracker_path": {
               "type": "string",
               "minLength": 1,
@@ -649,11 +554,6 @@
               "type": "array",
               "items": { "type": "string", "minLength": 1 },
               "description": "Commands run after patch application for batch verification."
-            },
-            "semantic_validation_retries": {
-              "type": "integer",
-              "minimum": 0,
-              "description": "Deprecated top-level alias used as fallback for planner_semantic_validation.semantic_validation_retries and implement_semantic_validation.semantic_validation_retries."
             },
             "forbidden_paths": {
               "type": "array",
@@ -681,7 +581,7 @@
         "resolve_plan": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["enabled", "map_prompt_name", "resolve_prompt_name"],
+          "required": ["enabled"],
           "properties": {
             "enabled": { "type": "boolean" },
             "inputs": {
@@ -702,48 +602,19 @@
                 "agent_artifacts_dir": { "$ref": "#/$defs/output_target" },
                 "logs_dir": { "$ref": "#/$defs/output_target" }
               }
-            },
-            "schemas": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "resolve_plan_map_output": { "type": "string", "minLength": 1 },
-                "resolve_plan_output": { "type": "string", "minLength": 1 }
-              }
-            },
-            "map_prompt_name": { "type": "string", "minLength": 1 },
-            "resolve_prompt_name": { "type": "string", "minLength": 1 }
+            }
           }
         },
         "refine": {
           "type": "object",
           "additionalProperties": false,
+          "required": ["enabled", "decomposition", "inputs", "outputs"],
           "properties": {
             "enabled": { "type": "boolean" },
-            "ambiguity_detector": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "prompt_name": { "type": "string", "minLength": 1 }
-              }
-            },
-            "testability_auditor": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "prompt_name": { "type": "string", "minLength": 1 }
-              }
-            },
-            "spec_editor": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "prompt_name": { "type": "string", "minLength": 1 }
-              }
-            },
             "decomposition": {
               "type": "object",
               "additionalProperties": false,
+              "required": ["enabled", "blocking", "similarity_threshold", "variance_threshold"],
               "properties": {
                 "enabled": { "type": "boolean" },
                 "blocking": { "type": "boolean" },
@@ -754,6 +625,7 @@
             "inputs": {
               "type": "object",
               "additionalProperties": false,
+              "required": ["design_spec_path", "project_context_filename"],
               "properties": {
                 "design_spec_path": { "type": "string", "minLength": 1 },
                 "project_context_filename": { "type": "string", "minLength": 1 }
@@ -762,6 +634,7 @@
             "outputs": {
               "type": "object",
               "additionalProperties": false,
+              "required": ["root_dir", "design_spec_path", "agent_runs_dir"],
               "properties": {
                 "root_dir": { "$ref": "#/$defs/output_target" },
                 "design_spec_path": { "$ref": "#/$defs/output_target" },
@@ -775,103 +648,9 @@
     "id_generation": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["spec", "issue", "collision_scope", "registry_path"],
+      "required": ["registry_path"],
       "properties": {
-        "spec": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["pattern"],
-          "properties": { "pattern": { "type": "string", "const": "^[A-Za-z][0-9]+$" } }
-        },
-        "issue": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["pattern"],
-          "properties": { "pattern": { "type": "string", "const": "^[A-Za-z]{2}[0-9]+$" } }
-        },
-        "collision_scope": { "type": "string", "enum": ["per_type_numeric_suffix"] },
-        "registry_path": { "type": "string", "minLength": 1, "const": "out/state/id_registry.json" }
-      }
-    },
-    "csv_contracts": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["design_spec", "issue_tracking"],
-      "properties": {
-        "design_spec": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["add_if_missing"],
-          "properties": {
-            "add_if_missing": {
-              "type": "array",
-              "minItems": 11,
-              "maxItems": 11,
-              "uniqueItems": true,
-              "items": {
-                "type": "string",
-                "enum": [
-                  "spec_id",
-                  "module_tag",
-                  "subunit",
-                  "mapped_code_symbols",
-                  "mapped_confidence",
-                  "mapped_consistency_score",
-                  "mapped_problems",
-                  "map_status",
-                  "map_assumptions",
-                  "mapped_at",
-                  "map_run_id"
-                ]
-              },
-              "allOf": [
-                { "contains": { "const": "spec_id" } },
-                { "contains": { "const": "module_tag" } },
-                { "contains": { "const": "subunit" } },
-                { "contains": { "const": "mapped_code_symbols" } },
-                { "contains": { "const": "mapped_confidence" } },
-                { "contains": { "const": "mapped_consistency_score" } },
-                { "contains": { "const": "mapped_problems" } },
-                { "contains": { "const": "map_status" } },
-                { "contains": { "const": "map_assumptions" } },
-                { "contains": { "const": "mapped_at" } },
-                { "contains": { "const": "map_run_id" } }
-              ]
-            }
-          }
-        },
-        "issue_tracking": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["add_if_missing"],
-          "properties": {
-            "add_if_missing": {
-              "type": "array",
-              "minItems": 6,
-              "maxItems": 6,
-              "uniqueItems": true,
-              "items": {
-                "type": "string",
-                "enum": [
-                  "issue_id",
-                  "author",
-                  "mapped_spec_ids",
-                  "issue_notes",
-                  "follow_up_uncertainties",
-                  "last_resolved_at"
-                ]
-              },
-              "allOf": [
-                { "contains": { "const": "issue_id" } },
-                { "contains": { "const": "author" } },
-                { "contains": { "const": "mapped_spec_ids" } },
-                { "contains": { "const": "issue_notes" } },
-                { "contains": { "const": "follow_up_uncertainties" } },
-                { "contains": { "const": "last_resolved_at" } }
-              ]
-            }
-          }
-        }
+        "registry_path": { "type": "string", "minLength": 1 }
       }
     },
     "logging": {

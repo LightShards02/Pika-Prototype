@@ -873,8 +873,6 @@ def _validate_required_field_coverage(
     shared_contracts: list[dict[str, Any]],
     spec_rows: list[dict[str, Any]],
     headers: list[str],
-    *,
-    providerless_contract_allowlist: set[str] | None = None,
 ) -> dict[str, Any]:
     """Validate contract field coverage using provider-first, low-noise rules.
 
@@ -882,9 +880,7 @@ def _validate_required_field_coverage(
     1) Prefer provider specs (consumed specs in owning_module) as source-of-truth.
     2) If provider text explicitly declares canonical contract/DTO + field naming intent,
        treat provider coverage as satisfied even when every field token is not listed.
-    3) If no provider spec exists and the contract is not in providerless_contract_allowlist,
-       emit a manual_resolution_item (always — there is no skip/fail mode).
-       If the contract is in the allowlist, skip it silently.
+    3) If no provider spec exists, emit a manual_resolution_item (always manual_block).
     """
     spec_by_id = _spec_text_lookup(spec_rows, headers)
     reasons: list[str] = []
@@ -921,17 +917,13 @@ def _validate_required_field_coverage(
             if str(spec_by_id.get(spec_id, {}).get("module_tag", "")).strip() == owning_module
         ]
         if not provider_spec_ids:
-            if contract_id in (providerless_contract_allowlist or set()):
-                checks.append(f"{contract_id}:skipped_allowlisted")
-                continue
             manual_resolution_items.append({
                 "item_id": f"no_provider_spec_{contract_id}",
                 "title": f"No provider spec for contract {contract_id}",
                 "question": (
                     f"Contract {contract_id} (owning_module={owning_module!r}) has no provider spec "
-                    f"in consumed_by_specs {consumed_specs}. Either add a spec owned by "
-                    f"{owning_module!r} to consumed_by_specs, or add this contract_id to "
-                    "providerless_contract_allowlist."
+                    f"in consumed_by_specs {consumed_specs}. Add a spec owned by "
+                    f"{owning_module!r} to consumed_by_specs."
                 ),
                 "options": [],
                 "required": True,

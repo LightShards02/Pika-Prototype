@@ -28,32 +28,11 @@ from handlers.map import (
 
 _TEST_DATA_DIR = Path(__file__).parent / "test_data_map_translate"
 
-# Required by get_design_spec_add_if_missing; config is single source of truth
-_MAP_TEST_CSV_CONTRACTS = {
-    "csv_contracts": {
-        "design_spec": {
-            "add_if_missing": [
-                "spec_id",
-                "module_tag",
-                "subunit",
-                "mapped_code_symbols",
-                "mapped_confidence",
-                "mapped_consistency_score",
-                "mapped_problems",
-                "map_status",
-                "map_assumptions",
-                "mapped_at",
-                "map_run_id",
-            ]
-        }
-    }
-}
 
 
 def _map_test_config(root: Path, **overrides: Any) -> dict[str, Any]:
     """Build map test config with command-scoped inputs/outputs."""
     base = {
-        **_MAP_TEST_CSV_CONTRACTS,
         "project": {
             "name": "test",
             "root_dir": ".",
@@ -66,7 +45,6 @@ def _map_test_config(root: Path, **overrides: Any) -> dict[str, Any]:
         "commands": {
             "map": {
                 "enabled": True,
-                "prompt_name": "map_spec_to_code",
                 "inputs": {
                     "design_spec_path": "out/state/DESIGN-SPEC.csv",
                     "codebase_dir": ".",

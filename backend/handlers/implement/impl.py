@@ -906,9 +906,6 @@ def _run_implement_inner(config: dict[str, Any], ctx: RuntimeContext) -> dict[st
             shared_contracts,
             selected,
             headers,
-            providerless_contract_allowlist=set(
-                coverage_step.get("providerless_contract_allowlist", [])
-            ),
         )
         _write_json(
             paths["run"] / "required_field_coverage_validation.json",

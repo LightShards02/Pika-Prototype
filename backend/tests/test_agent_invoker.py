@@ -586,3 +586,68 @@ class RunLocalExecJsonFlagTests(unittest.TestCase):
             self.assertIn("--model", cmd)
             model_idx = cmd.index("--model")
             self.assertEqual(cmd[model_idx + 1], "gpt-5-codex")
+
+    def test_model_verbosity_in_exec_args_when_set(self) -> None:
+        """Codex exec is invoked with -c model_verbosity when model_verbosity param is set."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            schema_path = root / "schema.json"
+            schema_path.write_text(
+                '{"type":"object","required":["x"],"properties":{"x":{"type":"string"}},"additionalProperties":false}',
+                encoding="utf-8",
+            )
+            output_path = root / "out" / "local_output.txt"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text('{"x":"y"}', encoding="utf-8")
+
+            proc = MagicMock()
+            proc.returncode = 0
+            proc.stderr = ""
+            proc.stdout = '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20}}\n'
+
+            with patch("core.agent_invoker.subprocess.run", return_value=proc) as mock_run:
+                run_local_exec(
+                    prompt="Return JSON",
+                    output_schema_path=schema_path,
+                    workspace=root,
+                    output_path=output_path,
+                    stream_output=False,
+                    timeout=10,
+                    model_verbosity="high",
+                )
+
+            cmd = mock_run.call_args[0][0]
+            config_args = [a for a in cmd if a == "--config" or (isinstance(a, str) and "model_verbosity" in a)]
+            self.assertIn("model_verbosity", " ".join(config_args))
+
+    def test_web_search_adds_search_flag(self) -> None:
+        """Codex exec is invoked with --search when web_search is True."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            schema_path = root / "schema.json"
+            schema_path.write_text(
+                '{"type":"object","required":["x"],"properties":{"x":{"type":"string"}},"additionalProperties":false}',
+                encoding="utf-8",
+            )
+            output_path = root / "out" / "local_output.txt"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text('{"x":"y"}', encoding="utf-8")
+
+            proc = MagicMock()
+            proc.returncode = 0
+            proc.stderr = ""
+            proc.stdout = '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20}}\n'
+
+            with patch("core.agent_invoker.subprocess.run", return_value=proc) as mock_run:
+                run_local_exec(
+                    prompt="Return JSON",
+                    output_schema_path=schema_path,
+                    workspace=root,
+                    output_path=output_path,
+                    stream_output=False,
+                    timeout=10,
+                    web_search=True,
+                )
+
+            cmd = mock_run.call_args[0][0]
+            self.assertIn("--search", cmd)

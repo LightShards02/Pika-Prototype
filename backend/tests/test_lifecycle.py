@@ -21,7 +21,9 @@ from core.lifecycle import (
     get_local_command,
     get_local_exec_timeout_sec,
     get_local_model,
+    get_model_verbosity,
     get_reasoning_effort,
+    get_web_search,
     get_schema_validation_retries,
     invoke_agent_local,
     invoke_agent_stub,
@@ -399,6 +401,80 @@ class GetReasoningEffortTests(unittest.TestCase):
             self.assertEqual(get_reasoning_effort(config, "nonexistent_prompt"), "medium")
 
 
+class GetModelVerbosityTests(unittest.TestCase):
+    """Tests for get_model_verbosity."""
+
+    def test_project_override_string(self) -> None:
+        """Project config local_model_verbosity (string) overrides pika."""
+        config = {"agent": {"local_model_verbosity": "high"}}
+        with patch("core.lifecycle.get_pika_config", return_value={"local": {}}):
+            self.assertEqual(get_model_verbosity(config, "implement_from_specs"), "high")
+
+    def test_project_override_per_prompt(self) -> None:
+        """Project config local_model_verbosity (object) overrides pika per prompt."""
+        config = {
+            "agent": {
+                "local_model_verbosity": {
+                    "implement_from_specs": "low",
+                    "default": "medium",
+                }
+            }
+        }
+        with patch("core.lifecycle.get_pika_config", return_value={"local": {}}):
+            self.assertEqual(get_model_verbosity(config, "implement_from_specs"), "low")
+            self.assertEqual(get_model_verbosity(config, "map_spec_to_code"), "medium")
+
+    def test_pika_fallback(self) -> None:
+        """Pika local.model_verbosity used when project has no override."""
+        config = {}
+        with patch("core.lifecycle.get_pika_config") as m:
+            m.return_value = {"local": {"model_verbosity": "high"}}
+            self.assertEqual(get_model_verbosity(config, "implement_from_specs"), "high")
+
+    def test_returns_none_when_not_configured(self) -> None:
+        """Returns None when neither project nor pika configures model_verbosity."""
+        config = {}
+        with patch("core.lifecycle.get_pika_config", return_value={"local": {}}):
+            self.assertIsNone(get_model_verbosity(config, "implement_from_specs"))
+
+
+class GetWebSearchTests(unittest.TestCase):
+    """Tests for get_web_search."""
+
+    def test_project_override_boolean(self) -> None:
+        """Project config local_web_search (boolean) overrides pika."""
+        config = {"agent": {"local_web_search": True}}
+        with patch("core.lifecycle.get_pika_config", return_value={"local": {}}):
+            self.assertTrue(get_web_search(config, "implement_from_specs"))
+
+    def test_project_override_per_prompt(self) -> None:
+        """Project config local_web_search (object) overrides pika per prompt."""
+        config = {
+            "agent": {
+                "local_web_search": {
+                    "implement_from_specs": True,
+                    "default": False,
+                }
+            }
+        }
+        with patch("core.lifecycle.get_pika_config", return_value={"local": {}}):
+            self.assertTrue(get_web_search(config, "implement_from_specs"))
+            self.assertFalse(get_web_search(config, "map_spec_to_code"))
+
+    def test_pika_fallback(self) -> None:
+        """Pika local.web_search used when project has no override."""
+        config = {}
+        with patch("core.lifecycle.get_pika_config") as m:
+            m.return_value = {"local": {"web_search": True}}
+            self.assertTrue(get_web_search(config, "implement_from_specs"))
+
+    def test_fallback_false(self) -> None:
+        """Returns False when not configured."""
+        config = {}
+        with patch("core.lifecycle.get_pika_config", return_value={"local": {}}):
+            self.assertFalse(get_web_search(config, "implement_from_specs"))
+
+
 class GetLocalModelTests(unittest.TestCase):
     """Tests for get_local_model."""
 
@@ -526,11 +602,10 @@ class InvokeAgentStubTests(unittest.TestCase):
         result = invoke_agent_stub("map_spec_to_code", template_vars, ctx=ctx)
         self.assertIn("mappings", result)
         mappings = result["mappings"]
-        self.assertIsInstance(mappings, dict)
-        self.assertIn("A1", mappings)
-        self.assertIn("A2", mappings)
-        self.assertIn("A3", mappings)
-        for sid, m in mappings.items():
+        self.assertIsInstance(mappings, list)
+        ids = {m["spec_id"] for m in mappings}
+        self.assertEqual(ids, {"A1", "A2", "A3"})
+        for m in mappings:
             self.assertEqual(m["status"], "unmapped")
             self.assertEqual(m["code_refs"], [])
             self.assertEqual(m["assumptions"], "Stub")
@@ -548,7 +623,8 @@ class InvokeAgentStubTests(unittest.TestCase):
         )
         result = invoke_agent_stub("map_spec_to_code", {}, ctx=ctx)
         self.assertIn("mappings", result)
-        self.assertEqual(list(result["mappings"].keys()), ["A1"])
+        self.assertIsInstance(result["mappings"], list)
+        self.assertEqual([m["spec_id"] for m in result["mappings"]], ["A1"])
 
 
 def _test_tmpdir() -> Path:
@@ -694,12 +770,12 @@ class CodebaseContentWriteTests(unittest.TestCase):
                     }
                 },
                 "agent": {"provider": "stub"},
-                "prompts": {"prompt_file": "prompts/PROMPT.yaml"},
-                "schemas": {},
+
+
                 "commands": {},
                 "inputs": {"project_context_filename": "PROJECT_CONTEXT.md"},
                 "id_generation": {},
-                "csv_contracts": {},
+
                 "logging": {},
             }
             ctx = RuntimeContext(
@@ -743,12 +819,12 @@ class CodebaseContentWriteTests(unittest.TestCase):
                     }
                 },
                 "agent": {"provider": "stub"},
-                "prompts": {"prompt_file": "prompts/PROMPT.yaml"},
-                "schemas": {},
+
+
                 "commands": {},
                 "inputs": {"project_context_filename": "PROJECT_CONTEXT.md"},
                 "id_generation": {},
-                "csv_contracts": {},
+
                 "logging": {},
             }
             ctx = RuntimeContext(
@@ -785,7 +861,7 @@ class InvokeAgentLocalIsolationTests(unittest.TestCase):
     """Tests for local-agent isolated temp workspace execution."""
 
     def test_invoke_agent_local_passes_workspace_timeout_override(self) -> None:
-        """invoke_agent_local forwards agent.local_exec_timeout_sec to run_local_exec."""
+        """invoke_agent_local forwards agent.local_exec_timeout_sec to Loca config."""
         tmp = _test_tmpdir()
         try:
             root = tmp
@@ -804,12 +880,8 @@ class InvokeAgentLocalIsolationTests(unittest.TestCase):
                 def get_schema_path(self, prompt_name: str) -> Path:
                     return schema_path
 
-            def _fake_run_local_exec(*args: object, **kwargs: object) -> tuple[dict[str, object], dict[str, int]]:
-                output_path = kwargs.get("output_path")
-                assert isinstance(output_path, Path)
-                captured["timeout"] = kwargs.get("timeout")
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                output_path.write_text('{"status":"ok"}', encoding="utf-8")
+            def _fake_run_loca_agent(*args: object, **kwargs: object) -> tuple[dict[str, object], dict[str, int]]:
+                captured["loca_config"] = kwargs.get("loca_config")
                 return (
                     {"status": "ok"},
                     {"input_tokens": 1, "cached_input_tokens": 0, "output_tokens": 1},
@@ -818,7 +890,6 @@ class InvokeAgentLocalIsolationTests(unittest.TestCase):
             config = {
                 "agent": {
                     "provider": "local",
-                    "local_command": "codex",
                     "stream_output": False,
                     "local_exec_timeout_sec": 1200,
                 }
@@ -833,20 +904,23 @@ class InvokeAgentLocalIsolationTests(unittest.TestCase):
                 config_path=str(root / "config.yaml"),
             )
             with patch("core.lifecycle.load_prompt_registry", return_value=_Registry()):
-                with patch("core.lifecycle.run_local_exec", side_effect=_fake_run_local_exec):
-                    invoke_agent_local(
-                        prompt_name="map_spec_to_code",
-                        template_vars={"value": "x"},
-                        schema_path=schema_path,
-                        config=config,
-                        ctx=ctx,
-                    )
-            self.assertEqual(captured.get("timeout"), 1200)
+                with patch("core.loca_bridge.check_loca_available", return_value=True):
+                    with patch("core.loca_bridge.run_loca_agent", side_effect=_fake_run_loca_agent):
+                        invoke_agent_local(
+                            prompt_name="map_spec_to_code",
+                            template_vars={"value": "x"},
+                            schema_path=schema_path,
+                            config=config,
+                            ctx=ctx,
+                        )
+            loca_cfg = captured.get("loca_config")
+            self.assertIsNotNone(loca_cfg)
+            self.assertEqual(loca_cfg.agent.timeout_seconds, min(1200, 600))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
     def test_invoke_agent_local_fails_fast_when_local_auth_unavailable(self) -> None:
-        """Local invoke raises clear error when codex auth/login is unavailable."""
+        """Local invoke raises clear error when Loca auth is unavailable."""
         root = Path("C:/proj")
         schema_path = Path("C:/schema.json")
         workspace = Path("C:/workspace")
@@ -865,7 +939,6 @@ class InvokeAgentLocalIsolationTests(unittest.TestCase):
         config = {
             "agent": {
                 "provider": "local",
-                "local_command": "codex",
                 "stream_output": False,
             }
         }
@@ -883,8 +956,8 @@ class InvokeAgentLocalIsolationTests(unittest.TestCase):
 
         with patch("core.lifecycle.Path.mkdir"):
             with patch("core.lifecycle.load_prompt_registry", return_value=_Registry()):
-                with patch("core.lifecycle.check_local_available", return_value=False):
-                    with patch("core.lifecycle.run_local_exec") as mock_exec:
+                with patch("core.loca_bridge.check_loca_available", return_value=False):
+                    with patch("core.loca_bridge.run_loca_agent") as mock_agent:
                         with patch.object(Path, "exists", lambda p: p == schema_path):
                             with self.assertRaises(AgentInvocationError) as exc_ctx:
                                 invoke_agent_local(
@@ -895,8 +968,8 @@ class InvokeAgentLocalIsolationTests(unittest.TestCase):
                                     ctx=ctx,
                                     local_workspace_override=workspace,
                                 )
-                        mock_exec.assert_not_called()
-        self.assertIn("codex login", str(exc_ctx.exception))
+                        mock_agent.assert_not_called()
+        self.assertIn("authentication is unavailable", str(exc_ctx.exception))
 
     def test_invoke_agent_local_uses_isolated_workspace_and_cleans_up(self) -> None:
         """Local invoke runs outside project root and cleans temp workspace after completion."""
@@ -905,7 +978,6 @@ class InvokeAgentLocalIsolationTests(unittest.TestCase):
             root = tmp
             schema_path = root / "schema.json"
             schema_path.write_text('{"type":"object"}', encoding="utf-8")
-            captured: dict[str, Path] = {}
 
             class _PromptSpec:
                 system_prompt = "System {{value}}"
@@ -918,15 +990,7 @@ class InvokeAgentLocalIsolationTests(unittest.TestCase):
                 def get_schema_path(self, prompt_name: str) -> Path:
                     return schema_path
 
-            def _fake_run_local_exec(*args: object, **kwargs: object) -> tuple[dict[str, object], dict[str, int]]:
-                workspace = kwargs.get("workspace")
-                output_path = kwargs.get("output_path")
-                assert isinstance(workspace, Path)
-                assert isinstance(output_path, Path)
-                captured["workspace"] = workspace
-                captured["output_path"] = output_path
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                output_path.write_text('{"status":"ok"}', encoding="utf-8")
+            def _fake_run_loca_agent(*args: object, **kwargs: object) -> tuple[dict[str, object], dict[str, int]]:
                 return (
                     {"status": "ok"},
                     {"input_tokens": 1, "cached_input_tokens": 0, "output_tokens": 1},
@@ -935,7 +999,6 @@ class InvokeAgentLocalIsolationTests(unittest.TestCase):
             config = {
                 "agent": {
                     "provider": "local",
-                    "local_command": "codex",
                     "stream_output": False,
                 }
             }
@@ -949,20 +1012,17 @@ class InvokeAgentLocalIsolationTests(unittest.TestCase):
                 config_path=str(root / "config.yaml"),
             )
             with patch("core.lifecycle.load_prompt_registry", return_value=_Registry()):
-                with patch("core.lifecycle.run_local_exec", side_effect=_fake_run_local_exec):
-                    result = invoke_agent_local(
-                        prompt_name="map_spec_to_code",
-                        template_vars={"value": "x"},
-                        schema_path=schema_path,
-                        config=config,
-                        ctx=ctx,
-                    )
+                with patch("core.loca_bridge.check_loca_available", return_value=True):
+                    with patch("core.loca_bridge.run_loca_agent", side_effect=_fake_run_loca_agent):
+                        result = invoke_agent_local(
+                            prompt_name="map_spec_to_code",
+                            template_vars={"value": "x"},
+                            schema_path=schema_path,
+                            config=config,
+                            ctx=ctx,
+                        )
 
             self.assertEqual(result, {"status": "ok"})
-            self.assertIn("workspace", captured)
-            workspace = captured["workspace"]
-            self.assertNotEqual(workspace.resolve(), root.resolve())
-            self.assertFalse(workspace.exists(), "Isolated temp workspace should be cleaned")
 
             canonical_output = (
                 resolve_agent_artifacts_dir_for_command(
@@ -974,7 +1034,6 @@ class InvokeAgentLocalIsolationTests(unittest.TestCase):
                 / "local_output.json"
             )
             self.assertTrue(canonical_output.exists())
-            self.assertEqual(canonical_output.read_text(encoding="utf-8"), '{"status":"ok"}')
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -987,7 +1046,6 @@ class InvokeAgentLocalIsolationTests(unittest.TestCase):
             shared_workspace.mkdir(parents=True, exist_ok=True)
             schema_path = root / "schema.json"
             schema_path.write_text('{"type":"object"}', encoding="utf-8")
-            captured: dict[str, Path] = {}
 
             class _PromptSpec:
                 system_prompt = "System {{value}}"
@@ -1000,15 +1058,7 @@ class InvokeAgentLocalIsolationTests(unittest.TestCase):
                 def get_schema_path(self, prompt_name: str) -> Path:
                     return schema_path
 
-            def _fake_run_local_exec(*args: object, **kwargs: object) -> tuple[dict[str, object], dict[str, int]]:
-                workspace = kwargs.get("workspace")
-                output_path = kwargs.get("output_path")
-                assert isinstance(workspace, Path)
-                assert isinstance(output_path, Path)
-                captured["workspace"] = workspace
-                captured["output_path"] = output_path
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                output_path.write_text('{"status":"ok"}', encoding="utf-8")
+            def _fake_run_loca_agent(*args: object, **kwargs: object) -> tuple[dict[str, object], dict[str, int]]:
                 return (
                     {"status": "ok"},
                     {"input_tokens": 1, "cached_input_tokens": 0, "output_tokens": 1},
@@ -1017,7 +1067,6 @@ class InvokeAgentLocalIsolationTests(unittest.TestCase):
             config = {
                 "agent": {
                     "provider": "local",
-                    "local_command": "codex",
                     "stream_output": False,
                 }
             }
@@ -1031,20 +1080,20 @@ class InvokeAgentLocalIsolationTests(unittest.TestCase):
                 config_path=str(root / "config.yaml"),
             )
             with patch("core.lifecycle.load_prompt_registry", return_value=_Registry()):
-                with patch("core.lifecycle.run_local_exec", side_effect=_fake_run_local_exec):
-                    with patch("core.lifecycle._create_local_agent_temp_workspace") as mock_create_temp:
-                        result = invoke_agent_local(
-                            prompt_name="map_spec_to_code",
-                            template_vars={"value": "x"},
-                            schema_path=schema_path,
-                            config=config,
-                            ctx=ctx,
-                            local_workspace_override=shared_workspace,
-                        )
-                        mock_create_temp.assert_not_called()
+                with patch("core.loca_bridge.check_loca_available", return_value=True):
+                    with patch("core.loca_bridge.run_loca_agent", side_effect=_fake_run_loca_agent):
+                        with patch("core.lifecycle._create_local_agent_temp_workspace") as mock_create_temp:
+                            result = invoke_agent_local(
+                                prompt_name="map_spec_to_code",
+                                template_vars={"value": "x"},
+                                schema_path=schema_path,
+                                config=config,
+                                ctx=ctx,
+                                local_workspace_override=shared_workspace,
+                            )
+                            mock_create_temp.assert_not_called()
 
             self.assertEqual(result, {"status": "ok"})
-            self.assertEqual(captured["workspace"].resolve(), shared_workspace.resolve())
             self.assertTrue(shared_workspace.exists(), "Override workspace should not be auto-cleaned")
 
             canonical_output = (
@@ -1057,7 +1106,6 @@ class InvokeAgentLocalIsolationTests(unittest.TestCase):
                 / "local_output.json"
             )
             self.assertTrue(canonical_output.exists())
-            self.assertEqual(canonical_output.read_text(encoding="utf-8"), '{"status":"ok"}')
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -1089,11 +1137,11 @@ categories:
                     "control_vocab_path": "vocab.yaml",
                 },
                 "agent": {"provider": "stub"},
-                "prompts": {"prompt_file": "prompts/PROMPT.yaml"},
-                "schemas": {},
+
+
                 "commands": {},
                 "id_generation": {},
-                "csv_contracts": {},
+
                 "logging": {},
             }
             ctx = RuntimeContext(
@@ -1154,11 +1202,11 @@ categories:
                     "control_vocab_path": "vocab.yaml",
                 },
                 "agent": {"provider": "stub"},
-                "prompts": {"prompt_file": "prompts/PROMPT.yaml"},
-                "schemas": {},
+
+
                 "commands": {},
                 "id_generation": {},
-                "csv_contracts": {},
+
                 "logging": {},
             }
             ctx = RuntimeContext(

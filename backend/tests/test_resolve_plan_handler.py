@@ -32,11 +32,10 @@ class ResolvePlanHandlerTests(unittest.TestCase):
                     "sads_id_mapping_path": str(self.tmp / "out" / "state" / "sads_id_mapping.json"),
                 },
             },
-            "prompts": {"prompt_file": "prompts/PROMPT.yaml"},
+
             "commands": {
                 "resolve_plan": {
                     "enabled": True,
-                    "map_prompt_name": "map_issues_to_specs",
                     "inputs": {
                         "issue_tracking_path": str(self.issue),
                         "design_spec_path": str(self.design),

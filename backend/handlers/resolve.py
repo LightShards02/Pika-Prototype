@@ -24,7 +24,7 @@ from core.resolution import (
     update_resolution_item,
     validate_resolutions,
 )
-from handlers.refine.config import _get_refine_cfg
+
 
 OPTION_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
@@ -335,11 +335,8 @@ def _invoke_spec_editor(
     field = item.get("field", "") if issue_kind == "field" else ""
     affected_spec_ids = spec_id if issue_kind == "structural" else ""
 
-    try:
-        cfg = _get_refine_cfg(config)
-        prompt_name = cfg["spec_editor_prompt_name"]
-    except Exception:
-        prompt_name = "spec_editor"
+    from core.pika_config import get_prompt_name as _get_pn
+    prompt_name = _get_pn("refine", "spec_editor")
 
     template_vars: dict[str, Any] = {
         "output_schema_file": str(schema_path),

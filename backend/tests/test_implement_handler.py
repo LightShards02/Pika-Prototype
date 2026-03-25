@@ -220,7 +220,7 @@ class ImplementConfigTests(unittest.TestCase):
     """Tests for implement config parsing."""
 
     def test_get_impl_cfg_defaults_disallowed_policy(self) -> None:
-        cfg = {"commands": {"implement": {"enabled": True, "prompt_name": "implement_from_specs"}}}
+        cfg = {"commands": {"implement": {"enabled": True}}}
         impl = _get_impl_cfg(cfg)
         self.assertIn("frontend", impl["disallowed_link_kinds_by_required_role"])
         self.assertIn("external_api", impl["disallowed_link_kinds_by_required_role"]["frontend"])
@@ -241,8 +241,9 @@ class ImplementConfigTests(unittest.TestCase):
             "commands": {
                 "implement": {
                     "enabled": True,
-                    "prompt_name": "implement_from_specs",
-                    "field_match_score_threshold": 0.75,
+                    "contract_field_consistency_validation": {
+                        "field_match_score_threshold": 0.75,
+                    },
                 }
             }
         }
@@ -254,7 +255,6 @@ class ImplementConfigTests(unittest.TestCase):
             "commands": {
                 "implement": {
                     "enabled": True,
-                    "prompt_name": "implement_from_specs",
                     "contract_field_consistency_validation": {
                         "enabled": False,
                         "field_match_score_threshold": 0.66,
@@ -290,9 +290,7 @@ class ImplementConfigTests(unittest.TestCase):
             "commands": {
                 "implement": {
                     "enabled": True,
-                    "implementer": {"prompt_name": "implement_custom"},
                     "unified_planner": {
-                        "prompt_name": "planner_custom",
                         "disallowed_link_kinds_by_required_role": {
                             "frontend": ["external_api"],
                         },
@@ -316,8 +314,8 @@ class ImplementConfigTests(unittest.TestCase):
             }
         }
         impl = _get_impl_cfg(cfg)
-        self.assertEqual(impl["prompt_name"], "implement_custom")
-        self.assertEqual(impl["unified_planner_prompt_name"], "planner_custom")
+        self.assertEqual(impl["prompt_name"], "implement_from_specs")
+        self.assertEqual(impl["unified_planner_prompt_name"], "implement_unified_planner")
         self.assertEqual(impl["leaf_dependency_roles"], {"infra"})
         self.assertFalse(impl["leaf_dependency_policy"]["track_external_dependencies"])
         self.assertEqual(impl["type_shape_match"]["min_auto_bind_score"], 0.61)
@@ -329,15 +327,6 @@ class ImplementConfigTests(unittest.TestCase):
         cfg = {"agent": {"provider": "local"}, "commands": {"implement": {"enabled": True}}}
         impl = _get_impl_cfg(cfg)
         self.assertEqual(impl["prompt_name"], "implement_from_specs_local")
-
-    def test_get_impl_cfg_explicit_prompt_name_overrides_provider_default(self) -> None:
-        """Explicit implementer.prompt_name always overrides provider-based default."""
-        cfg = {
-            "agent": {"provider": "local"},
-            "commands": {"implement": {"implementer": {"prompt_name": "my_custom_prompt"}}},
-        }
-        impl = _get_impl_cfg(cfg)
-        self.assertEqual(impl["prompt_name"], "my_custom_prompt")
 
     def test_resolve_min_confidence_threshold_project_overrides_pika(self) -> None:
         reset_pika_config_cache()
@@ -1278,7 +1267,7 @@ class ImplementDryRunTests(unittest.TestCase):
                     "sads_id_mapping_path": str(self.tmp / "out" / "state" / "sads_id_mapping.json"),
                 },
             },
-            "prompts": {"prompt_file": "prompts/PROMPT.yaml"},
+
             "commands": {
                 "implement": {
                     "enabled": True,
@@ -1355,7 +1344,7 @@ class ImplementDryRunTests(unittest.TestCase):
                     "sads_id_mapping_path": str(self.tmp / "out" / "state" / "sads_id_mapping.json"),
                 },
             },
-            "prompts": {"prompt_file": "prompts/PROMPT.yaml"},
+
             "commands": {
                 "implement": {
                     "enabled": True,
@@ -1436,7 +1425,7 @@ class ImplementDryRunTests(unittest.TestCase):
                     "sads_id_mapping_path": str(self.tmp / "out" / "state" / "sads_id_mapping.json"),
                 },
             },
-            "prompts": {"prompt_file": "prompts/PROMPT.yaml"},
+
             "commands": {
                 "implement": {
                     "enabled": True,
@@ -1551,7 +1540,7 @@ class ImplementDryRunTests(unittest.TestCase):
                     "sads_id_mapping_path": str(self.tmp / "out" / "state" / "sads_id_mapping.json"),
                 },
             },
-            "prompts": {"prompt_file": "prompts/PROMPT.yaml"},
+
             "commands": {
                 "implement": {
                     "enabled": True,
@@ -1626,7 +1615,7 @@ class SpecIssuesExtractionTests(ImplementDryRunTests):
                     "sads_id_mapping_path": str(self.tmp / "out" / "state" / "sads_id_mapping.json"),
                 },
             },
-            "prompts": {"prompt_file": "prompts/PROMPT.yaml"},
+
             "commands": {
                 "implement": {
                     "enabled": True,
@@ -1768,7 +1757,7 @@ class ImplementLocalSharedWorkspaceTests(unittest.TestCase):
                     "sads_id_mapping_path": str(self.tmp / "out" / "state" / "sads_id_mapping.json"),
                 },
             },
-            "prompts": {"prompt_file": "prompts/PROMPT.yaml"},
+
             "commands": {
                 "implement": {
                     "enabled": True,
@@ -2134,26 +2123,6 @@ class TestContractFieldNullableMetadata(unittest.TestCase):
         self.assertTrue(any("no_provider_spec_shared_filter" in iid for iid in item_ids), item_ids)
         checks = result.get("checks", [])
         self.assertTrue(any("manual_block_no_provider_spec" in c for c in checks), checks)
-
-    def test_stage12_allowlist_skips_providerless(self) -> None:
-        """Contract in allowlist is skipped even though it has no provider spec."""
-        contracts = [{
-            "contract_id": "shared_filter",
-            "owning_module": "DOMAIN",
-            "consumed_by_specs": ["U3"],
-            "fields": [{"name": "status", "type_name": "string", "nullable": True}],
-        }]
-        spec_rows = [self._spec("U3", "UI", "status filter")]
-        result = _validate_required_field_coverage(
-            contracts,
-            spec_rows,
-            self._HEADERS,
-            providerless_contract_allowlist={"shared_filter"},
-        )
-        self.assertEqual(result["status"], "passed")
-        self.assertEqual(result.get("manual_resolution_items", []), [])
-        checks = result.get("checks", [])
-        self.assertTrue(any("skipped_allowlisted" in c for c in checks), checks)
 
     # --- Stage 17 nullable check in brief scoping ---
 

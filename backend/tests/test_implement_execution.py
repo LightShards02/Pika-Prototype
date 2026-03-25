@@ -1100,7 +1100,7 @@ class ImplementExecutionLocalWorkspaceTests(unittest.TestCase):
         config = {
             "agent": {"provider": "local", "schema_validation_retries": 0},
             "project": {"name": "test", "root_dir": "."},
-            "prompts": {"prompt_file": "prompts/PROMPT.yaml"},
+
             "commands": {
                 "implement": {
                     "inputs": {"codebase_dir": str(self.codebase)},
@@ -1183,7 +1183,7 @@ class ImplementExecutionLocalWorkspaceTests(unittest.TestCase):
         config = {
             "agent": {"provider": "local", "schema_validation_retries": 0},
             "project": {"name": "test", "root_dir": "."},
-            "prompts": {"prompt_file": "prompts/PROMPT.yaml"},
+
             "commands": {
                 "implement": {
                     "inputs": {"codebase_dir": str(self.codebase)},

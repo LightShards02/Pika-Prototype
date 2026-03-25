@@ -67,23 +67,6 @@ class CommandRouterTests(unittest.TestCase):
                     },
                 },
                 "id_generation": {"registry_path": "out/state/id_registry.json"},
-                "csv_contracts": {
-                    "design_spec": {
-                        "add_if_missing": [
-                            "spec_id",
-                            "module_tag",
-                            "subunit",
-                            "mapped_code_symbols",
-                            "mapped_confidence",
-                            "mapped_consistency_score",
-                            "mapped_problems",
-                            "map_status",
-                            "map_assumptions",
-                            "mapped_at",
-                        ]
-                    },
-                    "issue_tracking": {"add_if_missing": []},
-                },
             }
             result = dispatch("format", config, self._make_ctx("format", project_root=str(root)))
             self.assertEqual(result["command"], "format")
@@ -126,23 +109,6 @@ class CommandRouterTests(unittest.TestCase):
                             "backups_dir": {"path": str(backups_dir), "no_overwrite": False},
                         },
                     },
-                },
-                "csv_contracts": {
-                    "design_spec": {
-                        "add_if_missing": [
-                            "spec_id",
-                            "module_tag",
-                            "subunit",
-                            "mapped_code_symbols",
-                            "mapped_confidence",
-                            "mapped_consistency_score",
-                            "mapped_problems",
-                            "map_status",
-                            "map_assumptions",
-                            "mapped_at",
-                        ]
-                    },
-                    "issue_tracking": {"add_if_missing": []},
                 },
                 "id_generation": {"registry_path": str(root / "state" / "id_registry.json")},
             }
@@ -203,7 +169,7 @@ class CommandRouterTests(unittest.TestCase):
                 "commands": {
                     "map": {
                         "enabled": True,
-                        "prompt_name": "map_spec_to_code",
+
                         "inputs": {
                             "design_spec_path": str(csv_file),
                             "codebase_dir": ".",
@@ -213,23 +179,6 @@ class CommandRouterTests(unittest.TestCase):
                             "backups_dir": {"path": str(root / "out" / "backups"), "no_overwrite": False},
                         },
                     },
-                },
-                "csv_contracts": {
-                    "design_spec": {
-                        "add_if_missing": [
-                            "spec_id",
-                            "module_tag",
-                            "subunit",
-                            "mapped_code_symbols",
-                            "mapped_confidence",
-                            "mapped_consistency_score",
-                            "mapped_problems",
-                            "map_status",
-                            "map_assumptions",
-                            "mapped_at",
-                        ]
-                    },
-                    "issue_tracking": {"add_if_missing": []},
                 },
             }
             result = dispatch("map", config, self._make_ctx("map", project_root=str(root)))
@@ -262,7 +211,7 @@ class CommandRouterTests(unittest.TestCase):
                 "commands": {
                     "map": {
                         "enabled": True,
-                        "prompt_name": "map_spec_to_code",
+
                         "inputs": {
                             "design_spec_path": str(csv_file),
                             "codebase_dir": ".",
@@ -272,23 +221,6 @@ class CommandRouterTests(unittest.TestCase):
                             "backups_dir": {"path": str(root / "out" / "backups"), "no_overwrite": False},
                         },
                     },
-                },
-                "csv_contracts": {
-                    "design_spec": {
-                        "add_if_missing": [
-                            "spec_id",
-                            "module_tag",
-                            "subunit",
-                            "mapped_code_symbols",
-                            "mapped_confidence",
-                            "mapped_consistency_score",
-                            "mapped_problems",
-                            "map_status",
-                            "map_assumptions",
-                            "mapped_at",
-                        ]
-                    },
-                    "issue_tracking": {"add_if_missing": []},
                 },
             }
             with self.assertRaises(SafetyPreconditionError) as ctx:
@@ -334,7 +266,7 @@ class CommandRouterTests(unittest.TestCase):
                 "commands": {
                     "plan": {
                         "enabled": True,
-                        "prompt_name": "project_designer",
+
                         "inputs": {
                             "srs_path": str(srs_file),
                             "project_context_filename": "PROJECT_CONTEXT.md",
@@ -342,7 +274,7 @@ class CommandRouterTests(unittest.TestCase):
                         "outputs": {"agent_runs_dir": {"path": str(out_dir), "no_overwrite": False}},
                     },
                 },
-                "schemas": {"plan_output": "schemas/agent_outputs/plan_output.schema.json"},
+
             }
             result = dispatch(
                 "plan",
@@ -392,7 +324,7 @@ class CommandRouterTests(unittest.TestCase):
                 "commands": {
                     "map": {
                         "enabled": True,
-                        "prompt_name": "map_spec_to_code",
+
                         "inputs": {
                             "design_spec_path": str(csv_file),
                             "codebase_dir": ".",
@@ -436,7 +368,7 @@ class CommandRouterTests(unittest.TestCase):
                 "commands": {
                     "plan": {
                         "enabled": True,
-                        "prompt_name": "project_designer",
+
                         "inputs": {"project_context_filename": "PROJECT_CONTEXT.md"},
                         "outputs": {
                             "backups_dir": {"path": str(root / "out" / "backups"), "no_overwrite": False},

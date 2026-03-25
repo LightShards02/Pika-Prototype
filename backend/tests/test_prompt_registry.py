@@ -46,8 +46,7 @@ prompts:
             encoding="utf-8",
         )
 
-        config = {"prompts": {"prompt_file": str(prompt_file)}}
-        registry = PromptRegistry.from_config(config)
+        registry = PromptRegistry(prompt_file=str(prompt_file))
 
         self.assertEqual(registry.list_prompts(), ["map_spec_to_code"])
         spec = registry.get("map_spec_to_code")

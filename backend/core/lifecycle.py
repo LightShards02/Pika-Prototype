@@ -32,14 +32,13 @@ from typing import Any, Callable
 from core.pika_config import get_pika_config
 from core.resolution import generate_resolution_template
 from core.agent_invoker import (
-    check_local_available,
+    _parse_combined_prompt,
     render_prompt,
     run_api_invoke,
-    run_local_exec,
 )
 from core.context import RuntimeContext
 from core.errors import AgentInvocationError, AgentSchemaError, SafetyPreconditionError
-from core.pika_paths import resolve_schema_path
+from core.pika_paths import get_default_schema_path
 from core.prompt_registry import PromptRegistry
 from core.vocab_loader import resolve_control_vocab_content
 
@@ -93,19 +92,6 @@ def _get_effective_outputs(config: dict[str, Any], command: str | None) -> dict[
     return dict(cmd_outputs)
 
 
-def _get_effective_schemas(config: dict[str, Any], command: str | None) -> dict[str, Any]:
-    """Return commands.<cmd>.schemas. Single source of truth; no top-level merge."""
-    if not command:
-        return {}
-    cmd_cfg = (config.get("commands") or {}).get(command)
-    if not isinstance(cmd_cfg, dict):
-        return {}
-    cmd_schemas = cmd_cfg.get("schemas")
-    if not isinstance(cmd_schemas, dict):
-        return {}
-    return dict(cmd_schemas)
-
-
 def resolve_output_schema_path(
     config: dict[str, Any],
     workspace_root: Path,
@@ -113,22 +99,13 @@ def resolve_output_schema_path(
     *,
     command: str | None = None,
 ) -> Path | None:
-    """Resolve output schema path from config.
+    """Resolve output schema path from pika.yaml schema_map.
 
-    Resolution order: commands.<cmd>.schemas.<key> > top-level schemas.<key>.
-    Tries workspace first, then PIKA root.
+    Schema paths are project-independent; resolved from PIKA root only.
+    The ``config``, ``workspace_root``, and ``command`` parameters are kept
+    for backward compatibility but ignored.
     """
-    schemas = _get_effective_schemas(config, command)
-    if schema_key not in schemas:
-        top = config.get("schemas") or {}
-        if isinstance(top, dict) and schema_key in top:
-            schemas = top
-        else:
-            return None
-    path_val = schemas.get(schema_key)
-    if not isinstance(path_val, str) or not path_val.strip():
-        return None
-    return resolve_schema_path(path_val, schema_key, workspace_root)
+    return get_default_schema_path(schema_key)
 
 
 def _get_project_context_filename(config: dict[str, Any], command: str | None = None) -> str:
@@ -847,7 +824,11 @@ def get_agent_provider(config: dict[str, Any]) -> str:
 
 
 def get_local_command(config: dict[str, Any]) -> str:
-    """Return local CLI executable name from config. Default 'codex'."""
+    """Return deprecated `local_command` workspace value (historical Codex CLI).
+
+    The local provider uses Loca in-process; this setting is not read by
+    ``invoke_agent_local`` / ``build_loca_config``. Kept for config compatibility.
+    """
     agent = config.get("agent")
     if not isinstance(agent, dict):
         return get_pika_config().get("local", {}).get("command", "codex")
@@ -858,7 +839,7 @@ def get_local_command(config: dict[str, Any]) -> str:
 
 
 def get_local_exec_timeout_sec(config: dict[str, Any]) -> int:
-    """Return local CLI timeout in seconds.
+    """Return Loca agent call timeout in seconds (local provider).
 
     Resolution order:
     1) workspace config `agent.local_exec_timeout_sec` (positive number),
@@ -909,6 +890,83 @@ def get_reasoning_effort(config: dict[str, Any], prompt_name: str) -> str:
     if "default" in pika_effort and pika_effort["default"] in valid:
         return pika_effort["default"]
     return "medium"
+
+
+def get_model_verbosity(config: dict[str, Any], prompt_name: str) -> str | None:
+    """Return Codex model_verbosity for the given prompt.
+
+    Resolves: project agent.local_model_verbosity[prompt_name] or .default,
+    then pika local.model_verbosity[prompt_name] or .default.
+    Returns None when not configured (Codex uses its default).
+
+    Returns:
+        Non-empty string (e.g. low, medium, high) or None.
+    """
+    def _from_obj(obj: dict[str, str], key: str) -> str | None:
+        val = obj.get(key) or obj.get("default")
+        return str(val).strip() if isinstance(val, str) and val.strip() else None
+
+    agent = config.get("agent")
+    if isinstance(agent, dict):
+        project_mv = agent.get("local_model_verbosity")
+        if isinstance(project_mv, str) and project_mv.strip():
+            return project_mv.strip()
+        if isinstance(project_mv, dict):
+            out = _from_obj(
+                {k: str(v) for k, v in project_mv.items() if isinstance(v, str)},
+                prompt_name,
+            )
+            if out:
+                return out
+
+    pika_local = get_pika_config().get("local", {})
+    pika_mv = pika_local.get("model_verbosity")
+    if isinstance(pika_mv, str) and pika_mv.strip():
+        return pika_mv.strip()
+    if isinstance(pika_mv, dict):
+        out = _from_obj(
+            {k: str(v) for k, v in pika_mv.items() if isinstance(v, str)},
+            prompt_name,
+        )
+        if out:
+            return out
+    return None
+
+
+def get_web_search(config: dict[str, Any], prompt_name: str) -> bool:
+    """Return whether Codex --search (web search) is enabled for the given prompt.
+
+    Resolves: project agent.local_web_search[prompt_name] or .default,
+    then pika local.web_search[prompt_name] or .default, then False.
+
+    Returns:
+        True to pass --search to Codex exec.
+    """
+    def _from_obj(obj: dict[str, Any], key: str) -> bool | None:
+        val = obj.get(key) if key in obj else obj.get("default")
+        if isinstance(val, bool):
+            return val
+        return None
+
+    agent = config.get("agent")
+    if isinstance(agent, dict):
+        project_ws = agent.get("local_web_search")
+        if isinstance(project_ws, bool):
+            return project_ws
+        if isinstance(project_ws, dict):
+            out = _from_obj(project_ws, prompt_name)
+            if out is not None:
+                return out
+
+    pika_local = get_pika_config().get("local", {})
+    pika_ws = pika_local.get("web_search")
+    if isinstance(pika_ws, bool):
+        return pika_ws
+    if isinstance(pika_ws, dict):
+        out = _from_obj(pika_ws, prompt_name)
+        if out is not None:
+            return out
+    return False
 
 
 def get_local_model(config: dict[str, Any], prompt_name: str) -> str:
@@ -1202,7 +1260,7 @@ def invoke_agent_local(
     local_workspace_override: Path | None = None,
     retry_instruction: str | None = None,
 ) -> dict[str, Any]:
-    """Invoke agent via local CLI (e.g. Codex) in an isolated temp workspace."""
+    """Invoke agent via Loca (in-process) in an isolated temp workspace."""
     project_root = Path(ctx.project_root)
     registry = load_prompt_registry(config)
     spec = registry.get(prompt_name)
@@ -1257,52 +1315,54 @@ def invoke_agent_local(
         },
     )
 
-    local_cmd = get_local_command(config)
+    from core.loca_bridge import build_loca_config, check_loca_available, run_loca_agent
+
     stream_output = True
     agent = config.get("agent")
     if isinstance(agent, dict) and "stream_output" in agent:
         stream_output = bool(agent.get("stream_output", True))
-    local_timeout = get_local_exec_timeout_sec(config)
-    reasoning_effort = get_reasoning_effort(config, prompt_name)
-    local_model = get_local_model(config, prompt_name)
+
+    loca_config = build_loca_config(config, prompt_name, isolated_workspace)
+    provider_sub = loca_config.model.provider
+
     try:
-        if not check_local_available(local_cmd):
-            raise AgentInvocationError(
-                "Local provider authentication is unavailable. "
-                "Run `codex login status` and `codex login` if needed, then retry."
+        if not check_loca_available(provider_sub):
+            auth_hint = (
+                "Run `loca --login` to authenticate."
+                if provider_sub == "openai-codex"
+                else "Set the OPENAI_API_KEY environment variable."
             )
+            raise AgentInvocationError(
+                f"Local provider ({provider_sub}) authentication is unavailable. {auth_hint}"
+            )
+
+        # Load JSON schema for API-level structured output enforcement
+        json_schema = None
+        if schema_path_resolved and schema_path_resolved.exists():
+            json_schema = json.loads(schema_path_resolved.read_text(encoding="utf-8"))
+
+        system_part, user_part = _parse_combined_prompt(prompt_text)
+
         t0 = time.perf_counter()
-        result, token_usage = run_local_exec(
-            prompt=prompt_text,
-            output_schema_path=schema_path_resolved,
-            workspace=isolated_workspace,
-            output_path=isolated_output_path,
-            command=local_cmd,
-            timeout=local_timeout,
+        result, token_usage = run_loca_agent(
+            system_prompt=system_part,
+            user_prompt=user_part,
+            loca_config=loca_config,
+            json_schema=json_schema,
             stream_output=stream_output,
-            reasoning_effort=reasoning_effort,
-            model=local_model,
             stream_reasoning=ctx.verbose,
         )
-        if isolated_output_path.exists():
-            try:
-                shutil.copy2(isolated_output_path, output_path)
-            except OSError as exc:
-                get_run_logger().warning(
-                    "Could not copy local output artifact from %s to %s: %s",
-                    isolated_output_path,
-                    output_path,
-                    exc,
-                )
-        else:
-            try:
-                output_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
-            except OSError as exc:
-                get_run_logger().warning(
-                    "Could not write local output artifact to %s: %s",
-                    output_path,
-                    exc,
-                )
+
+        # Save output artifact
+        try:
+            output_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+        except OSError as exc:
+            get_run_logger().warning(
+                "Could not write local output artifact to %s: %s",
+                output_path,
+                exc,
+            )
+
         elapsed = time.perf_counter() - t0
         log_lifecycle_event(
             "agent_invoke_local_complete",
@@ -1320,14 +1380,16 @@ def invoke_agent_local(
                 run_id=ctx.run_id,
                 extra={
                     "prompt_name": prompt_name,
-                    "input_tokens": token_usage["input_tokens"],
-                    "cached_input_tokens": token_usage["cached_input_tokens"],
-                    "output_tokens": token_usage["output_tokens"],
+                    "input_tokens": token_usage.get("input_tokens", 0),
+                    "cached_input_tokens": token_usage.get("cached_input_tokens", 0),
+                    "output_tokens": token_usage.get("output_tokens", 0),
                 },
             )
         _emit_agent_conclusion(prompt_name, elapsed, token_usage)
         return result
-    except subprocess.CalledProcessError as exc:
+    except AgentInvocationError:
+        raise
+    except (ValueError, RuntimeError) as exc:
         log_lifecycle_event(
             "agent_invoke_local_failed",
             command=ctx.command,
@@ -1335,12 +1397,11 @@ def invoke_agent_local(
             extra={
                 "prompt_name": prompt_name,
                 "output_path": str(output_path),
-                "exit_code": exc.returncode,
-                "error": exc.stderr or exc.stdout or "no output",
+                "error": str(exc),
             },
         )
         raise AgentInvocationError(
-            f"Local CLI exec failed (exit {exc.returncode}): {exc.stderr or exc.stdout or 'no output'}"
+            f"Local agent invocation failed: {exc}"
         ) from exc
     finally:
         if managed_workspace:
@@ -1689,9 +1750,12 @@ def invoke_agent_stub(
         )
         base["proposed_sads_outline_path"] = stub_path
     elif ctx.command == "map":
-        base["mappings"] = _stub_map_mappings_from_csv(
+        raw = _stub_map_mappings_from_csv(
             template_vars.get("design_spec_rows_csv") or ""
         )
+        base["mappings"] = [
+            {"spec_id": sid, **vals} for sid, vals in raw.items()
+        ]
     elif ctx.command == "implement":
         if prompt_name == "implement_anchor_planner":
             return {

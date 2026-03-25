@@ -29,7 +29,7 @@ from core.lifecycle import (
     find_most_recent_blocked_run_id,
     resolve_agent_runs_dir_for_command,
 )
-from core.pika_paths import get_config_schema_path, resolve_prompts_path, resolve_schema_path
+from core.pika_paths import get_config_schema_path
 from core.resolution import (
     build_resolved_decisions_context,
     load_resolution_file,
@@ -41,14 +41,6 @@ from core.safety import validate_command_preconditions
 
 # Workspace root: the project PIKA is used to build (config, outputs, inputs). Required.
 # When --config not provided, look under project root. Candidates from pika config.
-
-CSV_CONTRACT_PATH_KEYS = {
-    "contract_file",
-    "contract_path",
-    "contracts_file",
-    "contracts_path",
-    "file_path",
-}
 
 SummaryContext = dict[str, Any]
 
@@ -102,90 +94,24 @@ def _resolve_config_path(config: str | None, workspace_root: Path) -> Path:
     return selected
 
 
-def _collect_csv_contract_paths(node: Any) -> list[str]:
-    """Collect CSV contract paths from config node."""
-    paths: list[str] = []
-    stack: list[Any] = [node]
-    while stack:
-        current = stack.pop()
-        if isinstance(current, dict):
-            for key, value in current.items():
-                if key in CSV_CONTRACT_PATH_KEYS and isinstance(value, str):
-                    paths.append(value)
-                elif isinstance(value, (dict, list)):
-                    stack.append(value)
-        elif isinstance(current, list):
-            stack.extend(current)
-    return paths
-
-
 def _collect_referenced_paths(config: dict[str, Any]) -> list[str]:
-    """Collect referenced file paths from config."""
-    paths: list[str] = []
+    """Collect referenced file paths from config.
 
-    prompts_section = config.get("prompts")
-    if isinstance(prompts_section, dict):
-        prompt_file = prompts_section.get("prompt_file")
-        if isinstance(prompt_file, str):
-            paths.append(prompt_file)
-
-    schemas_section = config.get("schemas")
-    if isinstance(schemas_section, dict):
-        for value in schemas_section.values():
-            if isinstance(value, str):
-                paths.append(value)
-
-    csv_contracts = config.get("csv_contracts")
-    if isinstance(csv_contracts, dict):
-        paths.extend(_collect_csv_contract_paths(csv_contracts))
-
-    return paths
+    Prompts, schemas, and csv_contracts are now resolved from pika.yaml.
+    This function returns workspace-level referenced paths (currently none).
+    """
+    return []
 
 
 def _validate_referenced_files_exist(
     config: dict[str, Any], *, source: str, workspace_root: Path
 ) -> None:
-    """Validate all referenced files exist. Prompts from PIKA root; schemas workspace then PIKA."""
-    prompts_section = config.get("prompts")
-    prompt_file = prompts_section.get("prompt_file") if isinstance(prompts_section, dict) else None
-    if isinstance(prompt_file, str) and prompt_file.strip():
-        resolved = resolve_prompts_path(prompt_file)
-        if not resolved.exists() or not resolved.is_file():
-            raise FileNotFoundError(
-                f"Referenced prompt file not found in {source}: {prompt_file} "
-                f"(resolved from PIKA root: {resolved})"
-            )
+    """Validate all referenced files exist.
 
-    schemas_section = config.get("schemas")
-    if isinstance(schemas_section, dict):
-        for key, value in schemas_section.items():
-            if isinstance(value, str) and value.strip():
-                resolved = resolve_schema_path(value, key, workspace_root)
-                if not resolved.exists() or not resolved.is_file():
-                    raise FileNotFoundError(
-                        f"Referenced schema not found in {source}: schemas.{key}={value!r} "
-                        f"(tried workspace and PIKA root, resolved: {resolved})"
-                    )
+    Prompts, schemas, and csv_contracts are now resolved from pika.yaml
+    and validated there. No workspace-level file references remain.
+    """
 
-    csv_contracts = config.get("csv_contracts")
-    if isinstance(csv_contracts, dict):
-        for path_value in _collect_csv_contract_paths(csv_contracts):
-            candidate = Path(path_value)
-            resolved = (
-                candidate.resolve()
-                if candidate.is_absolute()
-                else (workspace_root / candidate).resolve()
-            )
-            if not resolved.exists():
-                raise FileNotFoundError(
-                    f"Referenced file not found in {source}: {path_value} "
-                    f"(resolved: {resolved})"
-                )
-            if not resolved.is_file():
-                raise ValueError(
-                    f"Referenced path is not a file in {source}: {path_value} "
-                    f"(resolved: {resolved})"
-                )
 
 
 def _emit_summary(
@@ -411,6 +337,18 @@ def _root_callback(
         v = get_pika_config().get("version", "0.0.0")
         typer.echo(v)
         raise typer.Exit(0)
+
+
+@app.command("login")
+def login_command() -> None:
+    """Authenticate with OpenAI Codex via OAuth (for local provider with openai-codex sub-provider)."""
+    try:
+        from loca.auth import run_login_flow
+        run_login_flow()
+        typer.secho("Login successful.", fg=typer.colors.GREEN)
+    except Exception as exc:  # noqa: BLE001
+        typer.secho(f"Login failed: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1) from exc
 
 
 agent_app = typer.Typer(

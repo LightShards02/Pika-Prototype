@@ -805,7 +805,7 @@ prompts:
       {{run_summary_file}}
 
   spec_ambiguity_detector:
-    description: Scan SADS spec requirement and acceptance_criteria fields for vague language and emit manual_resolution_items.
+    description: Scan SADS spec requirement fields for vague language and emit manual_resolution_items.
     output_schema_file: schemas/agent_outputs/spec_ambiguity_detector_output.schema.json
     template_variables:
       - name: output_schema_file
@@ -830,11 +830,12 @@ prompts:
       You are a strict spec ambiguity detector.
       Your output JSON must validate against {{output_schema_file}} without exception.
       Return JSON only. Do not include markdown fences.
-      Scan every row's requirement and acceptance_criteria for vague or unmeasurable language.
+      Scan every row's requirement field for vague or unmeasurable language. Do NOT scan acceptance_criteria; testability of that field is handled by the testability auditor.
+      Cross-spec references: If a requirement references another spec by explicit ID (e.g. "as defined in A1001", "see A2003") or by relative position (e.g. "as specified above", "the row below"), resolve the reference against the CSV. For explicit IDs, look up the spec_id directly. For relative references like "above" or "below", use the adjacent rows in CSV order. If the resolved row exists and its requirement is concrete and measurable, do NOT flag the reference as vague. Only flag a cross-spec reference when the target row cannot be resolved or its requirement is itself vague.
       For each issue found, emit one manual_resolution_item with:
         - item_id: unique identifier (e.g. AMB-001)
         - spec_id: the affected spec row
-        - field: "requirement" or "acceptance_criteria"
+        - field: always "requirement"
         - vague_phrases: exact phrases that are vague
         - suggested_improvement: complete rewrite of the field with specific, measurable language
         - options: exactly three options — accept_suggestion, let_agent_edit, skip

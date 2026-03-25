@@ -769,18 +769,12 @@ def build_template_vars(
 
 
 def _get_prompt_name(config: dict[str, Any]) -> str:
-    """Return prompt name for map from config.
+    """Return prompt name for map from pika.yaml.
 
-    Explicit config prompt_name always takes precedence. Otherwise defaults to
-    map_spec_to_code_local for local provider and map_spec_to_code for all others.
+    Selects local variant when agent.provider is 'local'.
     """
-    commands = config.get("commands", {})
-    map_cfg = commands.get("map") if isinstance(commands, dict) else {}
-    if isinstance(map_cfg, dict) and map_cfg.get("prompt_name"):
-        return map_cfg["prompt_name"]
-    if get_agent_provider(config) == "local":
-        return "map_spec_to_code_local"
-    return "map_spec_to_code"
+    from core.pika_config import get_prompt_name
+    return get_prompt_name("map", provider=get_agent_provider(config))
 
 
 def _find_column(headers: list[str], candidates: list[str]) -> str | None:

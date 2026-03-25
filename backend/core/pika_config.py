@@ -164,6 +164,57 @@ def _validate_required_config(cfg: dict[str, Any]) -> None:
             missing,
         )
 
+    _require(isinstance(cfg.get("id_generation"), dict), "id_generation", missing)
+    if isinstance(cfg.get("id_generation"), dict):
+        id_gen = cfg["id_generation"]
+        _require(isinstance(id_gen.get("spec"), dict), "id_generation.spec", missing)
+        _require(isinstance(id_gen.get("issue"), dict), "id_generation.issue", missing)
+        _require_non_empty_string(id_gen.get("collision_scope"), "id_generation.collision_scope", missing)
+        if isinstance(id_gen.get("spec"), dict):
+            _require_non_empty_string(id_gen["spec"].get("pattern"), "id_generation.spec.pattern", missing)
+        if isinstance(id_gen.get("issue"), dict):
+            _require_non_empty_string(id_gen["issue"].get("pattern"), "id_generation.issue.pattern", missing)
+
+    _require(isinstance(cfg.get("csv_contracts"), dict), "csv_contracts", missing)
+    if isinstance(cfg.get("csv_contracts"), dict):
+        csv_c = cfg["csv_contracts"]
+        for contract_name in ("design_spec", "issue_tracking"):
+            _require(isinstance(csv_c.get(contract_name), dict), f"csv_contracts.{contract_name}", missing)
+            contract = csv_c.get(contract_name)
+            if isinstance(contract, dict):
+                cols = contract.get("add_if_missing")
+                _require(
+                    isinstance(cols, list) and len(cols) > 0,
+                    f"csv_contracts.{contract_name}.add_if_missing",
+                    missing,
+                )
+
+    _require(isinstance(cfg.get("prompt_names"), dict), "prompt_names", missing)
+    if isinstance(cfg.get("prompt_names"), dict):
+        pn = cfg["prompt_names"]
+        _require_non_empty_string(pn.get("plan"), "prompt_names.plan", missing)
+        _require_non_empty_string(pn.get("review"), "prompt_names.review", missing)
+        _require(isinstance(pn.get("map"), dict), "prompt_names.map", missing)
+        if isinstance(pn.get("map"), dict):
+            _require_non_empty_string(pn["map"].get("default"), "prompt_names.map.default", missing)
+            _require_non_empty_string(pn["map"].get("local"), "prompt_names.map.local", missing)
+        _require(isinstance(pn.get("implement"), dict), "prompt_names.implement", missing)
+        if isinstance(pn.get("implement"), dict):
+            impl_pn = pn["implement"]
+            _require(isinstance(impl_pn.get("implementer"), dict), "prompt_names.implement.implementer", missing)
+            if isinstance(impl_pn.get("implementer"), dict):
+                _require_non_empty_string(impl_pn["implementer"].get("default"), "prompt_names.implement.implementer.default", missing)
+                _require_non_empty_string(impl_pn["implementer"].get("local"), "prompt_names.implement.implementer.local", missing)
+            _require_non_empty_string(impl_pn.get("unified_planner"), "prompt_names.implement.unified_planner", missing)
+        _require(isinstance(pn.get("resolve_plan"), dict), "prompt_names.resolve_plan", missing)
+        if isinstance(pn.get("resolve_plan"), dict):
+            _require_non_empty_string(pn["resolve_plan"].get("map"), "prompt_names.resolve_plan.map", missing)
+            _require_non_empty_string(pn["resolve_plan"].get("resolve"), "prompt_names.resolve_plan.resolve", missing)
+        _require(isinstance(pn.get("refine"), dict), "prompt_names.refine", missing)
+        if isinstance(pn.get("refine"), dict):
+            for sub in ("ambiguity_detector", "testability_auditor", "spec_editor"):
+                _require_non_empty_string(pn["refine"].get(sub), f"prompt_names.refine.{sub}", missing)
+
     if isinstance(cfg.get("stub"), dict):
         _require_non_empty_string(cfg["stub"].get("plan_proposed_sads"), "stub.plan_proposed_sads", missing)
 
@@ -200,6 +251,41 @@ def load_pika_config() -> dict[str, Any]:
 def get_pika_config() -> dict[str, Any]:
     """Return loaded PIKA config (cached)."""
     return load_pika_config()
+
+
+def get_prompt_name(command: str, sub_key: str | None = None, *, provider: str = "stub") -> str:
+    """Return prompt name for *command* from pika.yaml prompt_names.
+
+    For commands with provider-specific variants (map, implement.implementer),
+    selects the ``local`` variant when *provider* is ``"local"``, otherwise
+    the ``default`` variant.
+
+    Args:
+        command: Top-level command name (plan, review, map, implement, resolve_plan, refine).
+        sub_key: Optional sub-key for commands with multiple prompts
+                 (e.g. ``"implementer"``, ``"unified_planner"``, ``"map"``,
+                 ``"ambiguity_detector"``).
+        provider: Agent provider string (``"stub"``, ``"api"``, ``"local"``).
+
+    Returns:
+        Prompt name string.
+
+    Raises:
+        KeyError: If the requested prompt_names path does not exist.
+    """
+    pn = get_pika_config()["prompt_names"]
+    node = pn[command]
+
+    if sub_key is not None:
+        node = node[sub_key]
+
+    if isinstance(node, str):
+        return node
+
+    # dict with default / local variants
+    if provider == "local" and "local" in node:
+        return node["local"]
+    return node["default"]
 
 
 def reset_pika_config_cache() -> None:

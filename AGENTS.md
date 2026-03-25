@@ -100,7 +100,7 @@ PIKA is a Python 3.12+ CLI tool (`cli.py`) that orchestrates multi-agent softwar
 python3 -m pytest tests/ -v
 ```
 
-All 382 tests pass. The one skipped test (`test_handshake_simple_schema`) requires the `codex` CLI to be installed. The `tree-sitter` + `tree-sitter-languages` combo requires `tree-sitter==0.21.3` to avoid API incompatibility; do not upgrade to 0.24+.
+All 382 tests pass. The one skipped test (`test_handshake_simple_schema`) exercises deprecated Codex **CLI** helpers and requires the `codex` npm CLI to be installed. The `tree-sitter` + `tree-sitter-languages` combo requires `tree-sitter==0.21.3` to avoid API incompatibility; do not upgrade to 0.24+.
 
 ### Running the CLI
 
@@ -114,7 +114,7 @@ python3 cli.py agent format --project-root <workspace> --dry-run
 
 - `stub` (default): mock agent, no external dependencies — use for testing
 - `api`: requires `NVIDIA_API_KEY` env var
-- `local`: requires `codex` CLI installed via npm
+- `local`: requires Loca (Python package) and auth for `local_provider` (e.g. `openai-codex` OAuth or `openai` + `OPENAI_API_KEY`); not the codex npm CLI
 
 ### Linting
 

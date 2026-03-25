@@ -68,7 +68,7 @@
 
 11. `[v0.0.3][deterministic]` **Check Required Contract Coverage** (`implement.required_field_coverage_validation.enabled`): Enforce explicit or alias-resolved field coverage for consumed contract fields.
     a. For each shared contract, identify the provider spec (consumed spec whose `module_tag` matches `owning_module`).
-    b. If no provider spec exists and the contract is not in `providerless_contract_allowlist`, emit `manual_resolution_items`.
+    b. If no provider spec exists, emit `manual_resolution_items` (always manual_block).
     c. If provider text contains canonical contract/DTO declaration, treat coverage as satisfied.
     d. Otherwise check field-by-field coverage (exact, normalized, part matching). Emit `manual_resolution_items` for uncovered fields listing which fields are missing from which provider spec.
     e. Produces: `required_field_coverage_validation.json`.

@@ -5,9 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 
-_DEFAULT_AMBIGUITY_PROMPT = "spec_ambiguity_detector"
-_DEFAULT_TESTABILITY_PROMPT = "spec_testability_auditor"
-_DEFAULT_SPEC_EDITOR_PROMPT = "spec_editor"
+
 _DEFAULT_DECOMPOSITION_ENABLED = True
 _DEFAULT_DECOMPOSITION_BLOCKING = False
 _DEFAULT_SIMILARITY_THRESHOLD = 0.85
@@ -45,26 +43,10 @@ def _get_refine_cfg(config: dict[str, Any]) -> dict[str, Any]:
     enabled_raw = refine.get("enabled", True)
     enabled = enabled_raw if isinstance(enabled_raw, bool) else True
 
-    ambiguity_cfg = refine.get("ambiguity_detector") or {}
-    if not isinstance(ambiguity_cfg, dict):
-        ambiguity_cfg = {}
-    ambiguity_prompt = str(
-        ambiguity_cfg.get("prompt_name", _DEFAULT_AMBIGUITY_PROMPT)
-    ).strip() or _DEFAULT_AMBIGUITY_PROMPT
-
-    testability_cfg = refine.get("testability_auditor") or {}
-    if not isinstance(testability_cfg, dict):
-        testability_cfg = {}
-    testability_prompt = str(
-        testability_cfg.get("prompt_name", _DEFAULT_TESTABILITY_PROMPT)
-    ).strip() or _DEFAULT_TESTABILITY_PROMPT
-
-    editor_cfg = refine.get("spec_editor") or {}
-    if not isinstance(editor_cfg, dict):
-        editor_cfg = {}
-    editor_prompt = str(
-        editor_cfg.get("prompt_name", _DEFAULT_SPEC_EDITOR_PROMPT)
-    ).strip() or _DEFAULT_SPEC_EDITOR_PROMPT
+    from core.pika_config import get_prompt_name
+    ambiguity_prompt = get_prompt_name("refine", "ambiguity_detector")
+    testability_prompt = get_prompt_name("refine", "testability_auditor")
+    editor_prompt = get_prompt_name("refine", "spec_editor")
 
     decomp_cfg = refine.get("decomposition") or {}
     if not isinstance(decomp_cfg, dict):
