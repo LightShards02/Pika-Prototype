@@ -1,0 +1,161 @@
+# PIKA-level configuration (project-independent).
+# No schema validation. Used for hardcoded defaults and tool-wide settings.
+# Workspace config (config.yaml) overrides where applicable.
+
+version: "0.1.0"
+
+# Paths relative to PIKA root (parent of cli.py)
+paths:
+  config_schema: config/config.schema.json
+  csv_contracts: docs/csv_contracts.md
+  project_context_contracts: docs/project_context_contracts.md
+  prompts_file: prompts/PROMPT.yaml
+  schemas_dir: schemas/agent_outputs
+
+# Prompt names (project-independent). Handlers resolve from here; workspace config
+# no longer carries prompt_name fields.  Map and implement have local variants
+# selected automatically when agent.provider == "local".
+prompt_names:
+  plan: project_designer
+  review: design_reviewer
+  map:
+    default: map_spec_to_code
+    local: map_spec_to_code_local
+  implement:
+    implementer:
+      default: implement_from_specs
+      local: implement_from_specs_local
+    unified_planner: implement_unified_planner
+  resolve_plan:
+    map: map_issues_to_specs
+    resolve: resolve_issues_with_diffs
+  refine:
+    ambiguity_detector: spec_ambiguity_detector
+    testability_auditor: spec_testability_auditor
+    spec_editor: spec_editor
+
+# Schema key -> filename mapping under schemas_dir
+schema_map:
+  plan_output: plan_output.schema.json
+  map_output: index_output.schema.json
+  implement_output: implement_output.schema.json
+  resolve_plan_map_output: issue_map_output.schema.json
+  resolve_plan_output: issue_resolve_output.schema.json
+  handshake_output: handshake_output.schema.json
+
+# Config file candidates when --config not provided (relative to workspace root)
+config_candidates:
+  - config.yaml
+  - config/config.yaml
+  - config/config.example.yaml
+
+# Agent provider categories: local (Loca in-process), stub (mock).
+# Workspace config agent.provider selects one: local | stub.
+
+# --- local: Local CLI subprocess (e.g. Codex exec) ---
+# Required: command (executable name or path), model.
+# Optional: ps1_path_windows (Windows .ps1 path), heartbeat_interval_sec, exec_timeout_sec, reasoning_effort.
+local:
+  command: codex
+  # Loca sub-provider: openai (API key) or openai-codex (ChatGPT OAuth subscription).
+  # Override in project config agent.local_provider.
+  provider_sub: openai-codex
+  # Default temperature/top_p for local provider (null = provider default).
+  # Override in project config agent.local_temperature / agent.local_top_p.
+  # Ignored when reasoning_effort is set for the prompt.
+  temperature: null
+  top_p: null
+  # Per-prompt Codex model ID. Keys: prompt_name (map_spec_to_code, implement_unified_planner, implement_from_specs) or default.
+  # Override in project config agent.local_model.
+  model:
+    default: gpt-5.3-codex
+    map_spec_to_code: gpt-5.3-codex
+    implement_unified_planner: gpt-5.3-codex
+    implement_from_specs: gpt-5.3-codex-spark
+  # Windows: path to codex.ps1 when installed via npm (used when command is "codex")
+  ps1_path_windows: C:\Users\night\AppData\Roaming\npm\codex.ps1
+  heartbeat_interval_sec: 30
+  exec_timeout_sec: 600
+  temp_workspace_prefix: pika-local-agent-
+  temp_workspace_ttl_sec: 86400
+  # Per-prompt model_reasoning_effort for Codex exec. Keys: prompt_name or default.
+  # Override in project config agent.reasoning_effort.
+  reasoning_effort:
+    default: medium
+    map_spec_to_code: medium
+    implement_unified_planner: medium
+    implement_from_specs: medium
+  # Per-prompt model_verbosity for Codex exec (e.g. low, medium, high). Passed as -c model_verbosity.
+  # Omit or null to use Codex default. Override in project config agent.local_model_verbosity.
+  # model_verbosity: null
+  # Per-prompt web_search for Codex exec. When true, passes --search. Override in agent.local_web_search.
+  web_search: false
+
+# --- implement: Batch briefs confidence threshold ---
+# Project config commands.implement.min_confidence_threshold overrides.
+# Items with confidence below this value block code gen until resolved. 0 = disabled.
+implement:
+  min_confidence_threshold: 0.7
+  min_max_files: 5
+
+# --- stub: Mock agent for testing (no real invocation) ---
+# Optional: plan_proposed_sads path, other artifact paths.
+stub:
+  plan_proposed_sads: out/agent_artifacts/plan/stub/plan_proposed_sads.csv
+
+# Default paths relative to project root (used when workspace config omits)
+default_outputs:
+  log_dir: out/logs
+  state_dir: out/state
+  sads_id_mapping: out/state/sads_id_mapping.json
+  id_registry: out/state/id_registry.json
+  intermediate_map_dir: out/intermediate/map
+  agent_input_codebase_content_dir: out/agent_input/codebase_content
+
+# Defaults for workspace config (when schema allows omission)
+# These match config.example.yaml; workspace overrides take precedence.
+default_workspace:
+  project:
+    state:
+      design_spec_path: out/state/DESIGN-SPEC.csv
+      id_registry_path: out/state/id_registry.json
+      sads_id_mapping_path: out/state/sads_id_mapping.json
+  inputs:
+    allowed_extensions: [.csv, .xlsx]
+    project_context_filename: PROJECT_CONTEXT.md
+  id_generation:
+    registry_path: out/state/id_registry.json
+  design_spec_path: out/state/DESIGN-SPEC.csv
+
+# ID generation patterns (project-independent).
+id_generation:
+  spec:
+    pattern: "^[A-Za-z][0-9]+$"
+  issue:
+    pattern: "^[A-Za-z]{2}[0-9]+$"
+  collision_scope: per_type_numeric_suffix
+
+# CSV column contracts (project-independent).
+# Defines columns added to Design Spec and Issue Tracking CSVs.
+csv_contracts:
+  design_spec:
+    add_if_missing:
+      - spec_id
+      - module_tag
+      - subunit
+      - mapped_code_symbols
+      - mapped_confidence
+      - mapped_consistency_score
+      - mapped_problems
+      - map_status
+      - map_assumptions
+      - mapped_at
+      - map_run_id
+  issue_tracking:
+    add_if_missing:
+      - issue_id
+      - author
+      - mapped_spec_ids
+      - issue_notes
+      - follow_up_uncertainties
+      - last_resolved_at

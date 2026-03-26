@@ -76,15 +76,9 @@ def _make_config(tmp: str, design_csv_path: str | None = None) -> dict[str, Any]
     return {
         "agent": {"provider": "stub", "schema_validation_retries": 0},
         "project": {"name": "test", "root_dir": tmp},
-        "prompts": {
-            "prompt_file": str(_PIKA_ROOT / "prompts" / "PROMPT.yaml"),
-        },
         "commands": {
             "refine": {
                 "enabled": True,
-                "ambiguity_detector": {"prompt_name": "spec_ambiguity_detector"},
-                "testability_auditor": {"prompt_name": "spec_testability_auditor"},
-                "spec_editor": {"prompt_name": "spec_editor"},
                 "decomposition": {
                     "enabled": False,
                     "blocking": False,
@@ -185,21 +179,6 @@ class RefineConfigTests(unittest.TestCase):
     def test_enabled_false(self) -> None:
         cfg = _get_refine_cfg({"commands": {"refine": {"enabled": False}}})
         self.assertFalse(cfg["enabled"])
-
-    def test_custom_prompt_names(self) -> None:
-        config = {
-            "commands": {
-                "refine": {
-                    "ambiguity_detector": {"prompt_name": "my_ambiguity"},
-                    "testability_auditor": {"prompt_name": "my_testability"},
-                    "spec_editor": {"prompt_name": "my_editor"},
-                }
-            }
-        }
-        cfg = _get_refine_cfg(config)
-        self.assertEqual(cfg["ambiguity_detector_prompt_name"], "my_ambiguity")
-        self.assertEqual(cfg["testability_auditor_prompt_name"], "my_testability")
-        self.assertEqual(cfg["spec_editor_prompt_name"], "my_editor")
 
     def test_decomposition_blocking_flag(self) -> None:
         config = {"commands": {"refine": {"decomposition": {"blocking": True}}}}
@@ -577,21 +556,22 @@ class SchemaValidationTests(unittest.TestCase):
             ]
         })
 
-    def test_ambiguity_schema_rejects_unknown_field_enum(self) -> None:
+    def test_ambiguity_schema_rejects_non_requirement_field(self) -> None:
         schema = self._load_schema("spec_ambiguity_detector_output")
-        self._validate_fails(schema, {
-            "manual_resolution_items": [
-                {
-                    "item_id": "AMB-001",
-                    "title": "T",
-                    "spec_id": "S1",
-                    "field": "title",  # not in enum
-                    "vague_phrases": ["x"],
-                    "suggested_improvement": "y",
-                    "options": [{"option_id": "skip", "label": "L", "effect": "E"}],
-                }
-            ]
-        })
+        for bad_field in ["acceptance_criteria", "title"]:
+            self._validate_fails(schema, {
+                "manual_resolution_items": [
+                    {
+                        "item_id": "AMB-001",
+                        "title": "T",
+                        "spec_id": "S1",
+                        "field": bad_field,
+                        "vague_phrases": ["x"],
+                        "suggested_improvement": "y",
+                        "options": [{"option_id": "skip", "label": "L", "effect": "E"}],
+                    }
+                ]
+            })
 
     def test_testability_schema_accepts_empty_items(self) -> None:
         schema = self._load_schema("spec_testability_auditor_output")

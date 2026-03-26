@@ -133,12 +133,9 @@ def _build_template_vars(
 
 
 def _get_prompt_name(config: dict[str, Any]) -> str:
-    """Return prompt name for plan from config."""
-    commands = config.get("commands", {})
-    plan_cfg = commands.get("plan") if isinstance(commands, dict) else {}
-    if isinstance(plan_cfg, dict):
-        return plan_cfg.get("prompt_name", "project_designer")
-    return "project_designer"
+    """Return prompt name for plan from pika.yaml."""
+    from core.pika_config import get_prompt_name
+    return get_prompt_name("plan")
 
 
 def _ensure_stub_artifact(output: dict[str, Any], project_root: Path) -> None:

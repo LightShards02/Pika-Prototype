@@ -213,8 +213,6 @@ __marimo__/
 
 # --- PIKA-specific ---
 
-# Local user config (paths, API keys, overrides)
-backend/config/pika.yaml
 
 # Dataset output dirs (agent runs, backups, intermediate artifacts)
 dataset/CORE

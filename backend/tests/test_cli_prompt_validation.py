@@ -103,33 +103,6 @@ class CliPromptValidationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn('"status":"completed"', result.stdout)
 
-    def test_command_only_validation_fails_when_prompt_file_missing(self) -> None:
-        """Test that command only validation fails when prompt file missing."""
-        with tempfile.TemporaryDirectory(prefix="cli-prompt-fail-") as tmpdir:
-            tmp_config_path = Path(tmpdir) / "config.yaml"
-            config_text = EXAMPLE_CONFIG_PATH.read_text(encoding="utf-8")
-            missing_prompt_path = (Path(tmpdir) / "does_not_exist.yaml").as_posix()
-            config_text = config_text.replace(
-                "  prompt_file: prompts/PROMPT.yaml",
-                f"  prompt_file: {missing_prompt_path}",
-            )
-            tmp_config_path.write_text(config_text, encoding="utf-8")
-
-            result = self._run_cli(
-                [
-                    "agent",
-                    "format",
-                    "--command-only-validation",
-                    "--project-root",
-                    str(tmpdir),
-                    "--config",
-                    str(tmp_config_path),
-                ]
-            )
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Prompt file not found", result.stderr)
-        self.assertIn('"status":"failed"', result.stdout)
 
 
 if __name__ == "__main__":

@@ -34,11 +34,10 @@ class PlanHandlerTests(unittest.TestCase):
                     "sads_id_mapping_path": str(self.tmp / "out" / "state" / "sads_id_mapping.json"),
                 },
             },
-            "prompts": {"prompt_file": "prompts/PROMPT.yaml"},
+
             "commands": {
                 "plan": {
                     "enabled": True,
-                    "prompt_name": "project_designer",
                     "inputs": {
                         "srs_path": str(self.srs),
                         "codebase_dir": ".",

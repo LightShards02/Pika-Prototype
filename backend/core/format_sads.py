@@ -38,14 +38,11 @@ _LATEX_ENCODER = UnicodeToLatexEncoder(
 MAP_STATUS_DEFAULT = "unmapped"
 
 
-def get_design_spec_add_if_missing(config: dict[str, Any]) -> list[str]:
-    """Return design spec add_if_missing columns from config. Required.
+def get_design_spec_add_if_missing(config: dict[str, Any] | None = None) -> list[str]:
+    """Return design spec add_if_missing columns from pika.yaml csv_contracts.
 
-    Config is the single source of truth. csv_contracts.design_spec.add_if_missing
-    must be present and a non-empty list.
-
-    Args:
-        config: Full PIKA config.
+    Reads from pika.yaml (project-independent). The ``config`` parameter is
+    accepted for backward compatibility but ignored.
 
     Returns:
         List of column names to add if missing, in contract order.
@@ -53,18 +50,19 @@ def get_design_spec_add_if_missing(config: dict[str, Any]) -> list[str]:
     Raises:
         ValueError: If add_if_missing is missing, empty, or not a list.
     """
-    csv_contracts = config.get("csv_contracts") or {}
+    from core.pika_config import get_pika_config
+
+    pika_cfg = get_pika_config()
+    csv_contracts = pika_cfg.get("csv_contracts") or {}
     design_spec = csv_contracts.get("design_spec") if isinstance(csv_contracts, dict) else {}
     if not isinstance(design_spec, dict):
         raise ValueError(
-            "csv_contracts.design_spec.add_if_missing is required. "
-            "Add it to your project config under csv_contracts.design_spec."
+            "pika.yaml csv_contracts.design_spec.add_if_missing is required."
         )
     add_cols = design_spec.get("add_if_missing")
     if not isinstance(add_cols, list) or len(add_cols) == 0:
         raise ValueError(
-            "csv_contracts.design_spec.add_if_missing is required and must be a non-empty list. "
-            "Define the contract columns in your project config."
+            "pika.yaml csv_contracts.design_spec.add_if_missing is required and must be a non-empty list."
         )
     return [str(c) for c in add_cols]
 

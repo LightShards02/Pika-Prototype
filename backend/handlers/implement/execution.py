@@ -13,7 +13,6 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
-from core.codebase_snapshot import build_codebase_snapshot
 from core.constants import ImplementStatus
 from core.context import RuntimeContext
 from core.contracts import get_design_spec_column_definitions
@@ -1574,11 +1573,7 @@ def _execute_batch(
                 "batch_id": brief.get("batch_id"),
             },
         )
-    codebase_content = (
-        build_codebase_snapshot(codebase, config, command="implement")
-        if provider == "api"
-        else ""
-    )
+    codebase_content = ""
     runtime_file_facts = _build_runtime_file_facts(root, brief)
     spec_rows = brief.get("spec_rows", []) if isinstance(brief.get("spec_rows", []), list) else []
     csv_rows = [{h: (row.get(h, "") if isinstance(row, dict) else "") for h in design_headers} for row in spec_rows]

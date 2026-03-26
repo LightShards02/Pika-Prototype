@@ -244,24 +244,6 @@ def _normalize_type_shape_match(value: Any) -> dict[str, float]:
     return {"min_auto_bind_score": min_score_f, "tie_margin": tie_margin_f}
 
 
-def _parse_providerless_contract_allowlist(value: Any) -> list[str]:
-    """Parse providerless_contract_allowlist as a deduplicated list of contract IDs."""
-    if value is None:
-        return []
-    if not isinstance(value, list):
-        raise ConfigParseError(
-            "implement.required_field_coverage_validation.providerless_contract_allowlist must be an array"
-        )
-    result: list[str] = []
-    seen: set[str] = set()
-    for item in value:
-        s = str(item).strip()
-        if s and s not in seen:
-            result.append(s)
-            seen.add(s)
-    return result
-
-
 def _parse_field_match_score_threshold(value: Any) -> float:
     """Parse normalized score threshold for validation word matching (0..1)."""
     if value is None:
@@ -421,13 +403,7 @@ def _get_impl_cfg(config: dict[str, Any]) -> dict[str, Any]:
 
     contract_field_cfg = step_configs["contract_field_consistency_validation"]
     field_match_score_threshold = _parse_field_match_score_threshold(
-        contract_field_cfg.get(
-            "field_match_score_threshold",
-            contract_field_cfg.get(
-                "field_match_distance_threshold",
-                impl.get("field_match_score_threshold", impl.get("field_match_distance_threshold")),
-            ),
-        )
+        contract_field_cfg.get("field_match_score_threshold")
     )
     steps["contract_field_consistency_validation"][
         "field_match_score_threshold"
@@ -436,10 +412,10 @@ def _get_impl_cfg(config: dict[str, Any]) -> dict[str, Any]:
     planner_semantic_cfg = step_configs["planner_semantic_validation"]
     implement_semantic_cfg = step_configs["implement_semantic_validation"]
     planner_semantic_validation_retries = _parse_semantic_validation_retries(
-        planner_semantic_cfg.get("semantic_validation_retries", impl.get("semantic_validation_retries"))
+        planner_semantic_cfg.get("semantic_validation_retries")
     )
     implement_semantic_validation_retries = _parse_semantic_validation_retries(
-        implement_semantic_cfg.get("semantic_validation_retries", impl.get("semantic_validation_retries"))
+        implement_semantic_cfg.get("semantic_validation_retries")
     )
     steps["planner_semantic_validation"][
         "semantic_validation_retries"
@@ -448,29 +424,11 @@ def _get_impl_cfg(config: dict[str, Any]) -> dict[str, Any]:
         "semantic_validation_retries"
     ] = implement_semantic_validation_retries
 
-    coverage_cfg = step_configs["required_field_coverage_validation"]
-    providerless_allowlist = _parse_providerless_contract_allowlist(
-        coverage_cfg.get("providerless_contract_allowlist")
-    )
-    steps["required_field_coverage_validation"][
-        "providerless_contract_allowlist"
-    ] = providerless_allowlist
-
-    default_prompt = (
-        "implement_from_specs_local"
-        if get_agent_provider(config) == "local"
-        else "implement_from_specs"
-    )
+    from core.pika_config import get_prompt_name
+    provider = get_agent_provider(config)
     return {
-        "prompt_name": str(
-            implementer_agent_cfg.get("prompt_name", impl.get("prompt_name", default_prompt))
-        ),
-        "unified_planner_prompt_name": str(
-            planner_agent_cfg.get(
-                "prompt_name",
-                impl.get("unified_planner_prompt_name", "implement_unified_planner"),
-            )
-        ),
+        "prompt_name": get_prompt_name("implement", "implementer", provider=provider),
+        "unified_planner_prompt_name": get_prompt_name("implement", "unified_planner"),
         "type_placement_path": str(
             impl.get("type_placement_path", _DEFAULT_TYPE_PLACEMENT)
         ),

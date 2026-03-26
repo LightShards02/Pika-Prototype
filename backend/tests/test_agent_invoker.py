@@ -9,7 +9,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from core.agent_invoker import (
-    _api_params_for_command,
     _normalize_for_codex_response_format,
     _parse_codex_token_usage,
     _stream_reasoning_callback,
@@ -17,7 +16,6 @@ from core.agent_invoker import (
     check_codex_available,
     extract_json_from_text,
     render_prompt,
-    run_api_invoke,
     run_local_exec,
 )
 
@@ -166,29 +164,6 @@ class ParseCombinedPromptTests(unittest.TestCase):
         self.assertEqual(user, "Just some text")
 
 
-class ApiParamsForCommandTests(unittest.TestCase):
-    """Tests for _api_params_for_command."""
-
-    def test_map_uses_lower_temperature_and_top_p(self) -> None:
-        """Code mapping uses lower temp/top_p for deterministic output."""
-        params = _api_params_for_command("map")
-        self.assertEqual(params["temperature"], 0.1)
-        self.assertEqual(params["top_p"], 0.95)
-        self.assertEqual(params["max_tokens"], 32768)
-
-    def test_other_commands_use_defaults(self) -> None:
-        """Non-map commands use default params."""
-        params = _api_params_for_command("implement")
-        self.assertEqual(params["temperature"], 0.7)
-        self.assertEqual(params["top_p"], 1.0)
-        self.assertEqual(params["max_tokens"], 16384)
-
-    def test_none_command_uses_defaults(self) -> None:
-        """None command uses default params."""
-        params = _api_params_for_command(None)
-        self.assertEqual(params["temperature"], 0.7)
-
-
 class CodexSchemaNormalizationTests(unittest.TestCase):
     """Tests for Codex response-format schema normalization."""
 
@@ -220,64 +195,6 @@ class CodexSchemaNormalizationTests(unittest.TestCase):
         source = {"type": "object"}
         normalized = _normalize_for_codex_response_format(source)
         self.assertEqual(normalized["additionalProperties"], False)
-
-
-class RunApiInvokeTests(unittest.TestCase):
-    """Tests for run_api_invoke (mocked)."""
-
-    def test_parses_json_from_response(self) -> None:
-        """Extracts and parses JSON from API response content."""
-        mock_response = MagicMock()
-        mock_response.ok = True
-        mock_response.json.return_value = {
-            "choices": [
-                {"message": {"content": '{"handshake": "ok"}'}}
-            ]
-        }
-
-        with patch("core.agent_invoker.requests") as mock_requests:
-            mock_requests.post.return_value = mock_response
-            result, usage = run_api_invoke(
-                "[System]\nHi\n\n[User]\nHello",
-                api_key="test-key",
-            )
-            self.assertEqual(result, {"handshake": "ok"})
-            self.assertIsNone(usage)
-
-    def test_returns_usage_when_present(self) -> None:
-        """Returns usage dict when API response includes usage."""
-        mock_response = MagicMock()
-        mock_response.ok = True
-        mock_response.json.return_value = {
-            "choices": [
-                {"message": {"content": '{"handshake": "ok"}'}}
-            ],
-            "usage": {"prompt_tokens": 100, "completion_tokens": 50},
-        }
-
-        with patch("core.agent_invoker.requests") as mock_requests:
-            mock_requests.post.return_value = mock_response
-            result, usage = run_api_invoke(
-                "[System]\nHi\n\n[User]\nHello",
-                api_key="test-key",
-            )
-            self.assertEqual(result, {"handshake": "ok"})
-            self.assertIsNotNone(usage)
-            self.assertEqual(usage["input_tokens"], 100)
-            self.assertEqual(usage["output_tokens"], 50)
-
-    def test_raises_on_api_error(self) -> None:
-        """Raises when API returns non-OK status."""
-        mock_response = MagicMock()
-        mock_response.ok = False
-        mock_response.status_code = 401
-        mock_response.text = "Unauthorized"
-
-        with patch("core.agent_invoker.requests") as mock_requests:
-            mock_requests.post.return_value = mock_response
-            with self.assertRaises(RuntimeError) as ctx:
-                run_api_invoke("prompt", api_key="x")
-            self.assertIn("401", str(ctx.exception))
 
 
 class RunLocalExecSubprocessDecodeTests(unittest.TestCase):
@@ -586,3 +503,68 @@ class RunLocalExecJsonFlagTests(unittest.TestCase):
             self.assertIn("--model", cmd)
             model_idx = cmd.index("--model")
             self.assertEqual(cmd[model_idx + 1], "gpt-5-codex")
+
+    def test_model_verbosity_in_exec_args_when_set(self) -> None:
+        """Codex exec is invoked with -c model_verbosity when model_verbosity param is set."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            schema_path = root / "schema.json"
+            schema_path.write_text(
+                '{"type":"object","required":["x"],"properties":{"x":{"type":"string"}},"additionalProperties":false}',
+                encoding="utf-8",
+            )
+            output_path = root / "out" / "local_output.txt"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text('{"x":"y"}', encoding="utf-8")
+
+            proc = MagicMock()
+            proc.returncode = 0
+            proc.stderr = ""
+            proc.stdout = '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20}}\n'
+
+            with patch("core.agent_invoker.subprocess.run", return_value=proc) as mock_run:
+                run_local_exec(
+                    prompt="Return JSON",
+                    output_schema_path=schema_path,
+                    workspace=root,
+                    output_path=output_path,
+                    stream_output=False,
+                    timeout=10,
+                    model_verbosity="high",
+                )
+
+            cmd = mock_run.call_args[0][0]
+            config_args = [a for a in cmd if a == "--config" or (isinstance(a, str) and "model_verbosity" in a)]
+            self.assertIn("model_verbosity", " ".join(config_args))
+
+    def test_web_search_adds_search_flag(self) -> None:
+        """Codex exec is invoked with --search when web_search is True."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            schema_path = root / "schema.json"
+            schema_path.write_text(
+                '{"type":"object","required":["x"],"properties":{"x":{"type":"string"}},"additionalProperties":false}',
+                encoding="utf-8",
+            )
+            output_path = root / "out" / "local_output.txt"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text('{"x":"y"}', encoding="utf-8")
+
+            proc = MagicMock()
+            proc.returncode = 0
+            proc.stderr = ""
+            proc.stdout = '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20}}\n'
+
+            with patch("core.agent_invoker.subprocess.run", return_value=proc) as mock_run:
+                run_local_exec(
+                    prompt="Return JSON",
+                    output_schema_path=schema_path,
+                    workspace=root,
+                    output_path=output_path,
+                    stream_output=False,
+                    timeout=10,
+                    web_search=True,
+                )
+
+            cmd = mock_run.call_args[0][0]
+            self.assertIn("--search", cmd)

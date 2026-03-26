@@ -28,32 +28,11 @@ from handlers.map import (
 
 _TEST_DATA_DIR = Path(__file__).parent / "test_data_map_translate"
 
-# Required by get_design_spec_add_if_missing; config is single source of truth
-_MAP_TEST_CSV_CONTRACTS = {
-    "csv_contracts": {
-        "design_spec": {
-            "add_if_missing": [
-                "spec_id",
-                "module_tag",
-                "subunit",
-                "mapped_code_symbols",
-                "mapped_confidence",
-                "mapped_consistency_score",
-                "mapped_problems",
-                "map_status",
-                "map_assumptions",
-                "mapped_at",
-                "map_run_id",
-            ]
-        }
-    }
-}
 
 
 def _map_test_config(root: Path, **overrides: Any) -> dict[str, Any]:
     """Build map test config with command-scoped inputs/outputs."""
     base = {
-        **_MAP_TEST_CSV_CONTRACTS,
         "project": {
             "name": "test",
             "root_dir": ".",
@@ -66,7 +45,6 @@ def _map_test_config(root: Path, **overrides: Any) -> dict[str, Any]:
         "commands": {
             "map": {
                 "enabled": True,
-                "prompt_name": "map_spec_to_code",
                 "inputs": {
                     "design_spec_path": "out/state/DESIGN-SPEC.csv",
                     "codebase_dir": ".",
@@ -1522,27 +1500,6 @@ class CodebaseContentProviderTests(unittest.TestCase):
         """Remove test data."""
         if self.root.exists():
             shutil.rmtree(self.root, ignore_errors=True)
-
-    def test_codebase_content_populated_when_provider_api(self) -> None:
-        """When provider is api, codebase_content is non-empty (AST snapshot)."""
-        config = _map_test_config(self.root)
-        config["agent"] = {"provider": "api"}
-        ctx = RuntimeContext(
-            command="map",
-            dry_run=False,
-            verbose=False,
-            command_only_validation=False,
-            run_id="run-api",
-            project_root=str(self.root),
-            config_path=str(self.root / "config.yaml"),
-        )
-        inputs = {"agent_view_content": "spec_id,title\nA1,Foo\n"}
-        vars_ = build_template_vars(config, self.root, ctx, inputs)
-        self.assertIn("codebase_content", vars_)
-        content = vars_["codebase_content"]
-        self.assertNotEqual(content, "")
-        self.assertIn("# Codebase Snapshot", content)
-        self.assertIn("main.py", content)
 
     def test_codebase_content_empty_when_provider_local(self) -> None:
         """When provider is local, codebase_content is empty (model explores files directly)."""

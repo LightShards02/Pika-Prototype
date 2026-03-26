@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "SpecAmbiguityDetectorOutput",
-  "description": "Ambiguity Detector output. The agent scans SADS spec requirement and acceptance_criteria fields for vague language and emits manual_resolution_items. An empty array means no issues were found (non-blocking). Each item includes a suggested_improvement the user can accept, or they can choose 'let_agent_edit' to have spec_editor produce a rewrite.",
+  "description": "Ambiguity Detector output. The agent scans SADS spec requirement fields for vague language and emits manual_resolution_items. An empty array means no issues were found (non-blocking). Each item includes a suggested_improvement the user can accept, or they can choose 'let_agent_edit' to have spec_editor produce a rewrite.",
   "type": "object",
   "required": ["manual_resolution_items"],
   "additionalProperties": false,
@@ -42,8 +42,8 @@
         },
         "field": {
           "type": "string",
-          "enum": ["requirement", "acceptance_criteria"],
-          "description": "Which SADS field contains the vague language."
+          "const": "requirement",
+          "description": "Which SADS field contains the vague language. Ambiguity detector only targets the requirement field."
         },
         "vague_phrases": {
           "type": "array",

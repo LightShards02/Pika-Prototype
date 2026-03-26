@@ -456,8 +456,7 @@ export const SettingsForm = ({ data, onChange }: SettingsFormProps) => {
             onChange={(e) => onChange('agent.provider', e.target.value)}
           >
             <option value="stub">stub (mock)</option>
-            <option value="api">api (remote HTTP)</option>
-            <option value="local">local (CLI subprocess)</option>
+            <option value="local">local (Loca in-process)</option>
           </select>
         </SettingsField>
         <SettingsField label="Schema Validation Retries" description="Retries when agent output fails schema validation">
@@ -480,32 +479,6 @@ export const SettingsForm = ({ data, onChange }: SettingsFormProps) => {
             <span className="text-[13px] text-text-secondary">Enabled</span>
           </label>
         </SettingsField>
-
-        {str('agent.provider') === 'api' && (
-          <>
-            <SettingsField label="API Key Env" description="Environment variable for API Bearer token">
-              <input
-                className={inputClass}
-                value={str('agent.api_key_env')}
-                onChange={(e) => onChange('agent.api_key_env', e.target.value)}
-              />
-            </SettingsField>
-            <SettingsField label="API URL" description="Chat completions API URL">
-              <input
-                className={inputClass}
-                value={str('agent.api_url')}
-                onChange={(e) => onChange('agent.api_url', e.target.value)}
-              />
-            </SettingsField>
-            <SettingsField label="API Model" description="Model ID for API provider">
-              <input
-                className={inputClass}
-                value={str('agent.api_model')}
-                onChange={(e) => onChange('agent.api_model', e.target.value)}
-              />
-            </SettingsField>
-          </>
-        )}
 
         {str('agent.provider') === 'local' && (
           <>
@@ -635,54 +608,38 @@ export const SettingsForm = ({ data, onChange }: SettingsFormProps) => {
         </SettingsField>
       </SettingsSection>
 
-      {/* ── Codebase Transmission ──────────────────────────── */}
-      <SettingsSection title="Codebase Transmission">
+      {/* Prompts & Schemas */}
+      <SettingsSection title="Prompts & Schemas">
+        <SettingsField label="Prompt File" description="Path to the prompt definitions file">
+          <input className={inputClass} value={str('prompts.prompt_file')} onChange={(e) => onChange('prompts.prompt_file', e.target.value)} />
+        </SettingsField>
+        <SettingsField label="Map Output Schema" description="JSON Schema for map output">
+          <input className={inputClass} value={str('schemas.map_output')} onChange={(e) => onChange('schemas.map_output', e.target.value)} />
+        </SettingsField>
+        <SettingsField label="Implement Output Schema" description="JSON Schema for implement output">
+          <input className={inputClass} value={str('schemas.implement_output')} onChange={(e) => onChange('schemas.implement_output', e.target.value)} />
+        </SettingsField>
+        <SettingsField label="Resolve Plan Map Schema" description="JSON Schema for resolve plan map output">
+          <input className={inputClass} value={str('schemas.resolve_plan_map_output')} onChange={(e) => onChange('schemas.resolve_plan_map_output', e.target.value)} />
+        </SettingsField>
+        <SettingsField label="Resolve Plan Output Schema" description="JSON Schema for resolve plan output">
+          <input className={inputClass} value={str('schemas.resolve_plan_output')} onChange={(e) => onChange('schemas.resolve_plan_output', e.target.value)} />
+        </SettingsField>
+      </SettingsSection>
+
+      {/* ID Generation (read-only) */}
+      <SettingsSection title="ID Generation">
         <p className="text-[12px] text-text-tertiary mb-3">
-          Controls how source files are included in prompts for API-based agents. Ignored when provider is local.
+          ID patterns are locked. Use Raw YAML mode to view the full configuration.
         </p>
-        <SettingsField label="Max Summary Chars" description="Cap on total snapshot size (default: 200000)">
-          <input
-            type="number"
-            min={1000}
-            className={inputClass}
-            value={num('codebase_transmission.max_summary_chars') || ''}
-            onChange={(e) =>
-              onChange('codebase_transmission.max_summary_chars', parseInt(e.target.value) || undefined)
-            }
-            placeholder="200000"
-          />
+        <SettingsField label="Spec Pattern">
+          <input className={inputClass + ' bg-bg-elevated text-text-tertiary'} value={str('id_generation.spec.pattern')} readOnly />
         </SettingsField>
-        <SettingsField label="Max Raw Files" description="Raw files to include (default: 10)">
-          <input
-            type="number"
-            min={1}
-            className={inputClass}
-            value={num('codebase_transmission.max_raw_files') || ''}
-            onChange={(e) => onChange('codebase_transmission.max_raw_files', parseInt(e.target.value) || undefined)}
-            placeholder="10"
-          />
+        <SettingsField label="Issue Pattern">
+          <input className={inputClass + ' bg-bg-elevated text-text-tertiary'} value={str('id_generation.issue.pattern')} readOnly />
         </SettingsField>
-        <SettingsField label="Max Raw Chars Per File" description="Truncate raw files longer than this (default: 5000)">
-          <input
-            type="number"
-            min={100}
-            className={inputClass}
-            value={num('codebase_transmission.max_raw_chars_per_file') || ''}
-            onChange={(e) =>
-              onChange('codebase_transmission.max_raw_chars_per_file', parseInt(e.target.value) || undefined)
-            }
-            placeholder="5000"
-          />
-        </SettingsField>
-        <SettingsField label="Depth Limit" description="Max directory depth from codebase root (default: 15)">
-          <input
-            type="number"
-            min={1}
-            className={inputClass}
-            value={num('codebase_transmission.depth_limit') || ''}
-            onChange={(e) => onChange('codebase_transmission.depth_limit', parseInt(e.target.value) || undefined)}
-            placeholder="15"
-          />
+        <SettingsField label="Collision Scope">
+          <input className={inputClass + ' bg-bg-elevated text-text-tertiary'} value={str('id_generation.collision_scope')} readOnly />
         </SettingsField>
       </SettingsSection>
     </div>

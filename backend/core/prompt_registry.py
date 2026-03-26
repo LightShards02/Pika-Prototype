@@ -12,7 +12,7 @@ from core.errors import (
     PromptParseError,
     PromptValidationError,
 )
-from core.pika_paths import resolve_path_from_pika_root, resolve_prompts_path
+from core.pika_paths import get_default_prompts_path, resolve_path_from_pika_root, resolve_prompts_path
 
 
 @dataclass(frozen=True)
@@ -42,21 +42,12 @@ class PromptRegistry:
         self._load()
 
     @classmethod
-    def from_config(cls, config: dict) -> "PromptRegistry":
-        """Return from config. prompts.prompt_file is resolved from PIKA root."""
-        prompts_section = config.get("prompts")
-        if not isinstance(prompts_section, dict):
-            raise PromptValidationError(
-                "Config field prompts must be an object with prompts.prompt_file."
-            )
+    def from_config(cls, config: dict | None = None) -> "PromptRegistry":
+        """Return PromptRegistry with prompt_file from pika.yaml.
 
-        prompt_file = prompts_section.get("prompt_file")
-        if not isinstance(prompt_file, str) or not prompt_file.strip():
-            raise PromptValidationError(
-                "Config field prompts.prompt_file must be a non-empty string."
-            )
-
-        return cls(prompt_file=prompt_file)
+        The ``config`` parameter is accepted for backward compatibility but ignored.
+        """
+        return cls(prompt_file=str(get_default_prompts_path()))
 
     def list_prompts(self) -> list[str]:
         """List prompts."""

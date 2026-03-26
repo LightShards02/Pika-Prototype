@@ -1,7 +1,7 @@
-"""Agent invocation via api (remote HTTP), local (CLI subprocess), or stub.
+"""Agent invocation via local (Loca in-process) or stub.
 
-Helper functions for invoking agents, rendering prompts, and checking local CLI availability.
-Provider categories: api (chat completions API), local (e.g. Codex exec), stub (mock).
+Helper functions for invoking agents, rendering prompts, and checking availability.
+Provider categories: local (Loca library), stub (mock).
 """
 
 from __future__ import annotations
@@ -12,19 +12,31 @@ import subprocess
 import sys
 import threading
 import time
+import warnings
 from pathlib import Path
 from typing import Any
-
-import requests  # type: ignore
 
 from core.pika_config import get_pika_config
 
 _SUBPROCESS_TEXT_ENCODING = "utf-8"
 _SUBPROCESS_TEXT_ERRORS = "replace"
 
+# ---------------------------------------------------------------------------
+# Deprecated: Codex CLI subprocess (codex exec). Unused by PIKA runtime; the
+# local provider uses Loca in-process (core.loca_bridge). Kept for unit tests
+# and backward-compatible imports. See run_local_exec, check_local_available.
+# ---------------------------------------------------------------------------
+
+_DEPRECATED_CODEX_CLI_MSG = (
+    "Codex CLI subprocess API is deprecated; PIKA's local provider uses "
+    "Loca in-process (core.loca_bridge.run_loca_agent)."
+)
+
 
 def _normalize_for_codex_response_format(schema_node: Any) -> Any:
-    """Return schema transformed for Codex response_format compatibility.
+    """Return schema transformed for Codex CLI --output-schema compatibility.
+
+    Deprecated: only used by deprecated ``run_local_exec``.
 
     Codex local response_format requires object schemas to declare all property keys
     in `required`. We preserve field types and constraints, but upgrade any object
@@ -57,8 +69,9 @@ def _normalize_for_codex_response_format(schema_node: Any) -> Any:
 
 
 def _prepare_codex_output_schema(output_schema_path: Path, output_path: Path) -> Path:
-    """Write a Codex-compatible schema copy and return the path.
+    """Write a Codex CLI-compatible schema copy and return the path.
 
+    Deprecated: only used by deprecated ``run_local_exec``.
     Keeps the original schema untouched for internal jsonschema validation.
     """
     schema = json.loads(output_schema_path.read_text(encoding="utf-8"))
@@ -69,13 +82,19 @@ def _prepare_codex_output_schema(output_schema_path: Path, output_path: Path) ->
 
 
 def _get_local_ps1_path() -> Path:
-    """Return local CLI .ps1 path from pika config (Windows)."""
+    """Return Codex npm ``codex.ps1`` path from pika config (Windows).
+
+    Deprecated: only used by deprecated Codex CLI subprocess helpers.
+    """
     p = get_pika_config().get("local", {}).get("ps1_path_windows", "")
     return Path(p) if p else Path.home() / "AppData" / "Roaming" / "npm" / "codex.ps1"
 
 
 def _get_heartbeat_interval() -> int:
-    """Return heartbeat interval in seconds from pika config."""
+    """Return heartbeat interval in seconds from pika config.
+
+    Deprecated: only used by deprecated ``run_local_exec``.
+    """
     return int(get_pika_config().get("local", {}).get("heartbeat_interval_sec", 30))
 
 
@@ -83,7 +102,7 @@ def render_prompt(system_prompt: str, user_prompt: str, template_vars: dict[str,
     """Render system and user prompts with template variable substitution.
 
     Replaces {{var_name}} with template_vars[var_name]. Values are stringified.
-    Combines system and user into a single prompt suitable for Codex exec.
+    Combines system and user into a single prompt for the local (Loca) agent.
 
     Args:
         system_prompt: System/instruction prompt with {{placeholders}}.
@@ -106,7 +125,10 @@ def render_prompt(system_prompt: str, user_prompt: str, template_vars: dict[str,
 
 
 def _resolve_local_command(command: str) -> str:
-    """Resolve local command to the npm .ps1 path when using default on Windows."""
+    """Resolve Codex CLI command to the npm ``.ps1`` path on Windows when applicable.
+
+    Deprecated: only used by deprecated Codex CLI subprocess helpers.
+    """
     if command == "codex" and sys.platform == "win32":
         ps1 = _get_local_ps1_path()
         if ps1.exists():
@@ -115,7 +137,11 @@ def _resolve_local_command(command: str) -> str:
 
 
 def _build_local_cmd(command: str, args: list[str]) -> list[str]:
-    """Build command list for subprocess. Invokes .ps1 via PowerShell on Windows."""
+    """Build argv for Codex CLI subprocess. Invokes ``.ps1`` via PowerShell on Windows.
+
+    Deprecated: only used by deprecated ``run_local_exec`` and
+    ``check_local_available``.
+    """
     resolved = _resolve_local_command(command)
     path = Path(resolved)
     if path.suffix.lower() == ".ps1" and path.exists():
@@ -132,10 +158,10 @@ def _build_local_cmd(command: str, args: list[str]) -> list[str]:
 
 
 def check_local_available(command: str = "codex") -> bool:
-    """Check if local CLI (e.g. Codex) is installed and reachable.
+    """Check if the Codex **CLI** is installed (deprecated).
 
-    Runs `codex login status` which exits 0 when authenticated.
-    Also accepts `codex --version` or similar for basic availability.
+    Deprecated: PIKA's ``provider: local`` uses Loca in-process, not this CLI.
+    Runs ``codex login status`` which exits 0 when authenticated.
 
     Args:
         command: Executable name or path (default: codex).
@@ -144,6 +170,7 @@ def check_local_available(command: str = "codex") -> bool:
     Returns:
         True if local CLI runs successfully, False otherwise.
     """
+    warnings.warn(_DEPRECATED_CODEX_CLI_MSG, DeprecationWarning, stacklevel=2)
     try:
         cmd = _build_local_cmd(command, ["login", "status"])
         proc = subprocess.run(
@@ -160,7 +187,7 @@ def check_local_available(command: str = "codex") -> bool:
 
 
 def check_codex_available(command: str = "codex") -> bool:
-    """Alias for check_local_available. Kept for backward compatibility."""
+    """Alias for ``check_local_available`` (deprecated Codex CLI check)."""
     return check_local_available(command)
 
 
@@ -217,176 +244,6 @@ def _parse_combined_prompt(combined: str) -> tuple[str, str]:
         user_part = combined[idx + len("[User]"):].strip()
         return (system_part, user_part)
     return ("", combined)
-
-
-def _get_api_config() -> dict[str, Any]:
-    """Return api section from pika config."""
-    return get_pika_config().get("api", {})
-
-
-def _extract_api_usage(usage_obj: Any) -> dict[str, int] | None:
-    """Extract input_tokens and output_tokens from API usage object.
-
-    Handles prompt_tokens/completion_tokens (OpenAI) and input_tokens/output_tokens.
-    """
-    if not isinstance(usage_obj, dict):
-        return None
-    inp = usage_obj.get("input_tokens") or usage_obj.get("prompt_tokens")
-    out = usage_obj.get("output_tokens") or usage_obj.get("completion_tokens")
-    if inp is not None and out is not None:
-        return {
-            "input_tokens": int(inp),
-            "output_tokens": int(out),
-        }
-    return None
-
-
-def _api_params_for_command(command: str | None) -> dict[str, Any]:
-    """Return generation params tuned for the given command.
-
-    Code mapping (map) benefits from lower temperature and top_p for
-    consistent, deterministic structured output. Other commands use defaults.
-    """
-    api_cfg = _get_api_config()
-    if command == "map":
-        m = api_cfg.get("map", {})
-        return {
-            "max_tokens": m.get("max_tokens", 32768),
-            "temperature": m.get("temperature", 0.1),
-            "top_p": m.get("top_p", 0.95),
-        }
-    d = api_cfg.get("default", {})
-    return {
-        "max_tokens": d.get("max_tokens", 16384),
-        "temperature": d.get("temperature", 0.7),
-        "top_p": d.get("top_p", 1.0),
-    }
-
-
-def run_api_invoke(
-    prompt: str,
-    *,
-    api_key: str,
-    url: str | None = None,
-    model: str | None = None,
-    command: str | None = None,
-    max_tokens: int | None = None,
-    temperature: float | None = None,
-    top_p: float | None = None,
-    stream: bool = False,
-    stream_output: bool = False,
-    output_path: Path | None = None,
-) -> tuple[dict[str, Any], dict[str, int] | None]:
-    """Invoke Kimi K2.5 via NVIDIA API and return parsed JSON output.
-
-    Sends system and user prompts as chat messages. Uses chat_template_kwargs
-    with thinking=True for extended reasoning when supported by the model.
-
-    When command is "map" (code mapping), uses lower temperature and top_p
-    for consistent, deterministic structured output. Override via explicit args.
-
-    Args:
-        prompt: Combined prompt (output of render_prompt with [System] and [User]).
-        api_key: API Bearer token.
-        url: Chat completions API URL.
-        model: Model ID (e.g. moonshotai/kimi-k2.5).
-        command: PIKA command name (e.g. map, implement). Tunes params for code mapping when "map".
-        max_tokens: Override max tokens. Default varies by command.
-        temperature: Override temperature. Default: 0.1 for map, 0.7 otherwise.
-        top_p: Override top_p. Default: 0.95 for map, 1.0 otherwise.
-        stream: If True, request streaming from API (collects full response).
-        stream_output: If True, print streamed chunks to stderr.
-        output_path: Optional path to write raw response for debugging.
-
-    Returns:
-        Tuple of (parsed JSON object, usage dict or None). Usage has input_tokens and
-        output_tokens when present in the API response (prompt_tokens/completion_tokens).
-
-    Raises:
-        RuntimeError: If API call fails.
-        ValueError: If response cannot be parsed as JSON.
-    """
-    api_cfg = _get_api_config()
-    url = url or api_cfg.get("url", "https://integrate.api.nvidia.com/v1/chat/completions")
-    model = model or api_cfg.get("model", "moonshotai/kimi-k2.5")
-
-    cmd_params = _api_params_for_command(command)
-    max_tokens = max_tokens if max_tokens is not None else cmd_params["max_tokens"]
-    temperature = temperature if temperature is not None else cmd_params["temperature"]
-    top_p = top_p if top_p is not None else cmd_params["top_p"]
-
-    system_part, user_part = _parse_combined_prompt(prompt)
-    messages: list[dict[str, str]] = []
-    if system_part:
-        messages.append({"role": "system", "content": system_part})
-    messages.append({"role": "user", "content": user_part})
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Accept": "text/event-stream" if stream else "application/json",
-        "Content-Type": "application/json",
-    }
-    payload: dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        "top_p": top_p,
-        "stream": stream,
-        "chat_template_kwargs": {"thinking": True},
-    }
-
-    timeout = api_cfg.get("request_timeout_sec", 600)
-    response = requests.post(url, headers=headers, json=payload, timeout=timeout)
-
-    if not response.ok:
-        raise RuntimeError(
-            f"API request failed ({response.status_code}): {response.text[:500]}"
-        )
-
-    usage: dict[str, int] | None = None
-    if stream:
-        content_parts: list[str] = []
-        for line in response.iter_lines():
-            if line:
-                decoded = line.decode("utf-8")
-                if stream_output:
-                    try:
-                        sys.stderr.write(decoded + "\n")
-                        sys.stderr.flush()
-                    except OSError:
-                        pass
-                if decoded.startswith("data: "):
-                    data_str = decoded[6:].strip()
-                    if data_str == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(data_str)
-                        choices = chunk.get("choices", [])
-                        if choices:
-                            delta = choices[0].get("delta", {})
-                            part = delta.get("content") or delta.get("text", "")
-                            if part:
-                                content_parts.append(part)
-                        usage = _extract_api_usage(chunk.get("usage")) or usage
-                    except json.JSONDecodeError:
-                        pass
-        raw_content = "".join(content_parts)
-    else:
-        data = response.json()
-        choices = data.get("choices", [])
-        if not choices:
-            raise ValueError("API returned no choices")
-        msg = choices[0].get("message", {})
-        raw_content = msg.get("content") or msg.get("text", "") or ""
-        usage = _extract_api_usage(data.get("usage"))
-
-    if output_path:
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(raw_content, encoding="utf-8")
-
-    return extract_json_from_text(raw_content), usage
 
 
 def _stream_output(
@@ -451,7 +308,9 @@ def _stream_reasoning_callback(line: str) -> None:
 
 
 def _parse_codex_token_usage(jsonl_stdout: str) -> dict[str, int] | None:
-    """Parse Codex --json stdout for turn.completed usage.
+    """Parse Codex CLI ``--json`` stdout for turn.completed usage.
+
+    Deprecated: only used by deprecated ``run_local_exec``.
 
     Returns the last turn's usage dict (input_tokens, cached_input_tokens, output_tokens)
     or None if no turn.completed event found.
@@ -492,7 +351,10 @@ def _heartbeat_thread(proc: subprocess.Popen[Any], stop: threading.Event) -> Non
 
 
 def _is_codex_output_schema_error(stderr_text: str) -> bool:
-    """Return True when stderr indicates Codex rejected response_format schema."""
+    """Return True when stderr indicates Codex CLI rejected response_format schema.
+
+    Deprecated: only used by deprecated ``run_local_exec``.
+    """
     haystack = (stderr_text or "").lower()
     return (
         "invalid schema for response_format" in haystack
@@ -512,9 +374,14 @@ def run_local_exec(
     stream_output: bool = True,
     reasoning_effort: str | None = None,
     model: str | None = None,
+    model_verbosity: str | None = None,
+    web_search: bool = False,
     stream_reasoning: bool = False,
 ) -> tuple[dict[str, Any], dict[str, int] | None]:
-    """Run local CLI (e.g. Codex exec) non-interactively and return parsed JSON output.
+    """Run Codex **CLI** ``codex exec`` non-interactively and return parsed JSON output.
+
+    Deprecated: PIKA does not call this; ``provider: local`` uses Loca in-process
+    (``core.loca_bridge.run_loca_agent``). Retained for tests only.
 
     Uses `codex exec` with --json (for token usage), --output-schema and --output-last-message.
     The schema passed to Codex is a compatibility-normalized copy; the original
@@ -537,6 +404,8 @@ def run_local_exec(
         stream_output: If True, stream Codex output to terminal and show heartbeat.
         reasoning_effort: Codex model_reasoning_effort (low, medium, high, xhigh). Passed as --config.
         model: Codex model ID (e.g. gpt-5-codex). Passed as --model when set. Omit to use Codex config.
+        model_verbosity: Codex model_verbosity (e.g. low, medium, high). Passed as -c model_verbosity when set.
+        web_search: If True, pass --search to enable Codex web search.
         stream_reasoning: If True, parse JSONL stdout and print reasoning items to stderr in real time.
 
     Returns:
@@ -548,6 +417,7 @@ def run_local_exec(
         subprocess.CalledProcessError: If codex exits non-zero.
         ValueError: If output cannot be parsed as JSON.
     """
+    warnings.warn(_DEPRECATED_CODEX_CLI_MSG, DeprecationWarning, stacklevel=2)
     output_path = Path(output_path).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -573,6 +443,13 @@ def run_local_exec(
         exec_args_base = exec_args_base + [
             "--config", f'model_reasoning_effort=\'"{reasoning_effort}"\''
         ]
+    if model_verbosity and model_verbosity.strip():
+        # Codex expects value as JSON string, e.g. model_verbosity='"high"'
+        exec_args_base = exec_args_base + [
+            "--config", f'model_verbosity=\'"{model_verbosity.strip()}"\''
+        ]
+    if web_search:
+        exec_args_base = exec_args_base + ["--search"]
     exec_args = list(exec_args_base)
     if schema_str:
         exec_args.extend(["--output-schema", schema_str])
@@ -690,3 +567,14 @@ def run_local_exec(
 
     raw = output_path.read_text(encoding="utf-8")
     return extract_json_from_text(raw), token_usage
+
+
+# ---------------------------------------------------------------------------
+# Loca bridge re-exports (convenience for callers)
+# ---------------------------------------------------------------------------
+
+from core.loca_bridge import (  # noqa: E402, F401
+    build_loca_config,
+    check_loca_available,
+    run_loca_agent,
+)

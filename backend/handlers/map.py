@@ -25,7 +25,6 @@ from core.format_sads import (
     load_sads_csv_or_xlsx,
     rows_to_csv,
 )
-from core.codebase_snapshot import build_codebase_snapshot
 from core.lifecycle import (
     get_agent_provider,
     get_run_logger,
@@ -740,13 +739,7 @@ def build_template_vars(
         else ""
     )
 
-    # Build codebase snapshot only for API-style providers.
-    # Local provider explores the codebase directly via file tools (uses map_spec_to_code_local
-    # prompt which has no codebase_content placeholder). Stub provider never needs content.
-    provider = get_agent_provider(config)
     codebase_content = ""
-    if provider not in ("stub", "local"):
-        codebase_content = build_codebase_snapshot(codebase_dir_path, config, command="map")
 
     commands = config.get("commands") or {}
     map_cfg_raw = commands.get("map") if isinstance(commands, dict) else {}
@@ -769,18 +762,12 @@ def build_template_vars(
 
 
 def _get_prompt_name(config: dict[str, Any]) -> str:
-    """Return prompt name for map from config.
+    """Return prompt name for map from pika.yaml.
 
-    Explicit config prompt_name always takes precedence. Otherwise defaults to
-    map_spec_to_code_local for local provider and map_spec_to_code for all others.
+    Selects local variant when agent.provider is 'local'.
     """
-    commands = config.get("commands", {})
-    map_cfg = commands.get("map") if isinstance(commands, dict) else {}
-    if isinstance(map_cfg, dict) and map_cfg.get("prompt_name"):
-        return map_cfg["prompt_name"]
-    if get_agent_provider(config) == "local":
-        return "map_spec_to_code_local"
-    return "map_spec_to_code"
+    from core.pika_config import get_prompt_name
+    return get_prompt_name("map", provider=get_agent_provider(config))
 
 
 def _find_column(headers: list[str], candidates: list[str]) -> str | None:

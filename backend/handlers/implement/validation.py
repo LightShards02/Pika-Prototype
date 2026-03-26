@@ -530,13 +530,13 @@ def _validate_contract_field_consistency(
     resolutions: list[dict[str, Any]] | None = None,
     match_score_threshold: float = 0.80,
 ) -> dict[str, Any]:
-    """Validate that shared_contract field names match spec text for all consumed specs.
+    """Validate naming alignment between shared_contract fields and all consumed spec text.
 
-    Checks two mismatch directions using configurable normalized score threshold:
-    1. Consumer near-miss: spec words with high Damerau-Levenshtein match to
-       contract fields, but not exact same word.
-    2. Provider deviation: contract fields missing from defining spec exact words,
-       but with high-score matches to spec words.
+    For every consumed spec, detects:
+    1. Near-miss mismatch: spec words with high Damerau-Levenshtein match to
+       contract fields, but not an exact match — always blocking.
+    2. Ambiguous tie: two spec words score within tie margin of each other
+       against the same contract field — always blocking.
 
     High-match candidate selection uses global one-to-one pruning:
     - each source token can match at most one target token;
@@ -544,8 +544,9 @@ def _validate_contract_field_consistency(
     - exact source/target token matches are reserved and excluded from fuzzy
       candidate selection, preventing overshadow false positives.
 
-    Provider spec is identified as the spec in consumed_by_specs whose module_tag equals
-    the contract's owning_module.
+    Provider vs consumer distinction is not made here; all consumed specs are
+    checked uniformly. Field *coverage completeness* (are all fields referenced
+    by the provider?) is handled by step 11 (_validate_required_field_coverage).
 
     Resolution entries are ignored for mismatch computation. Users must edit
     specs and re-run; this validator always recomputes current mismatches from
@@ -655,21 +656,12 @@ def _validate_contract_field_consistency(
         if not contract_fields:
             continue
 
-        provider_spec_id: str | None = None
-        for sid in consumed:
-            spec_info = spec_by_id.get(sid)
-            if spec_info and spec_info.get("module_tag") == owning_module:
-                provider_spec_id = sid
-                break
-
         for spec_id in consumed:
             spec_info = spec_by_id.get(spec_id)
             if not spec_info:
                 continue
             text = spec_info.get("text", "")
             spec_words = {w.lower() for w in _extract_words(text)}
-
-            is_provider = spec_id == provider_spec_id
 
             exact_matches = spec_words & contract_fields
 
@@ -763,45 +755,6 @@ def _validate_contract_field_consistency(
                     f"{contract_id}.{field_name}"
                 )
 
-            # Provider check: evaluate missing contract fields by high-distance matches.
-            if is_provider and provider_spec_id:
-                missing_in_spec = sorted(contract_fields - spec_words)
-                provider_matches = _global_high_matches_one_to_one(
-                    set(missing_in_spec),
-                    spec_words,
-                    score_threshold=match_score_threshold,
-                    reserved_target_words=exact_matches,
-                )
-
-                if provider_matches:
-                    item_id = f"provider_deviation_{contract_id}_{provider_spec_id}"
-                    pairs_text = _format_high_match_pairs(provider_matches)
-                    matched_missing = sorted(
-                        {str(p.get("source_word", "")).strip() for p in provider_matches if str(p.get("source_word", "")).strip()}
-                    )
-                    items.append({
-                        "item_id": item_id,
-                        "title": f"Planner deviation: contract {contract_id} vs defining spec {provider_spec_id}",
-                        "question": (
-                            f"Contract {contract_id} has highly matched missing field pair(s) {pairs_text} "
-                            f"against defining spec {provider_spec_id} "
-                            f"(score_threshold={match_score_threshold:.3f}). "
-                            f"Matched missing contract fields: {matched_missing}. "
-                            "If this is a real deviation, edit the spec to align fields."
-                        ),
-                        "resolution_mode": "edit_spec",
-                        "options": [],
-                        "required": True,
-                        "blocking_reason": (
-                            f"Contract {contract_id} deviates from defining spec {provider_spec_id}."
-                        ),
-                    })
-                    reasons.append(
-                        f"Contract {contract_id} has highly matched missing fields "
-                        f"{matched_missing} vs provider spec {provider_spec_id} "
-                        f"(score_threshold={match_score_threshold:.3f})"
-                    )
-
     return {
         "status": ImplementStatus.PASSED if not items else ImplementStatus.FAILED,
         "manual_resolution_items": items,
@@ -873,8 +826,6 @@ def _validate_required_field_coverage(
     shared_contracts: list[dict[str, Any]],
     spec_rows: list[dict[str, Any]],
     headers: list[str],
-    *,
-    providerless_contract_allowlist: set[str] | None = None,
 ) -> dict[str, Any]:
     """Validate contract field coverage using provider-first, low-noise rules.
 
@@ -882,9 +833,7 @@ def _validate_required_field_coverage(
     1) Prefer provider specs (consumed specs in owning_module) as source-of-truth.
     2) If provider text explicitly declares canonical contract/DTO + field naming intent,
        treat provider coverage as satisfied even when every field token is not listed.
-    3) If no provider spec exists and the contract is not in providerless_contract_allowlist,
-       emit a manual_resolution_item (always — there is no skip/fail mode).
-       If the contract is in the allowlist, skip it silently.
+    3) If no provider spec exists, emit a manual_resolution_item (always manual_block).
     """
     spec_by_id = _spec_text_lookup(spec_rows, headers)
     reasons: list[str] = []
@@ -921,17 +870,13 @@ def _validate_required_field_coverage(
             if str(spec_by_id.get(spec_id, {}).get("module_tag", "")).strip() == owning_module
         ]
         if not provider_spec_ids:
-            if contract_id in (providerless_contract_allowlist or set()):
-                checks.append(f"{contract_id}:skipped_allowlisted")
-                continue
             manual_resolution_items.append({
                 "item_id": f"no_provider_spec_{contract_id}",
                 "title": f"No provider spec for contract {contract_id}",
                 "question": (
                     f"Contract {contract_id} (owning_module={owning_module!r}) has no provider spec "
-                    f"in consumed_by_specs {consumed_specs}. Either add a spec owned by "
-                    f"{owning_module!r} to consumed_by_specs, or add this contract_id to "
-                    "providerless_contract_allowlist."
+                    f"in consumed_by_specs {consumed_specs}. Add a spec owned by "
+                    f"{owning_module!r} to consumed_by_specs."
                 ),
                 "options": [],
                 "required": True,

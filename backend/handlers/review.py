@@ -88,12 +88,9 @@ def run_review(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
 
 
 def _get_prompt_name(config: dict[str, Any]) -> str:
-    """Return prompt name for review from config."""
-    commands = config.get("commands", {})
-    review_cfg = commands.get("review") if isinstance(commands, dict) else {}
-    if isinstance(review_cfg, dict):
-        return review_cfg.get("prompt_name", "design_reviewer")
-    return "design_reviewer"
+    """Return prompt name for review from pika.yaml."""
+    from core.pika_config import get_prompt_name
+    return get_prompt_name("review")
 
 
 def _translate_review(

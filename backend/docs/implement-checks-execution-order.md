@@ -59,21 +59,21 @@
    e. Retryable failures (a, c, d) share the planner retry counter with steps 5/6.
    f. Produces: `plan_validation.json`.
 
-10. `[v0.0.3][deterministic]` **Validate Contract Field Consistency & Alias Ambiguity** (`implement.contract_field_consistency_validation.enabled`): Run contract-field consistency and alias-ambiguity validation between spec text and shared contract fields.
-    a. Read shared contracts and related spec language together.
-    b. Verify field names align between both sources using fuzzy matching (Damerau-Levenshtein, threshold configurable). Emit `manual_resolution_items` for near-miss field name mismatches.
+10. `[v0.0.3][deterministic]` **Validate Contract Field Naming Alignment** (`implement.contract_field_consistency_validation.enabled`): Run naming-alignment and alias-ambiguity validation between all consumed spec text and shared contract fields. No provider/consumer distinction — every consumed spec is checked uniformly.
+    a. Read shared contracts and all consumed spec text together.
+    b. For each consumed spec, verify field names align using fuzzy matching (Damerau-Levenshtein, threshold configurable). Emit blocking `manual_resolution_items` for near-miss field name mismatches.
     c. Check structural metadata: duplicate field names and missing `nullable` booleans.
-    d. Detect near-equal candidate ties: when two spec words score within 0.03 of each other against the same contract field, emit `manual_resolution_items` for human clarification.
+    d. Detect near-equal candidate ties: when two spec words score within 0.03 of each other against the same contract field, emit blocking `manual_resolution_items` for human clarification.
     e. Produces: `contract_field_validation.json`.
 
-11. `[v0.0.3][deterministic]` **Check Required Contract Coverage** (`implement.required_field_coverage_validation.enabled`): Enforce explicit or alias-resolved field coverage for consumed contract fields.
-    a. For each shared contract, identify the provider spec (consumed spec whose `module_tag` matches `owning_module`).
-    b. If no provider spec exists and the contract is not in `providerless_contract_allowlist`, emit `manual_resolution_items`.
+11. `[v0.0.3][deterministic]` **Check Required Contract Coverage** (`implement.required_field_coverage_validation.enabled`): Enforce explicit or alias-resolved field coverage for consumed contract fields. Provider-only: only specs in the owning module are checked.
+    a. For each shared contract, identify all provider specs (consumed specs whose `module_tag` matches `owning_module`).
+    b. If no provider spec exists, emit `manual_resolution_items` (always manual_block).
     c. If provider text contains canonical contract/DTO declaration, treat coverage as satisfied.
     d. Otherwise check field-by-field coverage (exact, normalized, part matching). Emit `manual_resolution_items` for uncovered fields listing which fields are missing from which provider spec.
     e. Produces: `required_field_coverage_validation.json`.
 
-    > **Distinction from step 10:** Step 10 checks *naming consistency* (are field names aligned between contract and spec text?). Step 11 checks *coverage completeness* (does the provider spec reference every field it's supposed to define?).
+    > **Distinction from step 10:** Step 10 checks *naming alignment* (are field names consistent between contract and spec text?) across all consumed specs uniformly. Step 11 checks *coverage completeness* (does the provider spec reference every field it's supposed to define?) against provider specs only.
 
 12. `[v0.0.0][deterministic]` **Construct Batch Plan** (`implement.batch_plan_construction.enabled`): Build graph-aware batch plan from spec dependencies and budgets.
     a. Use dependency order to group specs into execution batches.

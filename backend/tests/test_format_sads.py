@@ -115,33 +115,15 @@ class BuildAgentViewCsvContentTests(unittest.TestCase):
 
 
 class GetDesignSpecAddIfMissingTests(unittest.TestCase):
-    """Tests for get_design_spec_add_if_missing. Config is single source of truth."""
+    """Tests for get_design_spec_add_if_missing. Reads from pika.yaml."""
 
-    def test_returns_list_from_config(self) -> None:
-        """Returns add_if_missing from config when present."""
-        config = {
-            "csv_contracts": {
-                "design_spec": {
-                    "add_if_missing": ["spec_id", "mapped_code_symbols", "map_status"]
-                }
-            }
-        }
-        result = get_design_spec_add_if_missing(config)
-        self.assertEqual(result, ["spec_id", "mapped_code_symbols", "map_status"])
-
-    def test_raises_when_add_if_missing_missing(self) -> None:
-        """Raises when csv_contracts.design_spec.add_if_missing is missing."""
-        config = {"csv_contracts": {"design_spec": {}}}
-        with self.assertRaises(ValueError) as ctx:
-            get_design_spec_add_if_missing(config)
-        self.assertIn("add_if_missing is required", str(ctx.exception))
-
-    def test_raises_when_add_if_missing_empty(self) -> None:
-        """Raises when add_if_missing is empty list."""
-        config = {"csv_contracts": {"design_spec": {"add_if_missing": []}}}
-        with self.assertRaises(ValueError) as ctx:
-            get_design_spec_add_if_missing(config)
-        self.assertIn("non-empty list", str(ctx.exception))
+    def test_returns_list_from_pika_config(self) -> None:
+        """Returns add_if_missing from pika.yaml csv_contracts."""
+        result = get_design_spec_add_if_missing()
+        self.assertIsInstance(result, list)
+        self.assertGreater(len(result), 0)
+        self.assertIn("spec_id", result)
+        self.assertIn("map_status", result)
 
 
 class LoadSadsTests(unittest.TestCase):
@@ -489,17 +471,6 @@ class NormalizeRawSadsTests(unittest.TestCase):
         )
         try:
             config = {
-                "csv_contracts": {
-                    "design_spec": {
-                        "add_if_missing": [
-                            "spec_id",
-                            "mapped_code_symbols",
-                            "map_status",
-                            "map_assumptions",
-                            "mapped_at",
-                        ]
-                    }
-                },
                 "id_generation": {"registry_path": "out/state/id_registry.json"},
             }
             content, log = normalize_raw_sads(csv_path, config, root, dry_run=True)
@@ -532,9 +503,6 @@ class NormalizeRawSadsTests(unittest.TestCase):
                         },
                     }
                 },
-                "csv_contracts": {
-                    "design_spec": {"add_if_missing": ["spec_id", "map_status"]}
-                },
                 "id_generation": {"registry_path": "out/state/id_registry.json"},
             }
             content, log = normalize_raw_sads(csv_path, config, root, dry_run=True)
@@ -564,9 +532,6 @@ class NormalizeRawSadsTests(unittest.TestCase):
                             "[SOFTWARE]": {"keywords": ["KGAS"], "case_sensitive": True},
                         },
                     }
-                },
-                "csv_contracts": {
-                    "design_spec": {"add_if_missing": ["spec_id", "map_status"]}
                 },
                 "id_generation": {"registry_path": "out/state/id_registry.json"},
             }
@@ -714,17 +679,6 @@ class NormalizeSadsFormatTests(unittest.TestCase):
         try:
             config = {
                 "commands": {"format": {}},
-                "csv_contracts": {
-                    "design_spec": {
-                        "add_if_missing": [
-                            "spec_id",
-                            "mapped_code_symbols",
-                            "map_status",
-                            "map_assumptions",
-                            "mapped_at",
-                        ]
-                    }
-                },
                 "id_generation": {"registry_path": str(root / "id_registry.json")},
             }
             content, log = normalize_raw_sads(csv_path, config, root, dry_run=False)

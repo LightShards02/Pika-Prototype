@@ -37,15 +37,6 @@ class PikaConfigTests(unittest.TestCase):
         self.assertIn("prompts_file", paths)
         self.assertIn("csv_contracts", paths)
 
-    def test_has_api_section(self) -> None:
-        """Config has api section with url and model."""
-        cfg = get_pika_config()
-        api = cfg.get("api", {})
-        self.assertIn("url", api)
-        self.assertIn("model", api)
-        self.assertIn("map", api)
-        self.assertIn("default", api)
-
     def test_has_local_section(self) -> None:
         """Config has local section."""
         cfg = get_pika_config()
