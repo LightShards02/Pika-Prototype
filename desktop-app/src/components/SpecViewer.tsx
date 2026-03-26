@@ -1,20 +1,66 @@
-import { useMemo } from 'react';
+import { useMemo, useState, useRef, useEffect } from 'react';
 import { Search, Filter, CheckCircle2 } from 'lucide-react';
 import { useStore } from '../store';
 import { clsx } from 'clsx';
 
 export const SpecViewer = () => {
-  const { specs, searchQuery, setSearchQuery, highlightedSpecIds } = useStore();
+  const {
+    specs, searchQuery, setSearchQuery, highlightedSpecIds,
+    activeModuleFilters, setActiveModuleFilters,
+    showHighlightedOnly, setShowHighlightedOnly,
+  } = useStore();
+
+  const [showFilters, setShowFilters] = useState(false);
+  const filterRef = useRef<HTMLDivElement>(null);
+
+  const hasActiveFilters = activeModuleFilters.length > 0 || showHighlightedOnly;
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    if (!showFilters) return;
+    const handleClick = (e: MouseEvent) => {
+      if (filterRef.current && !filterRef.current.contains(e.target as Node)) {
+        setShowFilters(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [showFilters]);
+
+  const uniqueModuleTags = useMemo(() => {
+    return [...new Set(specs.map(s => s.module_tag))].filter(Boolean).sort();
+  }, [specs]);
 
   const filteredSpecs = useMemo(() => {
-    if (!searchQuery) return specs;
-    const query = searchQuery.toLowerCase();
-    return specs.filter(s => 
-      s.spec_id.toLowerCase().includes(query) || 
-      s.requirement.toLowerCase().includes(query) ||
-      s.module_tag.toLowerCase().includes(query)
-    );
-  }, [specs, searchQuery]);
+    let result = specs;
+
+    if (activeModuleFilters.length > 0) {
+      result = result.filter(s => activeModuleFilters.includes(s.module_tag));
+    }
+
+    if (showHighlightedOnly && highlightedSpecIds.length > 0) {
+      result = result.filter(s => highlightedSpecIds.includes(s.spec_id));
+    }
+
+    if (searchQuery) {
+      const query = searchQuery.toLowerCase();
+      result = result.filter(s =>
+        s.spec_id.toLowerCase().includes(query) ||
+        s.requirement.toLowerCase().includes(query) ||
+        s.module_tag.toLowerCase().includes(query)
+      );
+    }
+
+    return result;
+  }, [specs, searchQuery, activeModuleFilters, showHighlightedOnly, highlightedSpecIds]);
+
+  const toggleModuleFilter = (tag: string) => {
+    if (activeModuleFilters.includes(tag)) {
+      setActiveModuleFilters(activeModuleFilters.filter(f => f !== tag));
+    } else {
+      setActiveModuleFilters([...activeModuleFilters, tag]);
+    }
+  };
 
   return (
     <div className="flex flex-col h-full bg-bg-panel border-r border-border-subtle overflow-hidden">
@@ -23,20 +69,80 @@ export const SpecViewer = () => {
           <div className="flex items-center gap-2">
             <h2 className="text-[13px] font-semibold text-indigo-dark uppercase tracking-wider">Design Spec</h2>
             <span className="px-1.5 py-0.5 bg-indigo-light text-indigo-mid text-[11px] font-bold rounded">
-              {specs.length} SPECS
+              {filteredSpecs.length}/{specs.length} SPECS
             </span>
           </div>
-          <div className="flex gap-2">
-            <button className="p-1.5 hover:bg-bg-elevated rounded transition-colors text-text-secondary cursor-pointer">
+          <div className="relative" ref={filterRef}>
+            <button
+              onClick={() => setShowFilters(!showFilters)}
+              className={clsx(
+                "p-1.5 hover:bg-bg-elevated rounded transition-colors cursor-pointer relative",
+                hasActiveFilters ? "text-accent-primary" : "text-text-secondary"
+              )}
+            >
               <Filter size={16} />
+              {hasActiveFilters && (
+                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-accent-primary rounded-full" />
+              )}
             </button>
+
+            {showFilters && (
+              <div className="absolute right-0 top-full mt-2 w-56 bg-white border border-border-medium rounded-lg shadow-lg z-30 p-3 space-y-3">
+                <div className="text-[11px] font-semibold text-text-tertiary uppercase tracking-wider">
+                  Filter by Module
+                </div>
+                <div className="max-h-40 overflow-y-auto space-y-1">
+                  {uniqueModuleTags.map(tag => (
+                    <label key={tag} className="flex items-center gap-2 px-2 py-1 rounded hover:bg-bg-elevated cursor-pointer">
+                      <input
+                        type="checkbox"
+                        className="w-3.5 h-3.5 rounded"
+                        checked={activeModuleFilters.includes(tag)}
+                        onChange={() => toggleModuleFilter(tag)}
+                      />
+                      <span className="text-[12px] text-text-primary">{tag}</span>
+                    </label>
+                  ))}
+                  {uniqueModuleTags.length === 0 && (
+                    <div className="text-[12px] text-text-tertiary px-2 py-1">No modules loaded</div>
+                  )}
+                </div>
+
+                {highlightedSpecIds.length > 0 && (
+                  <>
+                    <div className="h-px bg-border-subtle" />
+                    <label className="flex items-center gap-2 px-2 py-1 rounded hover:bg-bg-elevated cursor-pointer">
+                      <input
+                        type="checkbox"
+                        className="w-3.5 h-3.5 rounded"
+                        checked={showHighlightedOnly}
+                        onChange={(e) => setShowHighlightedOnly(e.target.checked)}
+                      />
+                      <span className="text-[12px] text-text-primary">Highlighted only</span>
+                    </label>
+                  </>
+                )}
+
+                {hasActiveFilters && (
+                  <button
+                    onClick={() => {
+                      setActiveModuleFilters([]);
+                      setShowHighlightedOnly(false);
+                    }}
+                    className="w-full text-[11px] text-accent-primary hover:text-accent-deep text-center py-1 cursor-pointer"
+                  >
+                    Clear all filters
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </div>
-        
+
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary" size={16} />
-          <input 
-            type="text" 
+          <input
+            type="text"
             placeholder="Search specs..."
             className="w-full pl-10 pr-4 py-2 bg-bg-panel border border-border-medium rounded-md text-[13px] focus:outline-none focus:ring-1 focus:ring-accent-primary focus:border-accent-primary transition-all"
             value={searchQuery}
@@ -58,7 +164,7 @@ export const SpecViewer = () => {
             {filteredSpecs.map((spec) => {
               const isHighlighted = highlightedSpecIds.includes(spec.spec_id);
               return (
-                <tr 
+                <tr
                   key={spec.spec_id}
                   className={clsx(
                     "group h-10 hover:bg-bg-elevated transition-colors cursor-pointer text-[13px]",

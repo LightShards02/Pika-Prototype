@@ -6,6 +6,8 @@ import { useStore } from '../store';
 import { TopBar } from './TopBar';
 import { SettingsForm } from './settings/SettingsForm';
 import { RawEditor } from './settings/RawEditor';
+import { loadSchema, validateConfig, formatValidationErrors } from '../services/configValidator';
+import type { ValidationError } from '../services/configValidator';
 
 function setNestedValue(obj: Record<string, unknown>, path: string, value: unknown): Record<string, unknown> {
   const keys = path.split('.');
@@ -31,6 +33,14 @@ export const SettingsPage = () => {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [loadError, setLoadError] = useState<string | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
+  const [validationErrors, setValidationErrors] = useState<ValidationError[]>([]);
+
+  // Load JSON schema on mount (best-effort)
+  useEffect(() => {
+    loadSchema().catch(() => {
+      // Schema loading is best-effort; validation skipped if unavailable
+    });
+  }, []);
 
   const loadConfig = useCallback(async () => {
     if (!configPath) {
@@ -46,6 +56,7 @@ export const SettingsPage = () => {
       setRawYaml(content);
       setIsDirty(false);
       setLoadError(null);
+      setValidationErrors([]);
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : String(err));
       setConfigData(null);
@@ -59,6 +70,25 @@ export const SettingsPage = () => {
 
   const handleSave = async () => {
     if (!configPath) return;
+
+    // Resolve data to validate
+    let dataToValidate = configData;
+    if (mode === 'raw') {
+      try {
+        dataToValidate = yaml.load(rawYaml) as Record<string, unknown>;
+      } catch {
+        setParseError('Invalid YAML — cannot validate or save');
+        return;
+      }
+    }
+
+    // Validate against JSON schema
+    if (dataToValidate) {
+      const errors = validateConfig(dataToValidate);
+      setValidationErrors(errors);
+      if (errors.length > 0) return;
+    }
+
     setSaveStatus('saving');
     try {
       let content: string;
@@ -99,12 +129,14 @@ export const SettingsPage = () => {
     if (!configData) return;
     setConfigData(setNestedValue(configData, path, value));
     setIsDirty(true);
+    setValidationErrors([]);
   };
 
   const handleRawChange = (value: string) => {
     setRawYaml(value);
     setIsDirty(true);
     setParseError(null);
+    setValidationErrors([]);
   };
 
   const handleBrowseConfig = async () => {
@@ -218,6 +250,22 @@ export const SettingsPage = () => {
         <div className="px-8 py-3 bg-[#FEE2E2] border-b border-error">
           <div className="max-w-4xl mx-auto text-[13px] text-[#991B1B]">
             <span className="font-semibold">YAML Parse Error:</span> {parseError}
+          </div>
+        </div>
+      )}
+
+      {/* Validation Error Banner */}
+      {validationErrors.length > 0 && (
+        <div className="px-8 py-3 bg-[#FEF3CD] border-b border-warning">
+          <div className="max-w-4xl mx-auto">
+            <div className="text-[13px] font-semibold text-[#856404] mb-1">
+              Validation Errors ({validationErrors.length})
+            </div>
+            <ul className="text-[12px] text-[#856404] space-y-0.5 max-h-32 overflow-y-auto">
+              {formatValidationErrors(validationErrors).map((msg, i) => (
+                <li key={i} className="font-mono">{msg}</li>
+              ))}
+            </ul>
           </div>
         </div>
       )}

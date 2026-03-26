@@ -1,4 +1,4 @@
-import { CheckCircle2, AlertTriangle, XCircle, Circle, Loader2 } from 'lucide-react';
+import { CheckCircle2, AlertTriangle, XCircle, Circle, Loader2, Clock } from 'lucide-react';
 import { useStore } from '../store';
 import { clsx } from 'clsx';
 import type { PhaseStatus } from '../types';
@@ -10,7 +10,8 @@ const StatusIcon = ({ status }: { status: PhaseStatus }) => {
     case 'blocked': return <AlertTriangle size={18} className="text-warning" />;
     case 'running': return <Loader2 size={18} className="text-accent-primary animate-spin" />;
     case 'waiting': return <Circle size={18} className="text-text-tertiary" />;
-    default: return <div className="w-[18px] h-[18px] border-2 border-border-medium rounded-full" />;
+    case 'pending': return <Clock size={18} className="text-border-medium" />;
+    default: return <Clock size={18} className="text-border-medium" />;
   }
 };
 

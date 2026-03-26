@@ -28,6 +28,10 @@ interface AppStore {
   setView: (view: 'main' | 'settings') => void;
   searchQuery: string;
   setSearchQuery: (query: string) => void;
+  activeModuleFilters: string[];
+  setActiveModuleFilters: (filters: string[]) => void;
+  showHighlightedOnly: boolean;
+  setShowHighlightedOnly: (v: boolean) => void;
 
   // User Inputs (from EntryScreen)
   projectRootPath: string | null;
@@ -98,6 +102,10 @@ export const useStore = create<AppStore>((set) => ({
   setView: (view) => set({ view }),
   searchQuery: '',
   setSearchQuery: (query) => set({ searchQuery: query }),
+  activeModuleFilters: [],
+  setActiveModuleFilters: (filters) => set({ activeModuleFilters: filters }),
+  showHighlightedOnly: false,
+  setShowHighlightedOnly: (v) => set({ showHighlightedOnly: v }),
 
   // User Inputs
   projectRootPath: null,
@@ -122,5 +130,7 @@ export const useStore = create<AppStore>((set) => ({
     activeItemIndex: 0,
     highlightedSpecIds: [],
     specs: [],
+    activeModuleFilters: [],
+    showHighlightedOnly: false,
   }),
 }));

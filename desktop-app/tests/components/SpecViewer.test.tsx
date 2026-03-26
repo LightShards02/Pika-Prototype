@@ -18,13 +18,13 @@ describe('SpecViewer', () => {
   it('shows spec count badge', () => {
     useStore.setState({ specs: mockSpecs });
     render(<SpecViewer />);
-    expect(screen.getByText('2 SPECS')).toBeInTheDocument();
+    expect(screen.getByText(/2\/2 SPECS/)).toBeInTheDocument();
   });
 
   it('renders empty table when no specs', () => {
     useStore.setState({ specs: [] });
     render(<SpecViewer />);
-    expect(screen.getByText('0 SPECS')).toBeInTheDocument();
+    expect(screen.getByText(/0\/0 SPECS/)).toBeInTheDocument();
     expect(screen.queryByText('SPEC-001')).not.toBeInTheDocument();
   });
 

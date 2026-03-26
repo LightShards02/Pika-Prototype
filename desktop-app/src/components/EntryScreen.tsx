@@ -81,8 +81,8 @@ export const EntryScreen = () => {
   return (
     <div className="flex flex-col h-screen bg-bg-primary select-none">
       <TopBar />
-      <div className="flex-1 flex flex-col items-center justify-center bg-bg-panel p-12 overflow-y-auto">
-        <div className="max-w-2xl w-full space-y-12">
+      <div className="flex-1 bg-bg-panel p-12 overflow-y-auto">
+        <div className="max-w-2xl w-full mx-auto my-auto space-y-12">
           <div className="text-center">
             <h1 className="text-[32px] font-bold text-text-primary mb-2">Design Improvement</h1>
             <p className="text-[16px] text-text-secondary">Refine and implement your design spec with AI precision</p>
