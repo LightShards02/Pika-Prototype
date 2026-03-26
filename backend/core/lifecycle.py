@@ -34,7 +34,6 @@ from core.resolution import generate_resolution_template
 from core.agent_invoker import (
     _parse_combined_prompt,
     render_prompt,
-    run_api_invoke,
 )
 from core.context import RuntimeContext
 from core.errors import AgentInvocationError, AgentSchemaError, SafetyPreconditionError
@@ -813,12 +812,12 @@ def get_schema_validation_retries(config: dict[str, Any]) -> int:
 
 
 def get_agent_provider(config: dict[str, Any]) -> str:
-    """Return agent provider from config: 'stub', 'api', or 'local'. Default 'stub'."""
+    """Return agent provider from config: 'stub' or 'local'. Default 'stub'."""
     agent = config.get("agent")
     if not isinstance(agent, dict):
         return "stub"
     val = agent.get("provider")
-    if val in ("stub", "api", "local"):
+    if val in ("stub", "local"):
         return val
     return "stub"
 
@@ -1007,34 +1006,6 @@ def get_local_model(config: dict[str, Any], prompt_name: str) -> str:
         if out:
             return out
     return "gpt-5-codex"
-
-
-def get_api_config(config: dict[str, Any]) -> dict[str, Any]:
-    """Return API config (api_key_env, url, model) from workspace + pika config."""
-    pika = get_pika_config()
-    api_defaults = pika.get("api", {})
-    agent = config.get("agent")
-    if not isinstance(agent, dict):
-        agent = {}
-
-    env_var = agent.get("api_key_env") or api_defaults.get("api_key_env", "NVIDIA_API_KEY")
-    if isinstance(env_var, str) and env_var.strip():
-        env_var = env_var.strip()
-    else:
-        env_var = "NVIDIA_API_KEY"
-
-    key = os.environ.get(env_var)
-    if not key or not str(key).strip():
-        raise AgentInvocationError(
-            f"API provider requires {env_var} environment variable to be set. "
-            "Get an API key from your provider (e.g. https://build.nvidia.com/explore/discover)"
-        )
-
-    url = agent.get("api_url") or api_defaults.get(
-        "url", "https://integrate.api.nvidia.com/v1/chat/completions"
-    )
-    model = agent.get("api_model") or api_defaults.get("model", "moonshotai/kimi-k2.5")
-    return {"api_key": str(key).strip(), "url": str(url), "model": str(model)}
 
 
 def _safe_workspace_token(value: str, fallback: str) -> str:
@@ -1408,95 +1379,6 @@ def invoke_agent_local(
             _cleanup_local_agent_temp_workspace(isolated_workspace)
 
 
-def invoke_agent_api(
-    prompt_name: str,
-    template_vars: dict[str, Any],
-    *,
-    schema_path: Path | None,
-    config: dict[str, Any],
-    ctx: RuntimeContext,
-    retry_instruction: str | None = None,
-) -> dict[str, Any]:
-    """Invoke agent via remote API. Renders prompt, calls chat completions API, returns parsed JSON."""
-    project_root = Path(ctx.project_root)
-    registry = load_prompt_registry(config)
-    spec = registry.get(prompt_name)
-
-    prompt_text = render_prompt(
-        spec.system_prompt,
-        spec.user_prompt,
-        template_vars,
-    )
-    if retry_instruction:
-        prompt_text = prompt_text + "\n\n" + retry_instruction
-
-    run_id = ctx.run_id or "run"
-    run_dir = resolve_agent_artifacts_dir_for_command(
-        config, project_root, ctx.command, run_id
-    )
-    output_path = run_dir / "api_output.json"
-
-    log_lifecycle_event(
-        "agent_invoke_api",
-        command=ctx.command,
-        run_id=ctx.run_id,
-        extra={
-            "prompt_name": prompt_name,
-            "output_path": str(output_path),
-            "provider": "api",
-        },
-    )
-
-    api_cfg = get_api_config(config)
-    stream_output = True
-    agent = config.get("agent")
-    if isinstance(agent, dict) and "stream_output" in agent:
-        stream_output = bool(agent.get("stream_output", True))
-
-    try:
-        sys.stderr.write("[PIKA] Agent running (API)...\n")
-        sys.stderr.flush()
-    except OSError:
-        pass
-
-    t0 = time.perf_counter()
-    result, token_usage = run_api_invoke(
-        prompt=prompt_text,
-        api_key=api_cfg["api_key"],
-        url=api_cfg["url"],
-        model=api_cfg["model"],
-        command=ctx.command,
-        stream=stream_output,
-        stream_output=stream_output,
-        output_path=output_path,
-    )
-    elapsed = time.perf_counter() - t0
-
-    log_lifecycle_event(
-        "agent_invoke_api_complete",
-        command=ctx.command,
-        run_id=ctx.run_id,
-        extra={
-            "prompt_name": prompt_name,
-            "output_path": str(output_path),
-        },
-    )
-    if token_usage:
-        log_lifecycle_event(
-            "agent_token_usage",
-            command=ctx.command,
-            run_id=ctx.run_id,
-            extra={
-                "prompt_name": prompt_name,
-                "input_tokens": token_usage.get("input_tokens", 0),
-                "cached_input_tokens": token_usage.get("cached_input_tokens", 0),
-                "output_tokens": token_usage.get("output_tokens", 0),
-            },
-        )
-    _emit_agent_conclusion(prompt_name, elapsed, token_usage)
-    return result
-
-
 def _write_codebase_content_before_invoke(
     template_vars: dict[str, Any],
     *,
@@ -1580,15 +1462,6 @@ def invoke_agent_with_schema_retry(
                 config=config,
                 ctx=ctx,
                 local_workspace_override=local_workspace_override,
-                retry_instruction=retry_instruction,
-            )
-        elif provider == "api":
-            output = invoke_agent_api(
-                prompt_name=prompt_name,
-                template_vars=template_vars,
-                schema_path=schema_path,
-                config=config,
-                ctx=ctx,
                 retry_instruction=retry_instruction,
             )
         else:

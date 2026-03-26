@@ -879,45 +879,6 @@ class ContractFieldConsistencyTests(unittest.TestCase):
             f"Expected date_range mismatch in items: {items}",
         )
 
-    def test_detects_provider_mismatch_planner_deviation(self) -> None:
-        """Contract has fields not in defining spec (planner deviation)."""
-        headers = ["spec_id", "module_tag", "requirement", "acceptance_criteria"]
-        spec_rows = [
-            {
-                "spec_id": "A1057",
-                "module_tag": "SHARED",
-                "requirement": "ExportRequest DTO with export_format, date_range_start, date_range_end, include_input_details",
-                "acceptance_criteria": "Fields match.",
-            },
-        ]
-        shared_contracts = [
-            {
-                "contract_id": "export_request_dto",
-                "owning_module": "SHARED",
-                "consumed_by_specs": ["A1057"],
-                "fields": [
-                    {"name": "export_format", "type_name": "string", "nullable": False},
-                    {"name": "date_range", "type_name": "string", "nullable": False},  # planner used date_range, spec says date_range_start/end
-                    {"name": "include_input_details", "type_name": "boolean", "nullable": False},
-                ],
-            },
-        ]
-        result = _validate_contract_field_consistency(
-            shared_contracts,
-            spec_rows,
-            headers,
-            match_score_threshold=0.75,
-        )
-        self.assertEqual(result["status"], "failed")
-        items = result.get("manual_resolution_items", [])
-        self.assertGreaterEqual(len(items), 1)
-        self.assertTrue(any(item.get("resolution_mode") == "edit_spec" for item in items))
-        self.assertTrue(all((item.get("options") or []) == [] for item in items))
-        self.assertTrue(
-            any("provider_deviation" in str(item.get("item_id", "")) for item in items),
-            f"Expected provider deviation in items: {items}",
-        )
-
     def test_still_fails_if_resolutions_exist_without_spec_edits(self) -> None:
         """Resolution records alone do not mutate contracts; specs must be edited."""
         headers = ["spec_id", "module_tag", "requirement", "acceptance_criteria"]

@@ -9,7 +9,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from core.agent_invoker import (
-    _api_params_for_command,
     _normalize_for_codex_response_format,
     _parse_codex_token_usage,
     _stream_reasoning_callback,
@@ -17,7 +16,6 @@ from core.agent_invoker import (
     check_codex_available,
     extract_json_from_text,
     render_prompt,
-    run_api_invoke,
     run_local_exec,
 )
 
@@ -166,29 +164,6 @@ class ParseCombinedPromptTests(unittest.TestCase):
         self.assertEqual(user, "Just some text")
 
 
-class ApiParamsForCommandTests(unittest.TestCase):
-    """Tests for _api_params_for_command."""
-
-    def test_map_uses_lower_temperature_and_top_p(self) -> None:
-        """Code mapping uses lower temp/top_p for deterministic output."""
-        params = _api_params_for_command("map")
-        self.assertEqual(params["temperature"], 0.1)
-        self.assertEqual(params["top_p"], 0.95)
-        self.assertEqual(params["max_tokens"], 32768)
-
-    def test_other_commands_use_defaults(self) -> None:
-        """Non-map commands use default params."""
-        params = _api_params_for_command("implement")
-        self.assertEqual(params["temperature"], 0.7)
-        self.assertEqual(params["top_p"], 1.0)
-        self.assertEqual(params["max_tokens"], 16384)
-
-    def test_none_command_uses_defaults(self) -> None:
-        """None command uses default params."""
-        params = _api_params_for_command(None)
-        self.assertEqual(params["temperature"], 0.7)
-
-
 class CodexSchemaNormalizationTests(unittest.TestCase):
     """Tests for Codex response-format schema normalization."""
 
@@ -220,64 +195,6 @@ class CodexSchemaNormalizationTests(unittest.TestCase):
         source = {"type": "object"}
         normalized = _normalize_for_codex_response_format(source)
         self.assertEqual(normalized["additionalProperties"], False)
-
-
-class RunApiInvokeTests(unittest.TestCase):
-    """Tests for run_api_invoke (mocked)."""
-
-    def test_parses_json_from_response(self) -> None:
-        """Extracts and parses JSON from API response content."""
-        mock_response = MagicMock()
-        mock_response.ok = True
-        mock_response.json.return_value = {
-            "choices": [
-                {"message": {"content": '{"handshake": "ok"}'}}
-            ]
-        }
-
-        with patch("core.agent_invoker.requests") as mock_requests:
-            mock_requests.post.return_value = mock_response
-            result, usage = run_api_invoke(
-                "[System]\nHi\n\n[User]\nHello",
-                api_key="test-key",
-            )
-            self.assertEqual(result, {"handshake": "ok"})
-            self.assertIsNone(usage)
-
-    def test_returns_usage_when_present(self) -> None:
-        """Returns usage dict when API response includes usage."""
-        mock_response = MagicMock()
-        mock_response.ok = True
-        mock_response.json.return_value = {
-            "choices": [
-                {"message": {"content": '{"handshake": "ok"}'}}
-            ],
-            "usage": {"prompt_tokens": 100, "completion_tokens": 50},
-        }
-
-        with patch("core.agent_invoker.requests") as mock_requests:
-            mock_requests.post.return_value = mock_response
-            result, usage = run_api_invoke(
-                "[System]\nHi\n\n[User]\nHello",
-                api_key="test-key",
-            )
-            self.assertEqual(result, {"handshake": "ok"})
-            self.assertIsNotNone(usage)
-            self.assertEqual(usage["input_tokens"], 100)
-            self.assertEqual(usage["output_tokens"], 50)
-
-    def test_raises_on_api_error(self) -> None:
-        """Raises when API returns non-OK status."""
-        mock_response = MagicMock()
-        mock_response.ok = False
-        mock_response.status_code = 401
-        mock_response.text = "Unauthorized"
-
-        with patch("core.agent_invoker.requests") as mock_requests:
-            mock_requests.post.return_value = mock_response
-            with self.assertRaises(RuntimeError) as ctx:
-                run_api_invoke("prompt", api_key="x")
-            self.assertIn("401", str(ctx.exception))
 
 
 class RunLocalExecSubprocessDecodeTests(unittest.TestCase):

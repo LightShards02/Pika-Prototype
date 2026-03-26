@@ -25,7 +25,6 @@ from core.format_sads import (
     load_sads_csv_or_xlsx,
     rows_to_csv,
 )
-from core.codebase_snapshot import build_codebase_snapshot
 from core.lifecycle import (
     get_agent_provider,
     get_run_logger,
@@ -740,13 +739,7 @@ def build_template_vars(
         else ""
     )
 
-    # Build codebase snapshot only for API-style providers.
-    # Local provider explores the codebase directly via file tools (uses map_spec_to_code_local
-    # prompt which has no codebase_content placeholder). Stub provider never needs content.
-    provider = get_agent_provider(config)
     codebase_content = ""
-    if provider not in ("stub", "local"):
-        codebase_content = build_codebase_snapshot(codebase_dir_path, config, command="map")
 
     commands = config.get("commands") or {}
     map_cfg_raw = commands.get("map") if isinstance(commands, dict) else {}

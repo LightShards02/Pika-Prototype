@@ -24,9 +24,9 @@ project:
     sads_id_mapping_path: out/state/sads_id_mapping.json
 
 agent:
-  provider: stub  # stub | api | local
+  provider: stub  # stub | local
   schema_validation_retries: 3
-  stream_output: true  # Stream output + heartbeat when agent runs (api, local).
+  stream_output: true  # Stream output + heartbeat when agent runs (local).
   # When provider is local (Loca):
   # local_exec_timeout_sec: 1200  # Optional workspace override for long-running Loca calls
   # local_model: gpt-5-codex  # Or object: { default: "gpt-5-codex", implement_from_specs: "gpt-4-codex" }
@@ -42,10 +42,6 @@ agent:
   # local_temperature: null  # 0.0-2.0, null for provider default. Ignored when reasoning_effort is set.
   # local_top_p: null  # 0.0-1.0, null for provider default. Ignored when reasoning_effort is set.
   # local_command is deprecated (unused by Loca); see config.schema.json.
-  # When provider is api (remote HTTP chat completions):
-  # api_key_env: NVIDIA_API_KEY
-  # api_url: https://integrate.api.nvidia.com/v1/chat/completions
-  # api_model: moonshotai/kimi-k2.5
 
 commands:
   plan:

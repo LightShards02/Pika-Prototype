@@ -1501,27 +1501,6 @@ class CodebaseContentProviderTests(unittest.TestCase):
         if self.root.exists():
             shutil.rmtree(self.root, ignore_errors=True)
 
-    def test_codebase_content_populated_when_provider_api(self) -> None:
-        """When provider is api, codebase_content is non-empty (AST snapshot)."""
-        config = _map_test_config(self.root)
-        config["agent"] = {"provider": "api"}
-        ctx = RuntimeContext(
-            command="map",
-            dry_run=False,
-            verbose=False,
-            command_only_validation=False,
-            run_id="run-api",
-            project_root=str(self.root),
-            config_path=str(self.root / "config.yaml"),
-        )
-        inputs = {"agent_view_content": "spec_id,title\nA1,Foo\n"}
-        vars_ = build_template_vars(config, self.root, ctx, inputs)
-        self.assertIn("codebase_content", vars_)
-        content = vars_["codebase_content"]
-        self.assertNotEqual(content, "")
-        self.assertIn("# Codebase Snapshot", content)
-        self.assertIn("main.py", content)
-
     def test_codebase_content_empty_when_provider_local(self) -> None:
         """When provider is local, codebase_content is empty (model explores files directly)."""
         config = _map_test_config(self.root)

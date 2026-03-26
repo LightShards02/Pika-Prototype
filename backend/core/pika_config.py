@@ -59,12 +59,10 @@ def _validate_required_config(cfg: dict[str, Any]) -> None:
     _require(isinstance(cfg.get("paths"), dict), "paths", missing)
     _require(isinstance(cfg.get("schema_map"), dict), "schema_map", missing)
     _require(isinstance(cfg.get("config_candidates"), list), "config_candidates", missing)
-    _require(isinstance(cfg.get("api"), dict), "api", missing)
     _require(isinstance(cfg.get("local"), dict), "local", missing)
     _require(isinstance(cfg.get("default_outputs"), dict), "default_outputs", missing)
     _require(isinstance(cfg.get("default_workspace"), dict), "default_workspace", missing)
     _require(isinstance(cfg.get("implement"), dict), "implement", missing)
-    _require(isinstance(cfg.get("codebase_transmission"), dict), "codebase_transmission", missing)
     _require(isinstance(cfg.get("stub"), dict), "stub", missing)
 
     if isinstance(cfg.get("paths"), dict):
@@ -89,21 +87,6 @@ def _validate_required_config(cfg: dict[str, Any]) -> None:
             "handshake_output",
         ):
             _require_non_empty_string(schema_map.get(key), f"schema_map.{key}", missing)
-
-    if isinstance(cfg.get("api"), dict):
-        api = cfg["api"]
-        _require_non_empty_string(api.get("url"), "api.url", missing)
-        _require_non_empty_string(api.get("model"), "api.model", missing)
-        _require_non_empty_string(api.get("api_key_env"), "api.api_key_env", missing)
-        _require(isinstance(api.get("request_timeout_sec"), (int, float)), "api.request_timeout_sec", missing)
-        _require(isinstance(api.get("map"), dict), "api.map", missing)
-        _require(isinstance(api.get("default"), dict), "api.default", missing)
-        if isinstance(api.get("map"), dict):
-            for key in ("max_tokens", "temperature", "top_p"):
-                _require(key in api["map"], f"api.map.{key}", missing)
-        if isinstance(api.get("default"), dict):
-            for key in ("max_tokens", "temperature", "top_p"):
-                _require(key in api["default"], f"api.default.{key}", missing)
 
     if isinstance(cfg.get("local"), dict):
         local = cfg["local"]
@@ -218,18 +201,6 @@ def _validate_required_config(cfg: dict[str, Any]) -> None:
     if isinstance(cfg.get("stub"), dict):
         _require_non_empty_string(cfg["stub"].get("plan_proposed_sads"), "stub.plan_proposed_sads", missing)
 
-    if isinstance(cfg.get("codebase_transmission"), dict):
-        codebase = cfg["codebase_transmission"]
-        for key in (
-            "max_summary_chars",
-            "max_raw_files",
-            "max_raw_chars_per_file",
-            "depth_limit",
-        ):
-            _require(isinstance(codebase.get(key), int), f"codebase_transmission.{key}", missing)
-        _require(isinstance(codebase.get("include_extensions"), list), "codebase_transmission.include_extensions", missing)
-        _require(isinstance(codebase.get("exclude_patterns"), list), "codebase_transmission.exclude_patterns", missing)
-
     if missing:
         raise ValueError(
             "PIKA config is missing required fields: " + ", ".join(sorted(set(missing)))
@@ -265,7 +236,7 @@ def get_prompt_name(command: str, sub_key: str | None = None, *, provider: str =
         sub_key: Optional sub-key for commands with multiple prompts
                  (e.g. ``"implementer"``, ``"unified_planner"``, ``"map"``,
                  ``"ambiguity_detector"``).
-        provider: Agent provider string (``"stub"``, ``"api"``, ``"local"``).
+        provider: Agent provider string (``"stub"`` or ``"local"``).
 
     Returns:
         Prompt name string.

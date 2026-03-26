@@ -42,8 +42,8 @@
       "properties": {
         "provider": {
           "type": "string",
-          "enum": ["stub", "api", "local"],
-          "description": "Agent provider: stub (mock), api (remote HTTP chat completions), or local (Loca in-process LLM agent; not the codex CLI)."
+          "enum": ["stub", "local"],
+          "description": "Agent provider: stub (mock) or local (Loca in-process LLM agent)."
         },
         "schema_validation_retries": {
           "type": "integer",
@@ -52,7 +52,7 @@
         },
         "stream_output": {
           "type": "boolean",
-          "description": "If true, stream agent output to terminal and show heartbeat when agent runs (api, local)."
+          "description": "If true, stream agent output to terminal and show heartbeat when agent runs (local)."
         },
         "local_command": {
           "type": "string",
@@ -75,21 +75,6 @@
             }
           ],
           "description": "Model ID for Loca when provider is local (e.g. gpt-5-codex). String = same for all prompts. Object = per-prompt overrides. Overrides pika local.model."
-        },
-        "api_key_env": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Environment variable name for API Bearer token when provider is api. Default from pika config."
-        },
-        "api_url": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Chat completions API URL when provider is api. Default from pika config."
-        },
-        "api_model": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Model ID when provider is api. Default from pika config."
         },
         "reasoning_effort": {
           "type": "object",
@@ -662,19 +647,6 @@
         "verbose_level": { "type": "string", "enum": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] },
         "json": { "type": "boolean" },
         "log_dir": { "type": "string", "minLength": 1 }
-      }
-    },
-    "codebase_transmission": {
-      "type": "object",
-      "additionalProperties": false,
-      "description": "Controls how source files are included in prompts for API-based agents. Ignored when provider is local.",
-      "properties": {
-        "max_summary_chars": { "type": "integer", "minimum": 1000, "description": "Cap on total snapshot (AST + raw files combined). Default 200000." },
-        "max_raw_files": { "type": "integer", "minimum": 1, "description": "For implement/resolve_plan: how many raw files to include. Default 10." },
-        "max_raw_chars_per_file": { "type": "integer", "minimum": 100, "description": "Truncate raw files longer than this. Default 5000." },
-        "include_extensions": { "type": "array", "items": { "type": "string" }, "description": "File extensions to include." },
-        "exclude_patterns": { "type": "array", "items": { "type": "string" }, "description": "Glob patterns to exclude." },
-        "depth_limit": { "type": "integer", "minimum": 1, "description": "Max directory depth from codebase root. Default 15." }
       }
     }
   },

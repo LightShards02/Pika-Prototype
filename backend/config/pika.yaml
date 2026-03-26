@@ -49,27 +49,8 @@ config_candidates:
   - config/config.yaml
   - config/config.example.yaml
 
-# Agent provider categories: api (remote HTTP), local (CLI subprocess), stub (mock).
-# Workspace config agent.provider selects one: api | local | stub.
-
-# --- api: Remote chat completions API (e.g. Kimi via NVIDIA, OpenAI, etc.) ---
-# Required: api_key_env (env var for Bearer token), url, model.
-# Optional: request_timeout_sec, per-command params (map, default).
-api:
-  url: https://integrate.api.nvidia.com/v1/chat/completions
-  model: moonshotai/kimi-k2.5
-  api_key_env: NVIDIA_API_KEY
-  request_timeout_sec: 600
-  # Params for code mapping (map command) - lower temp for deterministic output
-  map:
-    max_tokens: 32768
-    temperature: 0.1
-    top_p: 0.95
-  # Params for other commands
-  default:
-    max_tokens: 16384
-    temperature: 0.7
-    top_p: 1.0
+# Agent provider categories: local (Loca in-process), stub (mock).
+# Workspace config agent.provider selects one: local | stub.
 
 # --- local: Local CLI subprocess (e.g. Codex exec) ---
 # Required: command (executable name or path), model.
@@ -178,29 +159,3 @@ csv_contracts:
       - issue_notes
       - follow_up_uncertainties
       - last_resolved_at
-codebase_transmission:
-  max_summary_chars: 200000
-  max_raw_files: 10
-  max_raw_chars_per_file: 5000
-  include_extensions:
-    - .py
-    - .ts
-    - .tsx
-    - .js
-    - .jsx
-    - .java
-    - .go
-    - .rs
-    - .c
-    - .cpp
-    - .h
-    - .hpp
-  exclude_patterns:
-    - "**/__pycache__/**"
-    - "**/.git/**"
-    - "**/node_modules/**"
-    - "**/venv/**"
-    - "**/dist/**"
-    - "**/build/**"
-    - "**/*.min.js"
-  depth_limit: 15

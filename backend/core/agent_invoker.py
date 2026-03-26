@@ -1,7 +1,7 @@
-"""Agent invocation via api (remote HTTP), local (Loca in-process), or stub.
+"""Agent invocation via local (Loca in-process) or stub.
 
 Helper functions for invoking agents, rendering prompts, and checking availability.
-Provider categories: api (chat completions API), local (Loca library), stub (mock).
+Provider categories: local (Loca library), stub (mock).
 """
 
 from __future__ import annotations
@@ -15,8 +15,6 @@ import time
 import warnings
 from pathlib import Path
 from typing import Any
-
-import requests  # type: ignore
 
 from core.pika_config import get_pika_config
 
@@ -246,176 +244,6 @@ def _parse_combined_prompt(combined: str) -> tuple[str, str]:
         user_part = combined[idx + len("[User]"):].strip()
         return (system_part, user_part)
     return ("", combined)
-
-
-def _get_api_config() -> dict[str, Any]:
-    """Return api section from pika config."""
-    return get_pika_config().get("api", {})
-
-
-def _extract_api_usage(usage_obj: Any) -> dict[str, int] | None:
-    """Extract input_tokens and output_tokens from API usage object.
-
-    Handles prompt_tokens/completion_tokens (OpenAI) and input_tokens/output_tokens.
-    """
-    if not isinstance(usage_obj, dict):
-        return None
-    inp = usage_obj.get("input_tokens") or usage_obj.get("prompt_tokens")
-    out = usage_obj.get("output_tokens") or usage_obj.get("completion_tokens")
-    if inp is not None and out is not None:
-        return {
-            "input_tokens": int(inp),
-            "output_tokens": int(out),
-        }
-    return None
-
-
-def _api_params_for_command(command: str | None) -> dict[str, Any]:
-    """Return generation params tuned for the given command.
-
-    Code mapping (map) benefits from lower temperature and top_p for
-    consistent, deterministic structured output. Other commands use defaults.
-    """
-    api_cfg = _get_api_config()
-    if command == "map":
-        m = api_cfg.get("map", {})
-        return {
-            "max_tokens": m.get("max_tokens", 32768),
-            "temperature": m.get("temperature", 0.1),
-            "top_p": m.get("top_p", 0.95),
-        }
-    d = api_cfg.get("default", {})
-    return {
-        "max_tokens": d.get("max_tokens", 16384),
-        "temperature": d.get("temperature", 0.7),
-        "top_p": d.get("top_p", 1.0),
-    }
-
-
-def run_api_invoke(
-    prompt: str,
-    *,
-    api_key: str,
-    url: str | None = None,
-    model: str | None = None,
-    command: str | None = None,
-    max_tokens: int | None = None,
-    temperature: float | None = None,
-    top_p: float | None = None,
-    stream: bool = False,
-    stream_output: bool = False,
-    output_path: Path | None = None,
-) -> tuple[dict[str, Any], dict[str, int] | None]:
-    """Invoke Kimi K2.5 via NVIDIA API and return parsed JSON output.
-
-    Sends system and user prompts as chat messages. Uses chat_template_kwargs
-    with thinking=True for extended reasoning when supported by the model.
-
-    When command is "map" (code mapping), uses lower temperature and top_p
-    for consistent, deterministic structured output. Override via explicit args.
-
-    Args:
-        prompt: Combined prompt (output of render_prompt with [System] and [User]).
-        api_key: API Bearer token.
-        url: Chat completions API URL.
-        model: Model ID (e.g. moonshotai/kimi-k2.5).
-        command: PIKA command name (e.g. map, implement). Tunes params for code mapping when "map".
-        max_tokens: Override max tokens. Default varies by command.
-        temperature: Override temperature. Default: 0.1 for map, 0.7 otherwise.
-        top_p: Override top_p. Default: 0.95 for map, 1.0 otherwise.
-        stream: If True, request streaming from API (collects full response).
-        stream_output: If True, print streamed chunks to stderr.
-        output_path: Optional path to write raw response for debugging.
-
-    Returns:
-        Tuple of (parsed JSON object, usage dict or None). Usage has input_tokens and
-        output_tokens when present in the API response (prompt_tokens/completion_tokens).
-
-    Raises:
-        RuntimeError: If API call fails.
-        ValueError: If response cannot be parsed as JSON.
-    """
-    api_cfg = _get_api_config()
-    url = url or api_cfg.get("url", "https://integrate.api.nvidia.com/v1/chat/completions")
-    model = model or api_cfg.get("model", "moonshotai/kimi-k2.5")
-
-    cmd_params = _api_params_for_command(command)
-    max_tokens = max_tokens if max_tokens is not None else cmd_params["max_tokens"]
-    temperature = temperature if temperature is not None else cmd_params["temperature"]
-    top_p = top_p if top_p is not None else cmd_params["top_p"]
-
-    system_part, user_part = _parse_combined_prompt(prompt)
-    messages: list[dict[str, str]] = []
-    if system_part:
-        messages.append({"role": "system", "content": system_part})
-    messages.append({"role": "user", "content": user_part})
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Accept": "text/event-stream" if stream else "application/json",
-        "Content-Type": "application/json",
-    }
-    payload: dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        "top_p": top_p,
-        "stream": stream,
-        "chat_template_kwargs": {"thinking": True},
-    }
-
-    timeout = api_cfg.get("request_timeout_sec", 600)
-    response = requests.post(url, headers=headers, json=payload, timeout=timeout)
-
-    if not response.ok:
-        raise RuntimeError(
-            f"API request failed ({response.status_code}): {response.text[:500]}"
-        )
-
-    usage: dict[str, int] | None = None
-    if stream:
-        content_parts: list[str] = []
-        for line in response.iter_lines():
-            if line:
-                decoded = line.decode("utf-8")
-                if stream_output:
-                    try:
-                        sys.stderr.write(decoded + "\n")
-                        sys.stderr.flush()
-                    except OSError:
-                        pass
-                if decoded.startswith("data: "):
-                    data_str = decoded[6:].strip()
-                    if data_str == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(data_str)
-                        choices = chunk.get("choices", [])
-                        if choices:
-                            delta = choices[0].get("delta", {})
-                            part = delta.get("content") or delta.get("text", "")
-                            if part:
-                                content_parts.append(part)
-                        usage = _extract_api_usage(chunk.get("usage")) or usage
-                    except json.JSONDecodeError:
-                        pass
-        raw_content = "".join(content_parts)
-    else:
-        data = response.json()
-        choices = data.get("choices", [])
-        if not choices:
-            raise ValueError("API returned no choices")
-        msg = choices[0].get("message", {})
-        raw_content = msg.get("content") or msg.get("text", "") or ""
-        usage = _extract_api_usage(data.get("usage"))
-
-    if output_path:
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(raw_content, encoding="utf-8")
-
-    return extract_json_from_text(raw_content), usage
 
 
 def _stream_output(

@@ -17,7 +17,6 @@ from core.lifecycle import (
     _backfill_missing_required_output_fields,
     _filter_output_to_schema_properties,
     get_agent_provider,
-    get_api_config,
     get_local_command,
     get_local_exec_timeout_sec,
     get_local_model,
@@ -304,9 +303,10 @@ class AgentProviderTests(unittest.TestCase):
             get_agent_provider({"agent": {"provider": "local"}}),
             "local",
         )
+        # "api" is no longer a valid provider; falls back to stub
         self.assertEqual(
             get_agent_provider({"agent": {"provider": "api"}}),
-            "api",
+            "stub",
         )
 
     def test_get_agent_provider_invalid_fallback(self) -> None:
@@ -529,56 +529,6 @@ class GetLocalModelTests(unittest.TestCase):
         with patch("core.lifecycle.get_pika_config") as m:
             m.return_value = {"local": {"model": "gpt-5-codex"}}
             self.assertEqual(get_local_model(config, "implement_from_specs"), "gpt-5-codex")
-
-
-class ApiConfigTests(unittest.TestCase):
-    """Tests for get_api_config helpers."""
-
-    def test_get_api_config_returns_url_and_model(self) -> None:
-        """When API key is set, returns url and model from pika defaults."""
-        import os
-
-        os.environ["NVIDIA_API_KEY"] = "test-key"
-        try:
-            cfg = get_api_config({"agent": {}})
-            self.assertIn("nvidia.com", cfg["url"])
-            self.assertIn("kimi", cfg["model"])
-            self.assertEqual(cfg["api_key"], "test-key")
-        finally:
-            os.environ.pop("NVIDIA_API_KEY", None)
-
-    def test_get_api_config_uses_workspace_overrides(self) -> None:
-        """Uses api_url and api_model from workspace config when set."""
-        import os
-
-        os.environ["CUSTOM_KIMI_KEY"] = "secret123"
-        try:
-            cfg = get_api_config({
-                "agent": {
-                    "api_key_env": "CUSTOM_KIMI_KEY",
-                    "api_url": "https://custom.example.com/v1",
-                    "api_model": "custom/model",
-                }
-            })
-            self.assertEqual(cfg["api_key"], "secret123")
-            self.assertEqual(cfg["url"], "https://custom.example.com/v1")
-            self.assertEqual(cfg["model"], "custom/model")
-        finally:
-            os.environ.pop("CUSTOM_KIMI_KEY", None)
-
-    def test_get_api_config_raises_when_key_missing(self) -> None:
-        """Raises when api_key_env is not set."""
-        import os
-
-        orig = os.environ.pop("NVIDIA_API_KEY", None)
-        try:
-            from core.errors import AgentInvocationError
-            with self.assertRaises(AgentInvocationError) as ctx:
-                get_api_config({"agent": {"provider": "api"}})
-            self.assertIn("NVIDIA_API_KEY", str(ctx.exception))
-        finally:
-            if orig is not None:
-                os.environ["NVIDIA_API_KEY"] = orig
 
 
 class InvokeAgentStubTests(unittest.TestCase):
