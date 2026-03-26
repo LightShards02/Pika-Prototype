@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { useStore, initialPhases } from '../../src/store';
-import { mockSpecs, buildGateItems } from '../fixtures/testData';
+import { mockSpecs, buildGateItems, mockTextAppendix, mockTableAppendix } from '../fixtures/testData';
 
 describe('Zustand store', () => {
   it('has correct initial state', () => {
@@ -109,6 +109,91 @@ describe('Zustand store', () => {
     it('sets highlighted spec IDs', () => {
       useStore.getState().setHighlightedSpecIds(['SPEC-001', 'SPEC-002']);
       expect(useStore.getState().highlightedSpecIds).toEqual(['SPEC-001', 'SPEC-002']);
+    });
+  });
+
+  describe('appendixes', () => {
+    it('has empty appendixes initially', () => {
+      const state = useStore.getState();
+      expect(state.appendixes).toEqual([]);
+      expect(state.availableModuleTags).toEqual([]);
+      expect(state.activeLeftTab).toBe('spec');
+    });
+
+    it('addAppendix appends to the list', () => {
+      useStore.getState().addAppendix(mockTextAppendix);
+      expect(useStore.getState().appendixes).toHaveLength(1);
+      expect(useStore.getState().appendixes[0].id).toBe('appx-text-001');
+
+      useStore.getState().addAppendix(mockTableAppendix);
+      expect(useStore.getState().appendixes).toHaveLength(2);
+    });
+
+    it('removeAppendix removes by id', () => {
+      useStore.getState().addAppendix(mockTextAppendix);
+      useStore.getState().addAppendix(mockTableAppendix);
+      useStore.getState().removeAppendix('appx-text-001');
+
+      const appxs = useStore.getState().appendixes;
+      expect(appxs).toHaveLength(1);
+      expect(appxs[0].id).toBe('appx-table-001');
+    });
+
+    it('removeAppendix resets activeLeftTab if removed tab was active', () => {
+      useStore.getState().addAppendix(mockTextAppendix);
+      useStore.getState().setActiveLeftTab('appx-text-001');
+      expect(useStore.getState().activeLeftTab).toBe('appx-text-001');
+
+      useStore.getState().removeAppendix('appx-text-001');
+      expect(useStore.getState().activeLeftTab).toBe('spec');
+    });
+
+    it('removeAppendix preserves activeLeftTab if a different tab was active', () => {
+      useStore.getState().addAppendix(mockTextAppendix);
+      useStore.getState().addAppendix(mockTableAppendix);
+      useStore.getState().setActiveLeftTab('appx-table-001');
+
+      useStore.getState().removeAppendix('appx-text-001');
+      expect(useStore.getState().activeLeftTab).toBe('appx-table-001');
+    });
+
+    it('updateAppendixModuleTag updates the correct appendix', () => {
+      useStore.getState().addAppendix(mockTextAppendix);
+      useStore.getState().addAppendix(mockTableAppendix);
+      useStore.getState().updateAppendixModuleTag('appx-text-001', 'EXPORT');
+
+      const appxs = useStore.getState().appendixes;
+      expect(appxs.find((a) => a.id === 'appx-text-001')?.moduleTag).toBe('EXPORT');
+      expect(appxs.find((a) => a.id === 'appx-table-001')?.moduleTag).toBe('EXPORT'); // unchanged
+    });
+
+    it('clearAppendixes clears all and resets tab', () => {
+      useStore.getState().addAppendix(mockTextAppendix);
+      useStore.getState().addAppendix(mockTableAppendix);
+      useStore.getState().setActiveLeftTab('appx-text-001');
+
+      useStore.getState().clearAppendixes();
+      expect(useStore.getState().appendixes).toEqual([]);
+      expect(useStore.getState().activeLeftTab).toBe('spec');
+    });
+
+    it('setAvailableModuleTags stores tags', () => {
+      useStore.getState().setAvailableModuleTags(['AUTH', 'EXPORT', 'CORE']);
+      expect(useStore.getState().availableModuleTags).toEqual(['AUTH', 'EXPORT', 'CORE']);
+    });
+
+    it('setActiveLeftTab switches active tab', () => {
+      useStore.getState().setActiveLeftTab('appx-text-001');
+      expect(useStore.getState().activeLeftTab).toBe('appx-text-001');
+    });
+
+    it('resetForNewRun resets activeLeftTab but preserves appendixes', () => {
+      useStore.getState().addAppendix(mockTextAppendix);
+      useStore.getState().setActiveLeftTab('appx-text-001');
+
+      useStore.getState().resetForNewRun();
+      expect(useStore.getState().activeLeftTab).toBe('spec');
+      expect(useStore.getState().appendixes).toHaveLength(1); // preserved
     });
   });
 });

@@ -17,6 +17,9 @@ export function resetStore() {
       refineEnabled: true,
       implementEnabled: true,
       decompositionEnabled: true,
+      appendixes: [],
+      availableModuleTags: [],
+      activeLeftTab: 'spec',
     },
   );
 }

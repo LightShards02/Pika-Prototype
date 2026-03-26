@@ -7,6 +7,19 @@ export interface Spec {
   status?: string;
 }
 
+export type AppendixType = 'text' | 'table';
+
+export interface Appendix {
+  id: string;
+  fileName: string;
+  filePath: string;
+  type: AppendixType;
+  moduleTag: string;
+  content: string;
+  parsedRows?: Record<string, string>[];
+  columns?: string[];
+}
+
 export type PhaseStatus = 'pending' | 'running' | 'done' | 'failed' | 'blocked' | 'waiting';
 
 export interface Phase {

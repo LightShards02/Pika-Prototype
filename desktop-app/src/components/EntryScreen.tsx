@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import { Play, FileCode, FolderOpen, Settings2 } from 'lucide-react';
+import { Play, FileCode, FolderOpen, Settings2, Paperclip, Plus, X, FileText, Table2 } from 'lucide-react';
 import Papa from 'papaparse';
 import { useStore } from '../store';
 import { TopBar } from './TopBar';
-import type { Spec } from '../types';
+import type { Spec, Appendix } from '../types';
 
 export const EntryScreen = () => {
   const {
@@ -13,6 +13,8 @@ export const EntryScreen = () => {
     refineEnabled, setRefineEnabled,
     implementEnabled, setImplementEnabled,
     decompositionEnabled, setDecompositionEnabled,
+    appendixes, addAppendix, removeAppendix, updateAppendixModuleTag, clearAppendixes,
+    availableModuleTags, setAvailableModuleTags,
   } = useStore();
 
   const [error, setError] = useState<string | null>(null);
@@ -26,7 +28,66 @@ export const EntryScreen = () => {
     const path = await window.electronAPI.openFileDialog({
       filters: [{ name: 'CSV Files', extensions: ['csv'] }, { name: 'All Files', extensions: ['*'] }],
     });
-    if (path) setDesignSpecPath(path);
+    if (!path) return;
+    setDesignSpecPath(path);
+    clearAppendixes();
+
+    try {
+      const csvContent = await window.electronAPI.readFile(path);
+      const parsed = Papa.parse<Record<string, string>>(csvContent, {
+        header: true,
+        skipEmptyLines: true,
+      });
+      const tags = [...new Set(
+        parsed.data
+          .map((row) => row['module_tag'] ?? row['Module_Tag'] ?? '')
+          .filter(Boolean)
+      )].sort();
+      setAvailableModuleTags(tags);
+    } catch {
+      setAvailableModuleTags([]);
+    }
+  };
+
+  const handleAddAppendix = async () => {
+    const path = await window.electronAPI.openFileDialog({
+      // Single default filter so OS dialog shows .csv alongside text types (first filter is the default on Windows).
+      filters: [
+        { name: 'Text and CSV', extensions: ['txt', 'md', 'rst', 'log', 'csv'] },
+        { name: 'All Files', extensions: ['*'] },
+      ],
+    });
+    if (!path) return;
+
+    try {
+      const content = await window.electronAPI.readFile(path);
+      const parts = path.replace(/\\/g, '/').split('/');
+      const fileName = parts[parts.length - 1] || path;
+      const ext = fileName.split('.').pop()?.toLowerCase() ?? '';
+      const type = ext === 'csv' ? 'table' as const : 'text' as const;
+
+      const appendix: Appendix = {
+        id: crypto.randomUUID(),
+        fileName,
+        filePath: path,
+        type,
+        moduleTag: availableModuleTags[0] ?? '',
+        content,
+      };
+
+      if (type === 'table') {
+        const parsed = Papa.parse<Record<string, string>>(content, {
+          header: true,
+          skipEmptyLines: true,
+        });
+        appendix.columns = parsed.meta.fields ?? [];
+        appendix.parsedRows = parsed.data;
+      }
+
+      addAppendix(appendix);
+    } catch (err) {
+      setError(`Failed to load appendix: ${err instanceof Error ? err.message : String(err)}`);
+    }
   };
 
   const handleStart = async () => {
@@ -144,6 +205,67 @@ export const EntryScreen = () => {
                 {designSpecPath && (
                   <div className="text-[12px] text-text-tertiary font-mono truncate" title={designSpecPath}>
                     {designSpecPath}
+                  </div>
+                )}
+              </section>
+
+              <section className={`space-y-4 transition-opacity ${designSpecPath ? '' : 'opacity-40 pointer-events-none'}`}>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-[13px] font-semibold text-text-tertiary uppercase tracking-wider">
+                    <Paperclip size={16} />
+                    Appendixes
+                  </div>
+                  <button
+                    onClick={handleAddAppendix}
+                    className="flex items-center gap-1 px-3 py-1.5 text-[12px] font-medium text-accent-primary border border-accent-primary rounded-lg hover:bg-indigo-light transition-colors cursor-pointer"
+                  >
+                    <Plus size={14} />
+                    Add
+                  </button>
+                </div>
+
+                {appendixes.length === 0 ? (
+                  <div className="px-4 py-6 bg-bg-panel border border-border-subtle rounded-lg text-center text-[13px] text-text-tertiary">
+                    Import reference files (plain text or CSV) to attach as appendixes
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {appendixes.map((a) => (
+                      <div
+                        key={a.id}
+                        className="flex items-center gap-3 px-4 py-3 bg-bg-panel border border-border-subtle rounded-lg"
+                      >
+                        {a.type === 'table' ? (
+                          <Table2 size={16} className="text-text-tertiary shrink-0" />
+                        ) : (
+                          <FileText size={16} className="text-text-tertiary shrink-0" />
+                        )}
+                        <span className="text-[13px] text-text-primary font-mono truncate flex-1" title={a.filePath}>
+                          {a.fileName}
+                        </span>
+                        <span className="px-2 py-0.5 text-[10px] font-bold uppercase bg-bg-elevated text-text-secondary rounded shrink-0">
+                          {a.type}
+                        </span>
+                        <select
+                          value={a.moduleTag}
+                          onChange={(e) => updateAppendixModuleTag(a.id, e.target.value)}
+                          className="px-2 py-1 text-[12px] bg-white border border-border-medium rounded-md focus:outline-none focus:ring-1 focus:ring-accent-primary"
+                        >
+                          {availableModuleTags.length === 0 && (
+                            <option value="">No tags</option>
+                          )}
+                          {availableModuleTags.map((tag) => (
+                            <option key={tag} value={tag}>{tag}</option>
+                          ))}
+                        </select>
+                        <button
+                          onClick={() => removeAppendix(a.id)}
+                          className="p-1 text-text-tertiary hover:text-error rounded transition-colors cursor-pointer"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    ))}
                   </div>
                 )}
               </section>

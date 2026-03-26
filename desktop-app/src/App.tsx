@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { TopBar } from './components/TopBar';
-import { SpecViewer } from './components/SpecViewer';
+import { LeftPanel } from './components/LeftPanel';
 import { PipelineView } from './components/PipelineView';
 import { GatePanel } from './components/GatePanel';
 import { EntryScreen } from './components/EntryScreen';
@@ -129,9 +129,9 @@ function App() {
       <TopBar />
 
       <main className="flex flex-1 overflow-hidden">
-        {/* Left Panel: Spec Viewer */}
+        {/* Left Panel: Spec Viewer + Appendix Navigation */}
         <div className="w-[45%] flex-shrink-0">
-          <SpecViewer />
+          <LeftPanel />
         </div>
 
         {/* Right Panel: Pipeline or Gate */}

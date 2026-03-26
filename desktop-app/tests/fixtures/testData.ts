@@ -1,4 +1,4 @@
-import type { Spec, RawAmbiguityItem, RawTestabilityItem, ResolutionItem } from '../../src/types';
+import type { Spec, RawAmbiguityItem, RawTestabilityItem, ResolutionItem, Appendix } from '../../src/types';
 
 export const mockSpecs: Spec[] = [
   {
@@ -97,3 +97,29 @@ export function buildGateItems(): ResolutionItem[] {
     },
   ];
 }
+
+export const mockTextAppendix: Appendix = {
+  id: 'appx-text-001',
+  fileName: 'notes.txt',
+  filePath: '/test/notes.txt',
+  type: 'text',
+  moduleTag: 'AUTH',
+  content: 'Line one of notes\nLine two of notes\nLine three of notes',
+};
+
+export const mockTableAppendix: Appendix = {
+  id: 'appx-table-001',
+  fileName: 'data.csv',
+  filePath: '/test/data.csv',
+  type: 'table',
+  moduleTag: 'EXPORT',
+  content: 'name,value,status\nAlpha,100,active\nBeta,200,inactive\nGamma,300,active',
+  columns: ['name', 'value', 'status'],
+  parsedRows: [
+    { name: 'Alpha', value: '100', status: 'active' },
+    { name: 'Beta', value: '200', status: 'inactive' },
+    { name: 'Gamma', value: '300', status: 'active' },
+  ],
+};
+
+export const mockAppendixCsvContent = 'name,value,status\nAlpha,100,active\nBeta,200,inactive\nGamma,300,active';

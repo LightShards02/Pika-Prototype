@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Phase, RunState, Spec, ResolutionItem } from './types';
+import type { Phase, RunState, Spec, ResolutionItem, Appendix } from './types';
 
 interface AppStore {
   // Run State
@@ -40,6 +40,19 @@ interface AppStore {
   setDesignSpecPath: (path: string | null) => void;
   configPath: string | null;
   setConfigPath: (path: string | null) => void;
+
+  // Appendixes
+  appendixes: Appendix[];
+  addAppendix: (appendix: Appendix) => void;
+  removeAppendix: (id: string) => void;
+  updateAppendixModuleTag: (id: string, moduleTag: string) => void;
+  clearAppendixes: () => void;
+  availableModuleTags: string[];
+  setAvailableModuleTags: (tags: string[]) => void;
+
+  // Left panel navigation
+  activeLeftTab: string;
+  setActiveLeftTab: (tabId: string) => void;
 
   // Options
   refineEnabled: boolean;
@@ -115,6 +128,24 @@ export const useStore = create<AppStore>((set) => ({
   configPath: null,
   setConfigPath: (path) => set({ configPath: path }),
 
+  // Appendixes
+  appendixes: [],
+  addAppendix: (appendix) => set((state) => ({ appendixes: [...state.appendixes, appendix] })),
+  removeAppendix: (id) => set((state) => ({
+    appendixes: state.appendixes.filter((a) => a.id !== id),
+    activeLeftTab: state.activeLeftTab === id ? 'spec' : state.activeLeftTab,
+  })),
+  updateAppendixModuleTag: (id, moduleTag) => set((state) => ({
+    appendixes: state.appendixes.map((a) => a.id === id ? { ...a, moduleTag } : a),
+  })),
+  clearAppendixes: () => set({ appendixes: [], activeLeftTab: 'spec' }),
+  availableModuleTags: [],
+  setAvailableModuleTags: (tags) => set({ availableModuleTags: tags }),
+
+  // Left panel navigation
+  activeLeftTab: 'spec',
+  setActiveLeftTab: (tabId) => set({ activeLeftTab: tabId }),
+
   // Options
   refineEnabled: true,
   setRefineEnabled: (v) => set({ refineEnabled: v }),
@@ -132,5 +163,6 @@ export const useStore = create<AppStore>((set) => ({
     specs: [],
     activeModuleFilters: [],
     showHighlightedOnly: false,
+    activeLeftTab: 'spec',
   }),
 }));
