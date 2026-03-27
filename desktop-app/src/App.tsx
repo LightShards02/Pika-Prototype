@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { TopBar } from './components/TopBar';
 import { LeftPanel } from './components/LeftPanel';
 import { PipelineView } from './components/PipelineView';
@@ -116,6 +116,43 @@ function App() {
     };
   }, [run.status, projectRootPath]);
 
+  // --- Resizable split panel ---
+  const [leftWidthPercent, setLeftWidthPercent] = useState(45);
+  const isDragging = useRef(false);
+  const containerRef = useRef<HTMLElement | null>(null);
+
+  const onMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isDragging.current = true;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  }, []);
+
+  useEffect(() => {
+    const onMouseMove = (e: MouseEvent) => {
+      if (!isDragging.current || !containerRef.current) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const pct = (x / rect.width) * 100;
+      // Clamp between 20% and 80%
+      setLeftWidthPercent(Math.min(80, Math.max(20, pct)));
+    };
+
+    const onMouseUp = () => {
+      if (!isDragging.current) return;
+      isDragging.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+  }, []);
+
   if (view === 'settings') {
     return <SettingsPage />;
   }
@@ -128,11 +165,17 @@ function App() {
     <div className="flex flex-col h-screen bg-bg-primary select-none">
       <TopBar />
 
-      <main className="flex flex-1 overflow-hidden">
+      <main ref={containerRef} className="flex flex-1 overflow-hidden">
         {/* Left Panel: Spec Viewer + Appendix Navigation */}
-        <div className="w-[45%] flex-shrink-0">
+        <div className="flex-shrink-0 overflow-hidden" style={{ width: `${leftWidthPercent}%` }}>
           <LeftPanel />
         </div>
+
+        {/* Drag handle */}
+        <div
+          onMouseDown={onMouseDown}
+          className="w-1 flex-shrink-0 bg-border-primary hover:bg-accent-primary active:bg-accent-primary cursor-col-resize transition-colors duration-150"
+        />
 
         {/* Right Panel: Pipeline or Gate */}
         <div className="flex-1 overflow-hidden relative">

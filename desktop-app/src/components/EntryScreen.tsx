@@ -310,7 +310,8 @@ export const EntryScreen = () => {
             <div className="p-8 bg-bg-panel border-t border-border-subtle flex justify-end">
               <button
                 onClick={handleStart}
-                className="group flex items-center gap-3 px-8 py-4 bg-accent-primary text-white rounded-lg text-[15px] font-bold hover:bg-accent-deep transition-all shadow-lg hover:shadow-xl cursor-pointer"
+                disabled={!projectRootPath || !designSpecPath}
+                className={`group flex items-center gap-3 px-8 py-4 rounded-lg text-[15px] font-bold transition-all ${projectRootPath && designSpecPath ? 'bg-accent-primary text-white hover:bg-accent-deep shadow-lg hover:shadow-xl cursor-pointer' : 'bg-bg-elevated text-text-tertiary cursor-not-allowed'}`}
               >
                 Start Design Improvement
                 <Play size={20} className="fill-current group-hover:translate-x-1 transition-transform" />
