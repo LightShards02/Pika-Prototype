@@ -1144,7 +1144,6 @@ class ImplementExecutionLocalWorkspaceTests(unittest.TestCase):
                         "title": "Need clarification",
                         "question": "Which branch?",
                         "options": [{"option_id": "opt1", "label": "main", "effect": "Use main"}],
-                        "required": True,
                         "blocking_reason": "Ambiguous branch",
                     }
                 ]
@@ -1230,7 +1229,6 @@ class ImplementExecutionLocalWorkspaceTests(unittest.TestCase):
                         "title": "Need clarification",
                         "question": "Which branch?",
                         "options": [{"option_id": "opt1", "label": "main", "effect": "Use main"}],
-                        "required": True,
                         "blocking_reason": "Ambiguous branch",
                     }
                 ]

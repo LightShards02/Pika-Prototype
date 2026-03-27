@@ -11,6 +11,14 @@ from concurrent.futures import wait as futures_wait
 from pathlib import Path
 from typing import Any
 
+from core.appendix_loader import (
+    AppendixEntry,
+    appendix_content_hash,
+    appendix_entries_to_lookup,
+    assign_appendix_ids,
+    format_appendix_for_agent,
+    load_appendix_files,
+)
 from core.constants import ImplementStatus
 from core.errors import (
     AgentInvocationError,
@@ -203,6 +211,7 @@ def _execute_briefs_concurrently(
     codebase_dir: Path,
     shared_local_workspace: Path | None,
     provider: str,
+    appendix_content: str = "",
 ) -> dict[str, Any]:
     """Execute briefs with DAG-aware parallel dispatch (up to max_parallel concurrent LLM calls).
 
@@ -293,6 +302,7 @@ def _execute_briefs_concurrently(
                     completed_stages=base_stages,
                     local_workspace_override=batch_ws,
                     patch_apply_lock=patch_lock,
+                    appendix_content=appendix_content,
                 )
                 in_flight[future] = bid
 
@@ -515,6 +525,35 @@ def _run_implement_inner(config: dict[str, Any], ctx: RuntimeContext) -> dict[st
     module_tags = ", ".join(m["module_tag"] for m in module_catalog["modules"])
     _report_implement_phase("Catalog", "ok", f"{len(module_catalog['modules'])} modules ({module_tags})")
 
+    # --- Load appendices ---
+    appendix_entries = load_appendix_files(config, root, command="implement")
+    registry_path = Path(
+        config.get("id_generation", {}).get("registry_path", "out/state/id_registry.json")
+    )
+    if appendix_entries:
+        appendix_entries = assign_appendix_ids(appendix_entries, registry_path, root)
+    appendix_lookup = appendix_entries_to_lookup(appendix_entries)
+    appendix_text = format_appendix_for_agent(
+        appendix_entries, max_chars=impl.get("max_appendix_chars", 0),
+    )
+    # Store hash for resume compatibility
+    apx_hash = appendix_content_hash(appendix_entries) if appendix_entries else ""
+    if apx_hash:
+        run_meta_payload["appendix_content_hash"] = apx_hash
+        if resume_mode != "none":
+            old_apx_hash = existing_run_meta.get("appendix_content_hash", "")
+            if old_apx_hash and old_apx_hash != apx_hash:
+                _report_implement_phase(
+                    "Appendix", "warning",
+                    "Appendix content changed since original run. Cached output may be stale.",
+                )
+        _write_json(run_meta_path, run_meta_payload)
+    if appendix_entries:
+        _report_implement_phase(
+            "Appendix", "ok",
+            f"{len(appendix_entries)} entries loaded ({len(appendix_lookup)} with IDs)",
+        )
+
     schemas = _resolve_prompt_schemas(config, impl)
     context_text = _project_context(config, root, ctx)
     provider = get_agent_provider(config)
@@ -597,6 +636,7 @@ def _run_implement_inner(config: dict[str, Any], ctx: RuntimeContext) -> dict[st
                 indent=2,
             ),
             "semantic_retry_context": "",
+            "appendix_content": appendix_text,
         }
         template_vars["resolved_decisions"] = ctx.resolved_decisions or ""
         if shared_local_workspace is not None:
@@ -782,7 +822,6 @@ def _run_implement_inner(config: dict[str, Any], ctx: RuntimeContext) -> dict[st
                     "Break the cycle by removing or reversing a dependency."
                 ),
                 "options": [],
-                "required": True,
                 "blocking_reason": "Cyclic spec dependencies cannot be batched",
             }]
             _manual_block(
@@ -844,6 +883,7 @@ def _run_implement_inner(config: dict[str, Any], ctx: RuntimeContext) -> dict[st
         contract_validation = _validate_contract_field_consistency(
             shared_contracts, selected, headers,
             resolutions=resolution_items if resolution_items else None,
+            appendix_lookup=appendix_lookup if appendix_lookup else None,
             match_score_threshold=float(
                 _step_value(
                     impl,
@@ -906,6 +946,7 @@ def _run_implement_inner(config: dict[str, Any], ctx: RuntimeContext) -> dict[st
             shared_contracts,
             selected,
             headers,
+            appendix_lookup=appendix_lookup if appendix_lookup else None,
         )
         _write_json(
             paths["run"] / "required_field_coverage_validation.json",
@@ -1047,6 +1088,7 @@ def _run_implement_inner(config: dict[str, Any], ctx: RuntimeContext) -> dict[st
             shared_contracts,
             batch_plan,
             impl,
+            appendix_entries=appendix_entries if appendix_entries else None,
         )
     else:
         _report_implement_phase(
@@ -1211,6 +1253,7 @@ def _run_implement_inner(config: dict[str, Any], ctx: RuntimeContext) -> dict[st
             codebase_dir=codebase_dir,
             shared_local_workspace=shared_local_workspace,
             provider=provider,
+            appendix_content=appendix_text,
         )
         if "status" in parallel_result:
             failure_status = parallel_result["status"]
@@ -1310,6 +1353,7 @@ def _run_implement_inner(config: dict[str, Any], ctx: RuntimeContext) -> dict[st
                     brief,
                     completed_stages=completed_stages,
                     local_workspace_override=shared_local_workspace,
+                    appendix_content=appendix_text,
                 )
             except Exception as exc:
                 _update_run_meta_state(

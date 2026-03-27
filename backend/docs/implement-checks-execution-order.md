@@ -66,12 +66,13 @@
     d. Detect near-equal candidate ties: when two spec words score within 0.03 of each other against the same contract field, emit blocking `manual_resolution_items` for human clarification.
     e. Produces: `contract_field_validation.json`.
 
-11. `[v0.0.3][deterministic]` **Check Required Contract Coverage** (`implement.required_field_coverage_validation.enabled`): Enforce explicit or alias-resolved field coverage for consumed contract fields. Provider-only: only specs in the owning module are checked.
-    a. For each shared contract, identify all provider specs (consumed specs whose `module_tag` matches `owning_module`).
-    b. If no provider spec exists, emit `manual_resolution_items` (always manual_block).
-    c. If provider text contains canonical contract/DTO declaration, treat coverage as satisfied.
-    d. Otherwise check field-by-field coverage (exact, normalized, part matching). Emit `manual_resolution_items` for uncovered fields listing which fields are missing from which provider spec.
-    e. Produces: `required_field_coverage_validation.json`.
+11. `[v0.0.3][deterministic]` **Check Required Contract Coverage** (`implement.required_field_coverage_validation.enabled`): Enforce explicit or alias-resolved field coverage for consumed contract fields. Provider-only: only specs listed in `provider_spec_ids` are checked.
+    a. For each shared contract, read `provider_spec_ids` — the explicit list of spec IDs (including APX-prefixed appendix IDs) that define/own this contract.
+    b. If a provider is an APX ID, verify it exists in loaded appendices; if valid, trust it as an authoritative provider (skip field-by-field check).
+    c. If no provider spec exists, emit `manual_resolution_items` (always manual_block).
+    d. If provider text contains canonical contract/DTO declaration, treat coverage as satisfied.
+    e. Otherwise check field-by-field coverage (exact, normalized, part matching). Emit `manual_resolution_items` for uncovered fields listing which fields are missing from which provider spec.
+    f. Produces: `required_field_coverage_validation.json`.
 
     > **Distinction from step 10:** Step 10 checks *naming alignment* (are field names consistent between contract and spec text?) across all consumed specs uniformly. Step 11 checks *coverage completeness* (does the provider spec reference every field it's supposed to define?) against provider specs only.
 

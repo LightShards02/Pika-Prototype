@@ -1,46 +1,43 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ImplementUnifiedPlannerOutput",
-  "description": "Unified planner output for implement planning: per-module file plans, cross-module spec dependencies, and shared contract declarations in a single pass.",
+  "description": "Unified planner output for implement planning: per-module file plans, cross-module spec dependencies, and shared contract declarations in a single pass. Uses response_kind discriminator instead of oneOf branching.",
   "type": "object",
-  "oneOf": [
-    {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["manual_resolution_items"],
-      "properties": {
-        "manual_resolution_items": {
-          "type": "array",
-          "minItems": 1,
-          "items": { "$ref": "#/$defs/manual_resolution_item" }
-        }
-      }
-    },
-    {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["module_plans", "spec_dependencies", "shared_contracts"],
-      "properties": {
-        "module_plans": {
-          "type": "array",
-          "minItems": 1,
-          "items": { "$ref": "#/$defs/module_plan" }
-        },
-        "spec_dependencies": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/spec_dependency" }
-        },
-        "shared_contracts": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/shared_contract" }
-        },
-        "spec_issues": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/spec_issue" }
-        }
-      }
-    }
+  "additionalProperties": false,
+  "required": [
+    "response_kind",
+    "manual_resolution_items",
+    "module_plans",
+    "spec_dependencies",
+    "shared_contracts"
   ],
+  "properties": {
+    "response_kind": {
+      "type": "string",
+      "enum": ["manual_block", "plan"],
+      "description": "Discriminator: 'manual_block' when blocking issues require human resolution, 'plan' when a full implementation plan is produced."
+    },
+    "manual_resolution_items": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/manual_resolution_item" }
+    },
+    "module_plans": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/module_plan" }
+    },
+    "spec_dependencies": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/spec_dependency" }
+    },
+    "shared_contracts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/shared_contract" }
+    },
+    "spec_issues": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/spec_issue" }
+    }
+  },
   "$defs": {
     "module_plan": {
       "type": "object",
@@ -115,14 +112,18 @@
     "shared_contract": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["contract_id", "owning_module", "planned_file_path", "consumed_by_specs"],
+      "required": ["contract_id", "provider_spec_ids", "planned_file_path", "consumed_by_specs"],
       "properties": {
         "contract_id": { "type": "string", "minLength": 1 },
-        "owning_module": { "type": "string", "minLength": 1 },
+        "provider_spec_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "pattern": "^[A-Za-z]+[0-9]+$" }
+        },
         "planned_file_path": { "type": "string", "minLength": 1 },
         "consumed_by_specs": {
           "type": "array",
-          "items": { "type": "string", "pattern": "^[A-Za-z][0-9]+$" }
+          "items": { "type": "string", "pattern": "^[A-Za-z]+[0-9]+$" }
         },
         "description": { "type": "string" },
         "fields": {
@@ -174,14 +175,13 @@
     "manual_resolution_item": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["item_id", "title", "question", "options", "required", "blocking_reason"],
+      "required": ["item_id", "title", "question", "options", "blocking_reason"],
       "properties": {
         "item_id": { "type": "string", "minLength": 1 },
         "title": { "type": "string", "minLength": 1 },
         "question": { "type": "string", "minLength": 1 },
         "options": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/manual_option" } },
         "recommended_option_id": { "type": "string" },
-        "required": { "type": "boolean", "const": true },
         "blocking_reason": { "type": "string", "minLength": 1 },
         "evidence_refs": { "type": "array", "items": { "type": "string" } }
       }

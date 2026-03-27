@@ -34,12 +34,12 @@ class SpecDependency(TypedDict, total=False):
 class SharedContract(TypedDict, total=False):
     """Shared contract (DTO/interface/type) declaration from unified planner.
 
-    Describes a canonical type owned by one module and consumed by specs
-    across multiple modules.
+    Describes a canonical type provided by explicit spec IDs and consumed
+    by specs across multiple modules.
     """
 
     contract_id: str
-    owning_module: str
+    provider_spec_ids: list[str]
     planned_file_path: str
     consumed_by_specs: list[str]
     description: str

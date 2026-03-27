@@ -65,6 +65,15 @@ def _get_refine_cfg(config: dict[str, Any]) -> dict[str, Any]:
         decomp_cfg.get("variance_threshold"), _DEFAULT_VARIANCE_THRESHOLD
     )
 
+    appendix_cfg = refine.get("appendix") or {}
+    if not isinstance(appendix_cfg, dict):
+        appendix_cfg = {}
+    max_appendix_chars_raw = appendix_cfg.get("max_appendix_chars", 0)
+    try:
+        max_appendix_chars = max(0, int(max_appendix_chars_raw))
+    except (TypeError, ValueError):
+        max_appendix_chars = 0
+
     return {
         "enabled": enabled,
         "ambiguity_detector_prompt_name": ambiguity_prompt,
@@ -74,4 +83,5 @@ def _get_refine_cfg(config: dict[str, Any]) -> dict[str, Any]:
         "decomposition_blocking": decomp_blocking,
         "similarity_threshold": similarity_threshold,
         "variance_threshold": variance_threshold,
+        "max_appendix_chars": max_appendix_chars,
     }

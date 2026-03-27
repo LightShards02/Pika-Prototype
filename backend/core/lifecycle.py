@@ -701,6 +701,36 @@ def resolve_agent_input_codebase_content_dir(
     return (project_root / default).resolve()
 
 
+def _filter_to_oneof_branch(
+    output: dict[str, Any], schema: dict[str, Any]
+) -> dict[str, Any]:
+    """Pick the best-matching ``oneOf`` branch and strip keys from other branches.
+
+    Scores each branch by counting required fields that have non-empty values
+    in *output*.  The branch with the highest score wins; the output is then
+    filtered to only that branch's declared properties.
+    """
+    branches = schema.get("oneOf", [])
+    best_branch: dict[str, Any] | None = None
+    best_score = -1
+    for branch in branches:
+        if not isinstance(branch, dict):
+            continue
+        required = branch.get("required", [])
+        score = 0
+        for field in required:
+            val = output.get(field)
+            if val is not None and val != [] and val != "":
+                score += 1
+        if score > best_score:
+            best_score = score
+            best_branch = branch
+    if best_branch is None:
+        return output
+    allowed = set(best_branch.get("properties", {}).keys())
+    return {k: v for k, v in output.items() if k in allowed}
+
+
 def _filter_output_to_schema_properties(
     output: dict[str, Any], schema: dict[str, Any]
 ) -> dict[str, Any]:
@@ -708,11 +738,16 @@ def _filter_output_to_schema_properties(
 
     Strips extra fields (e.g. Kimi's top-level summary) that violate
     additionalProperties: false. Preserves all schema-defined keys.
+
+    For ``oneOf`` schemas (success/failure branching), identifies the best-
+    matching branch by counting how many required fields have non-empty values
+    and filters the output to that branch's properties.
     """
     root_props = schema.get("properties", {})
     pattern_props = schema.get("patternProperties", {})
     if not root_props and not pattern_props:
-        # Schemas using oneOf/anyOf at root may not define root properties.
+        if "oneOf" in schema:
+            return _filter_to_oneof_branch(output, schema)
         return output
     compiled_patterns = [
         re.compile(pattern)
@@ -767,6 +802,53 @@ def _backfill_missing_required_output_fields(
                 else format_timestamp_local_minutes()
             )
     return result
+
+
+def _flatten_oneof_for_api(schema: dict[str, Any]) -> dict[str, Any]:
+    """Flatten top-level ``oneOf`` into a single object for API structured output.
+
+    The structured output API rejects schemas with ``oneOf``/``anyOf`` at the
+    root.  Our agent schemas use ``oneOf`` to express success vs. failure
+    branches.  This function merges all branch properties into a single object
+    with all properties required (API mandate), ``$defs`` preserved, and
+    ``minItems`` stripped from top-level arrays (since a property belonging to
+    one branch may legitimately be empty when the other branch is active).
+
+    The original schema is not mutated.
+    If the schema has no top-level ``oneOf``, it is returned unchanged.
+    """
+    if "oneOf" not in schema:
+        return schema
+
+    merged_properties: dict[str, Any] = {}
+    for branch in schema["oneOf"]:
+        if isinstance(branch, dict):
+            for prop_name, prop_schema in branch.get("properties", {}).items():
+                merged_properties[prop_name] = prop_schema
+
+    # Strip minItems from top-level array properties — the branching semantics
+    # that justified minItems are lost in the flattened form.
+    relaxed_properties: dict[str, Any] = {}
+    for prop_name, prop_schema in merged_properties.items():
+        if isinstance(prop_schema, dict) and prop_schema.get("type") == "array" and "minItems" in prop_schema:
+            relaxed = {k: v for k, v in prop_schema.items() if k != "minItems"}
+            relaxed_properties[prop_name] = relaxed
+        else:
+            relaxed_properties[prop_name] = prop_schema
+
+    flat: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": relaxed_properties,
+        "required": sorted(relaxed_properties.keys()),
+    }
+    if "$defs" in schema:
+        flat["$defs"] = schema["$defs"]
+    if "$schema" in schema:
+        flat["$schema"] = schema["$schema"]
+    if "title" in schema:
+        flat["title"] = schema["title"]
+    return flat
 
 
 def validate_output_against_schema(
@@ -1307,10 +1389,13 @@ def invoke_agent_local(
                 f"Local provider ({provider_sub}) authentication is unavailable. {auth_hint}"
             )
 
-        # Load JSON schema for API-level structured output enforcement
+        # Load JSON schema for API-level structured output enforcement.
+        # Flatten top-level oneOf for API compatibility (the API rejects
+        # oneOf/anyOf at root); post-execution validation uses the original.
         json_schema = None
         if schema_path_resolved and schema_path_resolved.exists():
-            json_schema = json.loads(schema_path_resolved.read_text(encoding="utf-8"))
+            raw_schema = json.loads(schema_path_resolved.read_text(encoding="utf-8"))
+            json_schema = _flatten_oneof_for_api(raw_schema)
 
         system_part, user_part = _parse_combined_prompt(prompt_text)
 
@@ -1371,6 +1456,13 @@ def invoke_agent_local(
                 "error": str(exc),
             },
         )
+        # Loca schema validation failures should be retryable, not terminal.
+        # Re-raise as AgentSchemaError so invoke_agent_with_schema_retry can
+        # catch and retry instead of aborting the run.
+        if isinstance(exc, ValueError) and "schema validation failed" in str(exc).lower():
+            raise AgentSchemaError(
+                f"Local agent schema validation failed: {exc}"
+            ) from exc
         raise AgentInvocationError(
             f"Local agent invocation failed: {exc}"
         ) from exc
@@ -1454,27 +1546,27 @@ def invoke_agent_with_schema_retry(
             config=config,
             ctx=ctx,
         )
-        if provider == "local":
-            output = invoke_agent_local(
-                prompt_name=prompt_name,
-                template_vars=template_vars,
-                schema_path=schema_path,
-                config=config,
-                ctx=ctx,
-                local_workspace_override=local_workspace_override,
-                retry_instruction=retry_instruction,
-            )
-        else:
-            output = invoke_agent_stub(
-                prompt_name=prompt_name,
-                template_vars=template_vars,
-                ctx=ctx,
-            )
-
-        if schema_path is None or not schema_path.exists():
-            return output
-
         try:
+            if provider == "local":
+                output = invoke_agent_local(
+                    prompt_name=prompt_name,
+                    template_vars=template_vars,
+                    schema_path=schema_path,
+                    config=config,
+                    ctx=ctx,
+                    local_workspace_override=local_workspace_override,
+                    retry_instruction=retry_instruction,
+                )
+            else:
+                output = invoke_agent_stub(
+                    prompt_name=prompt_name,
+                    template_vars=template_vars,
+                    ctx=ctx,
+                )
+
+            if schema_path is None or not schema_path.exists():
+                return output
+
             output = validate_output_against_schema(
                 output,
                 schema_path,
@@ -1533,7 +1625,13 @@ def invoke_agent_with_schema_retry(
 
 
 def has_blocking_manual_resolution(output: dict[str, Any]) -> bool:
-    """Return True if output contains blocking manual_resolution_items."""
+    """Return True if output contains blocking manual_resolution_items.
+
+    Checks response_kind discriminator first (flat schema), then falls back
+    to inspecting the list directly for backward compatibility.
+    """
+    if output.get("response_kind") == "manual_block":
+        return True
     items = output.get("manual_resolution_items")
     return isinstance(items, list) and len(items) > 0
 
@@ -1630,6 +1728,15 @@ def invoke_agent_stub(
             {"spec_id": sid, **vals} for sid, vals in raw.items()
         ]
     elif ctx.command == "implement":
+        if prompt_name == "implement_unified_planner":
+            return {
+                "response_kind": "plan",
+                "manual_resolution_items": [],
+                "module_plans": [],
+                "spec_dependencies": [],
+                "shared_contracts": [],
+                "spec_issues": [],
+            }
         if prompt_name == "implement_anchor_planner":
             return {
                 "module_tag": "STUB",

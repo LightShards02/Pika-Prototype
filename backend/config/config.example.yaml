@@ -105,23 +105,42 @@ commands:
       logs_dir: { path: out/logs, no_overwrite: false }
       agent_view_csv: { path: out/intermediate/map/agent_view.csv, no_overwrite: false }
       intermediate_map_dir: { path: out/intermediate/map, no_overwrite: false }
+      # Optional: staged codebase tree/text for map agent context (see config.schema.json).
+      # agent_input_codebase_content_dir: { path: out/intermediate/map/agent_codebase, no_overwrite: false }
   implement:
     enabled: true
+    # Optional: cap total appendix text injected into planner/implementer prompts (0 = no limit).
+    # appendix:
+    #   max_appendix_chars: 500000
     inputs:
       design_spec_path: out/state/DESIGN-SPEC.csv
       codebase_dir: .
       project_context_filename: PROJECT_CONTEXT.md
+      # Optional: supplementary docs (data dictionary, API notes). Paths relative to project root.
+      # See config.schema.json appendix_item. CSV rows need title + content columns.
+      # appendices:
+      #   - path: appendices/design-notes.md
+      #     format: text
+      #     title: Design notes
+
+      #   - path: appendices/appendix_rows.csv
+      #     format: csv
+
+      #     module_tag: DOMAIN
     outputs:
       root_dir: { path: out, no_overwrite: false }
       backups_dir: { path: out/backups, no_overwrite: false }
       agent_runs_dir: { path: out/agent_runs, no_overwrite: false }
       agent_artifacts_dir: { path: out/agent_artifacts, no_overwrite: false }
       logs_dir: { path: out/logs, no_overwrite: false }
+      # Optional: staged codebase snapshot for implement agent inputs (see config.schema.json).
+      # agent_input_codebase_content_dir: { path: out/intermediate/codebase_content, no_overwrite: false }
     # type_placement_path: workspace/shared-contracts/
     # allowed_module_roles: [frontend, api, domain, infra, shared, cli, worker]
     # unified_planner:
     #   disallowed_link_kinds_by_required_role:
-    #     frontend: [service_interface, event_topic, db_table, file_format, external_api, test_suite]
+    #     # Kind names must match config.schema.json enum (api_endpoint, service_interface, …).
+    #     frontend: [api_endpoint, service_interface, event_topic, db_table, file_format, external_api, test_suite]
     #     domain: [external_api]
     #   leaf_dependency_roles: [infra]
     #   leaf_dependency_policy:
@@ -192,9 +211,17 @@ commands:
       blocking: false          # set true to gate on split/merge candidates before agents run
       similarity_threshold: 0.85
       variance_threshold: 0.15
+    # Optional: same appendix knobs as implement (refine loads appendices for ambiguity/testability agents only).
+    # appendix:
+    #   max_appendix_chars: 500000
     inputs:
       design_spec_path: out/state/DESIGN-SPEC.csv
       project_context_filename: PROJECT_CONTEXT.md
+      # appendices:
+      #   - path: appendices/glossary.md
+      #     format: text
+      #     title: Term glossary
+
     outputs:
       root_dir: { path: out, no_overwrite: false }
       design_spec_path: { path: out/state/REFINED-SPEC.csv, no_overwrite: false }

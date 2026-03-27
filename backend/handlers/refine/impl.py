@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+from core.appendix_loader import format_appendix_for_agent, load_appendix_files
 from core.context import RuntimeContext
 from core.errors import PikaError, ResumeError, WorksetValidationError
 from core.format_sads import load_sads_csv_or_xlsx, rows_to_csv
@@ -130,6 +131,8 @@ def _run_refine_agents(
     headers: list[str],
     rows: list[dict[str, Any]],
     completed_stages: list[str],
+    *,
+    appendix_text: str = "",
 ) -> dict[str, Any]:
     """Run ambiguity+testability agents in parallel, then gate or complete.
 
@@ -153,6 +156,7 @@ def _run_refine_agents(
         "manual_resolution_file": str(manual_dir),
         "run_summary_file": str(run_dir / "summary.json"),
         "control_vocab_section": "",
+        "appendix_content": appendix_text,
     }
     ambiguity_vars = {**common_vars, "output_schema_file": str(ambiguity_schema)}
     testability_vars = {**common_vars, "output_schema_file": str(testability_schema)}
@@ -345,6 +349,11 @@ def _resume_refine(
         run_meta.pop("blocked_at_stage", None)
         _write_json(run_meta_path, run_meta)
 
+        appendix_entries = load_appendix_files(config, project_root, command="refine")
+        cfg = _get_refine_cfg(config)
+        appendix_text = format_appendix_for_agent(
+            appendix_entries, max_chars=cfg["max_appendix_chars"],
+        )
         return _run_refine_agents(
             config=config,
             ctx=ctx,
@@ -354,6 +363,7 @@ def _resume_refine(
             headers=headers,
             rows=rows,
             completed_stages=stages_list,
+            appendix_text=appendix_text,
         )
 
     # --- Case 3: failed with agent cache ---
@@ -468,6 +478,11 @@ def _resume_refine(
         stages_list = list(completed_stages)
         _write_json(run_meta_path, run_meta)
 
+        appendix_entries = load_appendix_files(config, project_root, command="refine")
+        resume_cfg = _get_refine_cfg(config)
+        appendix_text = format_appendix_for_agent(
+            appendix_entries, max_chars=resume_cfg["max_appendix_chars"],
+        )
         return _run_refine_agents(
             config=config,
             ctx=ctx,
@@ -477,6 +492,7 @@ def _resume_refine(
             headers=headers,
             rows=rows,
             completed_stages=stages_list,
+            appendix_text=appendix_text,
         )
 
     raise ResumeError(
@@ -624,7 +640,13 @@ def _run_refine_inner(
         )
         _report_refine_step("Decomposition", "skipped", "disabled in config")
 
-    # 7-10. run agents, gate or complete
+    # 7. load appendices
+    appendix_entries = load_appendix_files(config, project_root, command="refine")
+    appendix_text = format_appendix_for_agent(
+        appendix_entries, max_chars=cfg["max_appendix_chars"],
+    )
+
+    # 8-11. run agents, gate or complete
     return _run_refine_agents(
         config=config,
         ctx=ctx,
@@ -634,4 +656,5 @@ def _run_refine_inner(
         headers=headers,
         rows=rows,
         completed_stages=completed_stages,
+        appendix_text=appendix_text,
     )

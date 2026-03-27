@@ -1542,6 +1542,7 @@ def _execute_batch(
     completed_stages: list[str],
     local_workspace_override: Path | None = None,
     patch_apply_lock: threading.Lock | None = None,
+    appendix_content: str = "",
 ) -> dict[str, Any]:
     """Execute implementer for one batch, apply/verify patches, and append trace records."""
     steps = impl.get("steps", {}) if isinstance(impl.get("steps", {}), dict) else {}
@@ -1629,6 +1630,7 @@ def _execute_batch(
             indent=2,
         ),
         "semantic_retry_context": "",
+        "appendix_content": appendix_content,
     }
     template_vars["resolved_decisions"] = getattr(ctx, "resolved_decisions", None) or ""
 

@@ -295,9 +295,15 @@
                 "design_spec_path": { "type": "string", "minLength": 1 },
                 "codebase_dir": { "type": "string", "minLength": 1 },
                 "project_context_filename": { "type": "string", "minLength": 1 },
-                "issue_tracker_path": { "type": "string", "minLength": 1 }
+                "issue_tracker_path": { "type": "string", "minLength": 1 },
+                "appendices": {
+                  "type": "array",
+                  "items": { "$ref": "#/$defs/appendix_item" },
+                  "description": "Appendix documents provided alongside the design spec."
+                }
               }
             },
+            "appendix": { "$ref": "#/$defs/appendix_settings" },
             "outputs": {
               "type": "object",
               "additionalProperties": false,
@@ -613,9 +619,15 @@
               "required": ["design_spec_path", "project_context_filename"],
               "properties": {
                 "design_spec_path": { "type": "string", "minLength": 1 },
-                "project_context_filename": { "type": "string", "minLength": 1 }
+                "project_context_filename": { "type": "string", "minLength": 1 },
+                "appendices": {
+                  "type": "array",
+                  "items": { "$ref": "#/$defs/appendix_item" },
+                  "description": "Appendix documents provided alongside the design spec."
+                }
               }
             },
+            "appendix": { "$ref": "#/$defs/appendix_settings" },
             "outputs": {
               "type": "object",
               "additionalProperties": false,
@@ -665,6 +677,29 @@
       "properties": {
         "path": { "type": "string", "minLength": 1 },
         "no_overwrite": { "type": "boolean" }
+      }
+    },
+    "appendix_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "description": "Path to appendix file (relative to project root)." },
+        "format": { "type": "string", "enum": ["text", "csv"], "default": "text", "description": "File format: text (one file = one entry) or csv (one row = one entry)." },
+        "module_tag": { "type": "string", "minLength": 1, "description": "Module scope. Omit for general appendix (all modules)." },
+        "title": { "type": "string", "minLength": 1, "description": "Display title (text format only; CSV rows use their own title column)." }
+      }
+    },
+    "appendix_settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_appendix_chars": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Max total chars for appendix content injected into prompts. 0 = no limit. Exceeding triggers preflight error."
+        }
       }
     }
   }

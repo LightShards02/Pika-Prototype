@@ -454,6 +454,8 @@ def _build_briefs(
     shared_contracts: list[dict[str, Any]],
     batch_plan: BatchPlan,
     impl: dict[str, Any],
+    *,
+    appendix_entries: list[Any] | None = None,
 ) -> list[BatchBrief]:
     """Build batch briefs from selected rows and unified planner artifacts."""
     by_spec = {row["spec_id"]: row for row in rows}
@@ -521,6 +523,14 @@ def _build_briefs(
                     f"(planned {len(unique_files)} unique files)"
                 )
 
+        batch_modules = set(modules)
+        batch_appendix: list[dict[str, Any]] = []
+        if appendix_entries:
+            from dataclasses import asdict
+            for entry in appendix_entries:
+                if entry.module_tag is None or entry.module_tag in batch_modules:
+                    batch_appendix.append(asdict(entry))
+
         briefs.append(
             {
                 "batch_id": batch["batch_id"],
@@ -529,6 +539,7 @@ def _build_briefs(
                 "shared_contracts": relevant_contracts,
                 "spec_dependency_context": dep_context,
                 "constraints": constraints,
+                "appendix_entries": batch_appendix,
             }
         )
     return briefs

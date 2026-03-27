@@ -190,11 +190,17 @@ prompts:
       - name: control_vocab_section
         required: false
         description: Per-project controlled vocabulary (categorized terms + definitions). Injected by lifecycle when project.control_vocab_path is configured.
+      - name: appendix_content
+        required: false
+        description: Formatted appendix documents (data dictionaries, API schemas, glossaries). Reference APX IDs in consumed_by_specs when a contract is defined by an appendix.
     system: |
       You are a strict unified implementation planner.
       Output must validate against {{output_schema_file}} exactly.
       Return JSON only. Do not include markdown fences.
-      If a blocking ambiguity exists, return only manual_resolution_items.
+      Always include ALL top-level fields (response_kind, manual_resolution_items,
+      module_plans, spec_dependencies, shared_contracts, spec_issues).
+      Set response_kind to "manual_block" when blocking issues exist, or "plan" when
+      producing a full implementation plan. Leave the unused branch's arrays empty.
 
       ## Phase 0: Spec Consistency Analysis (run before planning)
 
@@ -220,10 +226,11 @@ prompts:
         workset consumes the same contract.
 
       Resolution rules:
-      - BLOCKING issues → add as manual_resolution_items; return ONLY
-        manual_resolution_items (no module_plans).
+      - BLOCKING issues → set response_kind to "manual_block", populate
+        manual_resolution_items, and leave module_plans/spec_dependencies/
+        shared_contracts as empty arrays.
       - WARNING issues → add as spec_issues[] items alongside the normal plan.
-      - No issues found → omit spec_issues or emit an empty array.
+      - No issues found → leave spec_issues as an empty array.
 
       spec_issues[] item fields:
       - issue_id: stable string, e.g. "ISSUE-001" (increment per issue found)
@@ -246,7 +253,9 @@ prompts:
          consumer and provider have different module_tag values). Include a rationale.
 
       3. **shared_contracts** — Canonical DTOs, interfaces, or type definitions shared across
-         modules. Each shared_contract has a contract_id, owning_module (typically SHARED),
+         modules. Each shared_contract has a contract_id, provider_spec_ids (list of spec IDs
+         that define/own this contract — these are the authoritative source specs; may include
+         APX-prefixed appendix IDs if an appendix document defines the contract schema),
          planned_file_path under {{type_placement_path}}, consumed_by_specs, and field
          definitions. If the design spec has explicit shared contract specs, use them.
          For each field in fields[], always emit `nullable` as a required boolean:
@@ -284,6 +293,9 @@ prompts:
 
       Design Spec (CSV):
       {{design_spec_csv}}
+
+      Appendix Documents:
+      {{appendix_content}}
 
       Module Catalog:
       {{module_catalog_json}}
@@ -432,6 +444,9 @@ prompts:
       - name: control_vocab_section
         required: false
         description: Per-project controlled vocabulary (categorized terms + definitions). Injected by lifecycle when project.control_vocab_path is configured.
+      - name: appendix_content
+        required: false
+        description: Formatted appendix documents (data dictionaries, API schemas, glossaries). Use as authoritative reference for data shapes and contracts.
     system: |
       You are a strict implementer for one deterministic batch.
       Output must validate against {{output_schema_file}} exactly.
@@ -491,6 +506,9 @@ prompts:
 
       Design Spec Column Definitions:
       {{design_spec_column_definitions}}
+
+      Appendix Documents:
+      {{appendix_content}}
 
       Codebase Dir:
       {{codebase_dir}}
@@ -650,6 +668,9 @@ prompts:
       - name: resolved_decisions
         required: false
         description: Previously resolved manual decisions from prior blocked runs. Empty string when not present.
+      - name: appendix_content
+        required: false
+        description: Formatted appendix documents (data dictionaries, API schemas, glossaries). Use as authoritative reference for data shapes and contracts.
     system: |
       You are a strict implementer for one deterministic batch with direct filesystem access.
       Output must validate against {{output_schema_file}} exactly.
@@ -721,6 +742,9 @@ prompts:
 
       Design Spec Column Definitions:
       {{design_spec_column_definitions}}
+
+      Appendix Documents:
+      {{appendix_content}}
 
       Codebase Dir (read existing files directly for patterns and current content):
       {{codebase_dir}}
@@ -826,6 +850,9 @@ prompts:
       - name: control_vocab_section
         required: false
         description: Per-project controlled vocabulary. Injected by lifecycle when configured.
+      - name: appendix_content
+        required: false
+        description: Formatted appendix documents (data dictionaries, glossaries, API schemas). Use as context for resolving ambiguities.
     system: |
       You are a strict spec ambiguity detector.
       Your output JSON must validate against {{output_schema_file}} without exception.
@@ -840,6 +867,8 @@ prompts:
         - suggested_improvement: complete rewrite of the field with specific, measurable language
         - options: exactly three options — accept_suggestion, let_agent_edit, skip
       An empty manual_resolution_items array means no ambiguities were found (non-blocking).
+      Appendix cross-referencing: Before flagging any spec, check whether the Appendix Documents provide concrete values, definitions, or schemas for the referenced parameters. If the appendix fully resolves the vagueness (e.g., provides exact numeric values, enum lists, or formulas for the parameter in question), do NOT emit a manual_resolution_item for that spec. Only flag specs where genuine ambiguity remains after consulting the appendix.
+      Calibration: Do NOT lower your flagging threshold to compensate for specs resolved by the appendix. Judge each spec independently on its own merit. If the appendix resolves many specs, the correct output is fewer items — not the same number with weaker findings substituted in. An empty array is the preferred output when no genuine issues remain.
     user: |
       Project Context:
       {{project_context}}
@@ -847,6 +876,9 @@ prompts:
 
       Design Spec (CSV):
       {{design_spec_csv}}
+
+      Appendix Documents:
+      {{appendix_content}}
 
       Manual Resolution File:
       {{manual_resolution_file}}
@@ -876,6 +908,9 @@ prompts:
       - name: control_vocab_section
         required: false
         description: Per-project controlled vocabulary. Injected by lifecycle when configured.
+      - name: appendix_content
+        required: false
+        description: Formatted appendix documents (data dictionaries, glossaries, API schemas). Use as context for testability assessment.
     system: |
       You are a strict spec testability auditor.
       Your output JSON must validate against {{output_schema_file}} without exception.
@@ -890,6 +925,8 @@ prompts:
         - suggested_test_type: unit | integration | e2e | manual
         - options: exactly three options — accept_suggestion, let_agent_edit, skip
       An empty manual_resolution_items array means all criteria are testable (non-blocking).
+      Appendix cross-referencing: Before flagging any criterion, check whether the Appendix Documents provide concrete values, definitions, or schemas that make the criterion testable. If the appendix supplies the specific data needed to write an automated test (e.g., exact thresholds, enum values, formulas), do NOT emit a manual_resolution_item for that spec. Only flag criteria where genuine untestability remains after consulting the appendix.
+      Calibration: Do NOT lower your flagging threshold to compensate for criteria resolved by the appendix. Judge each criterion independently on its own merit. If the appendix resolves many criteria, the correct output is fewer items — not the same number with weaker findings substituted in. An empty array is the preferred output when all criteria are testable.
     user: |
       Project Context:
       {{project_context}}
@@ -897,6 +934,9 @@ prompts:
 
       Design Spec (CSV):
       {{design_spec_csv}}
+
+      Appendix Documents:
+      {{appendix_content}}
 
       Manual Resolution File:
       {{manual_resolution_file}}
