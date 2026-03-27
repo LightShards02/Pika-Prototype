@@ -224,7 +224,7 @@ flowchart TB
 | | module_plans[].planned_anchors | agent: file paths, symbols, anchor kinds, spec_ids |
 | | module_plans[].intra_module_dependencies | agent: within-module spec ordering |
 | | spec_dependencies | agent: cross-module spec-to-spec edges with rationale |
-| | shared_contracts | agent: canonical DTOs/interfaces with owning_module, planned_file_path, consumed_by_specs |
+| | shared_contracts | agent: canonical DTOs/interfaces with provider_spec_ids, planned_file_path, consumed_by_specs |
 | **plan_validation.json** | status | `_validate_unified_plan(plan, all_spec_ids, module_catalog)` |
 | | checks | all_specs_covered, spec_dependencies_acyclic, spec_dependency_refs_valid, all_modules_planned |
 | | reasons | validation failures |

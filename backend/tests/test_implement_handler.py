@@ -814,7 +814,7 @@ class ContractFieldConsistencyTests(unittest.TestCase):
         shared_contracts = [
             {
                 "contract_id": "export_request_dto",
-                "owning_module": "SHARED",
+                "provider_spec_ids": ["A1057"],
                 "consumed_by_specs": ["A1057", "A1056"],
                 "fields": [
                     {"name": "export_format", "type_name": "string", "nullable": False},
@@ -853,7 +853,7 @@ class ContractFieldConsistencyTests(unittest.TestCase):
         shared_contracts = [
             {
                 "contract_id": "export_request_dto",
-                "owning_module": "SHARED",
+                "provider_spec_ids": ["A1057"],
                 "consumed_by_specs": ["A1057", "A1056"],
                 "fields": [
                     {"name": "export_format", "type_name": "string", "nullable": False},
@@ -899,7 +899,7 @@ class ContractFieldConsistencyTests(unittest.TestCase):
         shared_contracts = [
             {
                 "contract_id": "ExportRequest",
-                "owning_module": "SHARED",
+                "provider_spec_ids": ["A1057"],
                 "consumed_by_specs": ["A1056", "A1057"],
                 "fields": [
                     {"name": "date_range_start"},
@@ -928,7 +928,7 @@ class ContractFieldConsistencyTests(unittest.TestCase):
         headers = ["spec_id", "module_tag", "requirement", "acceptance_criteria"]
         spec_rows = [{"spec_id": "A1", "module_tag": "API", "requirement": "x", "acceptance_criteria": ""}]
         shared_contracts = [
-            {"contract_id": "c1", "owning_module": "SHARED", "consumed_by_specs": ["A1"], "fields": []},
+            {"contract_id": "c1", "provider_spec_ids": ["A1"], "consumed_by_specs": ["A1"], "fields": []},
         ]
         result = _validate_contract_field_consistency(
             shared_contracts,
@@ -958,7 +958,7 @@ class ContractFieldConsistencyTests(unittest.TestCase):
         shared_contracts = [
             {
                 "contract_id": "nutrition_response_dto",
-                "owning_module": "SHARED",
+                "provider_spec_ids": ["A2"],
                 "consumed_by_specs": ["A2", "A1"],
                 "fields": [
                     {"name": "calculation_version"},
@@ -995,7 +995,7 @@ class ContractFieldConsistencyTests(unittest.TestCase):
         shared_contracts = [
             {
                 "contract_id": "export_request_dto",
-                "owning_module": "SHARED",
+                "provider_spec_ids": ["A1057"],
                 "consumed_by_specs": ["A1057", "A1056"],
                 "fields": [
                     {"name": "export_format"},
@@ -1038,7 +1038,7 @@ class ContractFieldConsistencyTests(unittest.TestCase):
         shared_contracts = [
             {
                 "contract_id": "export_artifact_metadata_dto",
-                "owning_module": "DATA",
+                "provider_spec_ids": ["A1060"],
                 "consumed_by_specs": ["A1060"],
                 "fields": [
                     {"name": "artifact_id"},
@@ -1078,7 +1078,7 @@ class ContractFieldConsistencyTests(unittest.TestCase):
         shared_contracts = [
             {
                 "contract_id": "export_link_response",
-                "owning_module": "SHARED",
+                "provider_spec_ids": ["A2000"],
                 "consumed_by_specs": ["A2000", "A2001"],
                 "fields": [
                     {"name": "artifact_id"},
@@ -1118,7 +1118,7 @@ class PlannedValidationChecksTests(unittest.TestCase):
         shared_contracts = [
             {
                 "contract_id": "artifact_response",
-                "owning_module": "API",
+                "provider_spec_ids": ["A1001"],
                 "planned_file_path": "shared/types/artifact_response.py",
                 "consumed_by_specs": ["A1001"],
                 "fields": [
@@ -1149,7 +1149,7 @@ class PlannedValidationChecksTests(unittest.TestCase):
         shared_contracts = [
             {
                 "contract_id": "nutrition_request_dto",
-                "owning_module": "SHARED",
+                "provider_spec_ids": ["A1027"],
                 "planned_file_path": "workspace/shared-contracts/nutrition_request_dto.json",
                 "consumed_by_specs": ["A1027", "A1005"],
                 "fields": [
@@ -1199,6 +1199,8 @@ class ImplementDryRunTests(unittest.TestCase):
     @patch("handlers.implement.impl.invoke_with_semantic_retry")
     def test_run_implement_dry_run_with_unified_planner(self, mock_invoke: Any) -> None:
         unified_plan_output = {
+            "response_kind": "plan",
+            "manual_resolution_items": [],
             "module_plans": [
                 {
                     "module_tag": "CORE",
@@ -1280,6 +1282,7 @@ class ImplementDryRunTests(unittest.TestCase):
     @patch("handlers.implement.impl.invoke_with_semantic_retry")
     def test_run_implement_blocks_on_manual_resolution(self, mock_invoke: Any) -> None:
         mock_invoke.return_value = {
+            "response_kind": "manual_block",
             "manual_resolution_items": [
                 {
                     "item_id": "MR-1",
@@ -1288,10 +1291,12 @@ class ImplementDryRunTests(unittest.TestCase):
                     "options": [
                         {"option_id": "opt_a", "label": "CORE", "effect": "Bind to CORE"},
                     ],
-                    "required": True,
                     "blocking_reason": "Cannot determine provider",
                 }
-            ]
+            ],
+            "module_plans": [],
+            "spec_dependencies": [],
+            "shared_contracts": [],
         }
 
         config = {
@@ -1341,6 +1346,8 @@ class ImplementDryRunTests(unittest.TestCase):
     def test_run_implement_resume_uses_cached_unified_plan(self, mock_invoke: Any) -> None:
         """Resume run uses cached unified_plan when run_meta marks unified_planner completed."""
         cached_plan = {
+            "response_kind": "plan",
+            "manual_resolution_items": [],
             "module_plans": [
                 {
                     "module_tag": "CORE",
@@ -1442,6 +1449,8 @@ class ImplementDryRunTests(unittest.TestCase):
     ) -> None:
         """run_implement uses contract_validation.shared_contracts for downstream brief building."""
         mock_invoke.return_value = {
+            "response_kind": "plan",
+            "manual_resolution_items": [],
             "module_plans": [
                 {
                     "module_tag": "CORE",
@@ -1461,7 +1470,7 @@ class ImplementDryRunTests(unittest.TestCase):
         patched_contracts = [
             {
                 "contract_id": "C_PATCHED",
-                "owning_module": "CORE",
+                "provider_spec_ids": ["A1"],
                 "consumed_by_specs": ["A1"],
                 "fields": [{"name": "new_field"}],
             }
@@ -1485,6 +1494,7 @@ class ImplementDryRunTests(unittest.TestCase):
             shared_contracts: list[dict[str, Any]],
             batch_plan: dict[str, Any],
             impl_cfg: dict[str, Any],
+            **kwargs: Any,
         ) -> list[dict[str, Any]]:
             _ = selected, anchor_plans_by_module, spec_dependencies, batch_plan, impl_cfg
             captured["shared_contracts"] = shared_contracts
@@ -1542,6 +1552,8 @@ class SpecIssuesExtractionTests(ImplementDryRunTests):
 
     def _make_plan(self, spec_issues: list[dict] | None = None) -> dict:
         plan: dict = {
+            "response_kind": "plan",
+            "manual_resolution_items": [],
             "module_plans": [
                 {
                     "module_tag": "CORE",
@@ -1742,6 +1754,8 @@ class ImplementLocalSharedWorkspaceTests(unittest.TestCase):
         config = self._config()
         config["commands"]["implement"]["budgets"] = {"max_parallel_batches": 1}
         planner_output = {
+            "response_kind": "plan",
+            "manual_resolution_items": [],
             "module_plans": [
                 {
                     "module_tag": "CORE",
@@ -1814,16 +1828,19 @@ class ImplementLocalSharedWorkspaceTests(unittest.TestCase):
         """Shared workspace is cleaned even when unified planner blocks."""
         config = self._config()
         blocked_output = {
+            "response_kind": "manual_block",
             "manual_resolution_items": [
                 {
                     "item_id": "MR-1",
                     "title": "Ambiguous",
                     "question": "Choose one",
                     "options": [{"option_id": "opt1", "label": "A", "effect": "Use A"}],
-                    "required": True,
                     "blocking_reason": "Cannot choose automatically",
                 }
-            ]
+            ],
+            "module_plans": [],
+            "spec_dependencies": [],
+            "shared_contracts": [],
         }
         ctx = RuntimeContext(
             command="implement",
@@ -1930,7 +1947,7 @@ class EscalateSpecIssuesTests(unittest.TestCase):
         self.assertEqual(len(result), 1)
         item = result[0]
         self.assertEqual(item["item_id"], "I001")
-        self.assertEqual(item["required"], True)
+        self.assertNotIn("required", item)
         self.assertIn("Dependency gap", item["blocking_reason"])
         self.assertEqual(item["evidence_refs"], ["A1", "D1", "D2"])
         self.assertEqual(item["options"], [])
@@ -2011,7 +2028,7 @@ class TestContractFieldNullableMetadata(unittest.TestCase):
         """Field with name+type_name but no nullable triggers a missing_nullable item."""
         contracts = [{
             "contract_id": "my_dto",
-            "owning_module": "SHARED",
+            "provider_spec_ids": ["A1"],
             "consumed_by_specs": ["A1"],
             "fields": [{"name": "user_id", "type_name": "string"}],  # no nullable
         }]
@@ -2027,7 +2044,7 @@ class TestContractFieldNullableMetadata(unittest.TestCase):
         """Fields with explicit nullable=true/false emit no structural items."""
         contracts = [{
             "contract_id": "my_dto",
-            "owning_module": "SHARED",
+            "provider_spec_ids": ["A1"],
             "consumed_by_specs": ["A1"],
             "fields": [
                 {"name": "user_id", "type_name": "string", "nullable": False},
@@ -2050,7 +2067,7 @@ class TestContractFieldNullableMetadata(unittest.TestCase):
         """Two fields with identical names in one contract trigger a duplicate_field item."""
         contracts = [{
             "contract_id": "my_dto",
-            "owning_module": "SHARED",
+            "provider_spec_ids": ["A1"],
             "consumed_by_specs": ["A1"],
             "fields": [
                 {"name": "user_id", "type_name": "string", "nullable": False},
@@ -2071,8 +2088,8 @@ class TestContractFieldNullableMetadata(unittest.TestCase):
         """No provider spec always emits manual_resolution_item and fails."""
         contracts = [{
             "contract_id": "shared_filter",
-            "owning_module": "DOMAIN",
-            "consumed_by_specs": ["U3"],  # U3 is UI, not DOMAIN
+            "provider_spec_ids": [],
+            "consumed_by_specs": ["U3"],
             "fields": [{"name": "status", "type_name": "string", "nullable": True}],
         }]
         spec_rows = [self._spec("U3", "UI", "status filter for shared_filter")]

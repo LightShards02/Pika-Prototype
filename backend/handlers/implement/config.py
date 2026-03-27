@@ -424,6 +424,15 @@ def _get_impl_cfg(config: dict[str, Any]) -> dict[str, Any]:
         "semantic_validation_retries"
     ] = implement_semantic_validation_retries
 
+    appendix_cfg = impl.get("appendix") or {}
+    if not isinstance(appendix_cfg, dict):
+        appendix_cfg = {}
+    max_appendix_chars_raw = appendix_cfg.get("max_appendix_chars", 0)
+    try:
+        max_appendix_chars = max(0, int(max_appendix_chars_raw))
+    except (TypeError, ValueError):
+        max_appendix_chars = 0
+
     from core.pika_config import get_prompt_name
     provider = get_agent_provider(config)
     return {
@@ -447,4 +456,5 @@ def _get_impl_cfg(config: dict[str, Any]) -> dict[str, Any]:
         "field_match_score_threshold": field_match_score_threshold,
         "semantic_validation_retries": planner_semantic_validation_retries,
         "steps": steps,
+        "max_appendix_chars": max_appendix_chars,
     }

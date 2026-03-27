@@ -307,7 +307,10 @@ def _validate_brief_scoping(briefs: list[BatchBrief]) -> dict[str, Any]:
         for contract in brief.get("shared_contracts", []):
             if not isinstance(contract, dict):
                 continue
-            consumed = {str(s).strip() for s in contract.get("consumed_by_specs", []) if str(s).strip()}
+            consumed = {
+                str(s).strip() for s in contract.get("consumed_by_specs", [])
+                if str(s).strip() and not str(s).strip().startswith("APX")
+            }
             leaked = consumed - batch_specs
             if leaked:
                 total_contract_leaks += len(leaked)
@@ -528,6 +531,7 @@ def _validate_contract_field_consistency(
     headers: list[str],
     *,
     resolutions: list[dict[str, Any]] | None = None,
+    appendix_lookup: dict[str, Any] | None = None,
     match_score_threshold: float = 0.80,
 ) -> dict[str, Any]:
     """Validate naming alignment between shared_contract fields and all consumed spec text.
@@ -579,6 +583,11 @@ def _validate_contract_field_consistency(
         mod = str(row.get(module_col, "")).strip()
         spec_by_id[sid] = {"module_tag": mod, "text": f"{req} {ac}"}
 
+    if appendix_lookup:
+        for apx_id, entry in appendix_lookup.items():
+            if entry.module_tag:
+                spec_by_id[apx_id] = {"module_tag": entry.module_tag, "text": entry.content}
+
     items: list[dict[str, Any]] = []
     reasons: list[str] = []
 
@@ -612,7 +621,7 @@ def _validate_contract_field_consistency(
                     ),
                     "resolution_mode": "edit_contract",
                     "options": [],
-                    "required": True,
+
                     "blocking_reason": f"Duplicate field name {name!r} in contract {contract_id}.",
                 })
                 reasons.append(f"Contract {contract_id} has duplicate field name {name!r}")
@@ -630,7 +639,7 @@ def _validate_contract_field_consistency(
                     ),
                     "resolution_mode": "edit_contract",
                     "options": [],
-                    "required": True,
+
                     "blocking_reason": f"Field {name!r} in contract {contract_id} has no nullable boolean.",
                 })
                 reasons.append(f"Contract {contract_id} field {name!r} missing nullable boolean")
@@ -641,7 +650,6 @@ def _validate_contract_field_consistency(
         contract_id = str(contract.get("contract_id", "")).strip()
         if not contract_id:
             continue
-        owning_module = str(contract.get("owning_module", "")).strip()
         consumed = [
             str(s).strip()
             for s in contract.get("consumed_by_specs", [])
@@ -696,7 +704,7 @@ def _validate_contract_field_consistency(
                     ),
                     "resolution_mode": "edit_spec",
                     "options": [],
-                    "required": True,
+
                     "blocking_reason": (
                         f"Word '{token}' in spec {spec_id} is highly matched to contract field "
                         f"'{target}' (score={score:.3f}, distance={distance})."
@@ -744,7 +752,7 @@ def _validate_contract_field_consistency(
                     ),
                     "resolution_mode": "edit_spec",
                     "options": [],
-                    "required": True,
+
                     "blocking_reason": (
                         f"Near-equal candidate words for {field_name} in spec {spec_id} "
                         f"(delta={score_delta:.3f})"
@@ -826,14 +834,18 @@ def _validate_required_field_coverage(
     shared_contracts: list[dict[str, Any]],
     spec_rows: list[dict[str, Any]],
     headers: list[str],
+    *,
+    appendix_lookup: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Validate contract field coverage using provider-first, low-noise rules.
 
     Deterministic policy:
-    1) Prefer provider specs (consumed specs in owning_module) as source-of-truth.
-    2) If provider text explicitly declares canonical contract/DTO + field naming intent,
+    1) Use explicit ``provider_spec_ids`` from the planner as source-of-truth.
+    2) If a provider is an APX ID, check it exists in appendix_lookup; if valid,
+       trust it as an authoritative provider (skip field-by-field check).
+    3) If provider text explicitly declares canonical contract/DTO + field naming intent,
        treat provider coverage as satisfied even when every field token is not listed.
-    3) If no provider spec exists, emit a manual_resolution_item (always manual_block).
+    4) If no provider spec exists, emit a manual_resolution_item (always manual_block).
     """
     spec_by_id = _spec_text_lookup(spec_rows, headers)
     reasons: list[str] = []
@@ -858,28 +870,48 @@ def _validate_required_field_coverage(
         if not field_names:
             continue
 
-        consumed_specs = [
+        provider_spec_ids = [
             str(spec_id).strip()
-            for spec_id in contract.get("consumed_by_specs", [])
+            for spec_id in contract.get("provider_spec_ids", [])
             if str(spec_id).strip()
         ]
-        owning_module = str(contract.get("owning_module", "")).strip()
-        provider_spec_ids = [
-            spec_id
-            for spec_id in consumed_specs
-            if str(spec_by_id.get(spec_id, {}).get("module_tag", "")).strip() == owning_module
+        apx_provider_ids = [
+            spec_id for spec_id in provider_spec_ids if spec_id.startswith("APX")
         ]
-        if not provider_spec_ids:
+        regular_provider_ids = [
+            spec_id for spec_id in provider_spec_ids if not spec_id.startswith("APX")
+        ]
+        if apx_provider_ids and appendix_lookup:
+            apx_valid = False
+            for apx_id in apx_provider_ids:
+                entry = appendix_lookup.get(apx_id)
+                if entry is None:
+                    manual_resolution_items.append({
+                        "item_id": f"apx_not_found_{contract_id}_{apx_id}",
+                        "title": f"Appendix {apx_id} not found for contract {contract_id}",
+                        "question": (
+                            f"Contract {contract_id} references appendix {apx_id} in "
+                            f"provider_spec_ids but it does not exist in loaded appendices."
+                        ),
+                        "options": [],
+    
+                        "blocking_reason": f"Appendix {apx_id} not found.",
+                    })
+                else:
+                    apx_valid = True
+            if apx_valid:
+                checks.append(f"{contract_id}:apx_provider_trusted")
+                continue
+        if not regular_provider_ids:
             manual_resolution_items.append({
                 "item_id": f"no_provider_spec_{contract_id}",
                 "title": f"No provider spec for contract {contract_id}",
                 "question": (
-                    f"Contract {contract_id} (owning_module={owning_module!r}) has no provider spec "
-                    f"in consumed_by_specs {consumed_specs}. Add a spec owned by "
-                    f"{owning_module!r} to consumed_by_specs."
+                    f"Contract {contract_id} has no provider spec in "
+                    f"provider_spec_ids {provider_spec_ids}. Add at least one "
+                    f"spec that defines this contract to provider_spec_ids."
                 ),
                 "options": [],
-                "required": True,
                 "blocking_reason": f"No provider spec found for contract {contract_id}.",
             })
             checks.append(f"{contract_id}:manual_block_no_provider_spec")
@@ -887,7 +919,7 @@ def _validate_required_field_coverage(
 
         provider_texts = [
             str(spec_by_id.get(spec_id, {}).get("text", ""))
-            for spec_id in provider_spec_ids
+            for spec_id in regular_provider_ids
             if spec_id in spec_by_id
         ]
         canonical_declaration_present = any(
@@ -912,27 +944,26 @@ def _validate_required_field_coverage(
         missing_records.append(
             {
                 "contract_id": contract_id,
-                "provider_spec_ids": provider_spec_ids,
+                "provider_spec_ids": regular_provider_ids,
                 "missing_fields": missing_fields_sorted,
             }
         )
         reasons.append(
-            f"Provider spec(s) {provider_spec_ids} do not explicitly/alias-cover required contract "
+            f"Provider spec(s) {regular_provider_ids} do not explicitly/alias-cover required contract "
             f"fields {missing_fields_sorted} for {contract_id}"
         )
         manual_resolution_items.append({
             "item_id": f"uncovered_fields_{contract_id}",
             "title": f"Uncovered fields in contract {contract_id}",
             "question": (
-                f"Provider spec(s) {provider_spec_ids} do not cover required fields "
+                f"Provider spec(s) {regular_provider_ids} do not cover required fields "
                 f"{missing_fields_sorted} for contract {contract_id}. "
                 "Edit provider spec text to reference these fields."
             ),
             "options": [],
-            "required": True,
             "blocking_reason": (
                 f"Required fields {missing_fields_sorted} not covered "
-                f"in provider spec(s) {provider_spec_ids}."
+                f"in provider spec(s) {regular_provider_ids}."
             ),
         })
 
@@ -1010,7 +1041,6 @@ def _escalate_spec_issues(
             "title": description[:120],
             "question": description,
             "options": [],
-            "required": True,
             "blocking_reason": blocking_reason,
             "evidence_refs": affected_ids,
             "resolution_mode": "edit_spec",
