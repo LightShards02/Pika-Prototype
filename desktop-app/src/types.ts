@@ -71,6 +71,12 @@ export interface ResolutionItem {
   itemIndex?: number;
 }
 
+export interface RunErrorDetails {
+  exitCode: number | null;
+  stderr: string[];
+  summary: Record<string, unknown> | null;
+}
+
 export interface RunState {
   currentPhaseId: string;
   progress: number;
@@ -79,6 +85,7 @@ export interface RunState {
   specPath?: string;
   projectRoot?: string;
   runDir?: string;
+  errorDetails?: RunErrorDetails;
 }
 
 // --- Raw agent output types (from PIKA CLI agent_review.json) ---

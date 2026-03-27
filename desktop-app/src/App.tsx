@@ -100,18 +100,14 @@ function App() {
     if (cleanupRef.current) return;
 
     const startRefine = async () => {
-      try {
-        await window.electronAPI.startRefine({
-          projectRoot: projectRootPath,
-          designSpecPath: designSpecPath ?? undefined,
-          configPath: configPath ?? undefined,
-        });
-      } catch (err) {
-        setRun({ status: 'failed' });
-        return;
-      }
+      // Accumulate ALL stderr lines for error diagnostics
+      const stderrLines: string[] = [];
 
+      // Register listeners BEFORE spawning the process to avoid race conditions
+      // where a fast-exiting process sends events before listeners are ready.
       const unsubStderr = window.electronAPI.onPikaStderr((line: string) => {
+        stderrLines.push(line);
+
         const event = parseStderrLine(line);
         if (!event) return;
 
@@ -126,7 +122,7 @@ function App() {
       });
 
       const unsubExit = window.electronAPI.onPikaExit(async (data) => {
-        const { summary } = data;
+        const { code, summary } = data;
         const status = summary?.status as string | undefined;
 
         if (status === 'completed') {
@@ -153,13 +149,22 @@ function App() {
               setActiveItemIndex(0);
               setRun({ status: 'paused', runDir, runId });
             } catch {
-              setRun({ status: 'failed' });
+              setRun({
+                status: 'failed',
+                errorDetails: { exitCode: code, stderr: stderrLines, summary },
+              });
             }
           } else {
-            setRun({ status: 'failed' });
+            setRun({
+              status: 'failed',
+              errorDetails: { exitCode: code, stderr: stderrLines, summary },
+            });
           }
         } else {
-          setRun({ status: 'failed' });
+          setRun({
+            status: 'failed',
+            errorDetails: { exitCode: code, stderr: stderrLines, summary },
+          });
         }
 
         // Clean up listeners after exit
@@ -173,6 +178,25 @@ function App() {
       };
 
       cleanupRef.current = cleanup;
+
+      // Now spawn the process — listeners are already registered
+      try {
+        await window.electronAPI.startRefine({
+          projectRoot: projectRootPath,
+          designSpecPath: designSpecPath ?? undefined,
+          configPath: configPath ?? undefined,
+        });
+      } catch (err) {
+        cleanup();
+        setRun({
+          status: 'failed',
+          errorDetails: {
+            exitCode: null,
+            stderr: [`Failed to start process: ${err instanceof Error ? err.message : String(err)}`],
+            summary: null,
+          },
+        });
+      }
     };
 
     startRefine();

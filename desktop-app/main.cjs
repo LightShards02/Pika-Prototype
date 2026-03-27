@@ -46,7 +46,7 @@ app.on('window-all-closed', () => {
 // ---------------------------------------------------------------------------
 
 function spawnPikaCommand(args) {
-  const condaArgs = ['run', '--no-banner', '-n', 'Local', 'python', '-m', 'cli', ...args];
+  const condaArgs = ['run', '-n', 'Local', 'python', '-m', 'cli', ...args];
   const child = spawn('conda', condaArgs, {
     cwd: PIKA_ROOT,
     shell: true,
