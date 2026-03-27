@@ -26,6 +26,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   applyResolutions: (args) => ipcRenderer.invoke('pika:apply-resolutions', args),
   resumeRefine: (args) => ipcRenderer.invoke('pika:resume-refine', args),
 
+  // Preferences persistence
+  loadPreferences: () => ipcRenderer.invoke('preferences:load'),
+  savePreferences: (prefs) => ipcRenderer.invoke('preferences:save', prefs),
+  pathExists: (targetPath) => ipcRenderer.invoke('preferences:pathExists', targetPath),
+
   // Event listeners (main → renderer)
   onPikaStderr: (callback) => {
     const handler = (_event, line) => callback(line);

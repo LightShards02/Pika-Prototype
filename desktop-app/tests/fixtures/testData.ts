@@ -1,4 +1,4 @@
-import type { Spec, RawAmbiguityItem, RawTestabilityItem, ResolutionItem, Appendix } from '../../src/types';
+import type { Spec, RawAmbiguityItem, RawTestabilityItem, ResolutionItem, Appendix, PikaPreferences } from '../../src/types';
 
 export const mockSpecs: Spec[] = [
   {
@@ -123,3 +123,17 @@ export const mockTableAppendix: Appendix = {
 };
 
 export const mockAppendixCsvContent = 'name,value,status\nAlpha,100,active\nBeta,200,inactive\nGamma,300,active';
+
+export const mockPreferences: PikaPreferences = {
+  version: 1,
+  projectRootPath: '/test/project',
+  designSpecPath: '/test/spec.csv',
+  configPath: '/test/config.yaml',
+  refineEnabled: true,
+  implementEnabled: false,
+  decompositionEnabled: true,
+  appendixRefs: [
+    { id: 'appx-text-001', fileName: 'notes.txt', filePath: '/test/notes.txt', type: 'text', moduleTag: 'AUTH' },
+  ],
+  availableModuleTags: ['AUTH', 'EXPORT'],
+};

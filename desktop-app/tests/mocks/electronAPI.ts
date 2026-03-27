@@ -16,6 +16,9 @@ export function mockElectronAPI(): ElectronAPI {
     writeResolution: vi.fn().mockResolvedValue(undefined),
     applyResolutions: vi.fn().mockResolvedValue(undefined),
     resumeRefine: vi.fn().mockResolvedValue(undefined),
+    loadPreferences: vi.fn().mockResolvedValue(null),
+    savePreferences: vi.fn().mockResolvedValue(true),
+    pathExists: vi.fn().mockResolvedValue(true),
     onPikaStderr: vi.fn().mockReturnValue(() => {}),
     onPikaExit: vi.fn().mockReturnValue(() => {}),
   };

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Phase, RunState, Spec, ResolutionItem, Appendix } from './types';
+import type { Phase, RunState, Spec, ResolutionItem, Appendix, PikaPreferences } from './types';
 
 interface AppStore {
   // Run State
@@ -61,6 +61,9 @@ interface AppStore {
   setImplementEnabled: (v: boolean) => void;
   decompositionEnabled: boolean;
   setDecompositionEnabled: (v: boolean) => void;
+
+  // Persistence
+  hydrateFromPreferences: (prefs: PikaPreferences) => void;
 
   // Reset for new run
   resetForNewRun: () => void;
@@ -154,6 +157,23 @@ export const useStore = create<AppStore>((set) => ({
   decompositionEnabled: true,
   setDecompositionEnabled: (v) => set({ decompositionEnabled: v }),
 
+  // Persistence
+  hydrateFromPreferences: (prefs) => set({
+    projectRootPath: prefs.projectRootPath,
+    designSpecPath: prefs.designSpecPath,
+    configPath: prefs.configPath,
+    refineEnabled: prefs.refineEnabled,
+    implementEnabled: prefs.implementEnabled,
+    decompositionEnabled: prefs.decompositionEnabled,
+    appendixes: prefs.appendixRefs.map((ref) => ({
+      ...ref,
+      content: '',
+      parsedRows: undefined,
+      columns: undefined,
+    })),
+    availableModuleTags: prefs.availableModuleTags,
+  }),
+
   // Reset for new run
   resetForNewRun: () => set({
     phases: initialPhases.map((p) => ({ ...p, status: 'pending' as const })),
@@ -166,3 +186,48 @@ export const useStore = create<AppStore>((set) => ({
     activeLeftTab: 'spec',
   }),
 }));
+
+export function extractPreferences(state: AppStore): PikaPreferences {
+  return {
+    version: 1,
+    projectRootPath: state.projectRootPath,
+    designSpecPath: state.designSpecPath,
+    configPath: state.configPath,
+    refineEnabled: state.refineEnabled,
+    implementEnabled: state.implementEnabled,
+    decompositionEnabled: state.decompositionEnabled,
+    appendixRefs: state.appendixes.map((a) => ({
+      id: a.id,
+      fileName: a.fileName,
+      filePath: a.filePath,
+      type: a.type,
+      moduleTag: a.moduleTag,
+    })),
+    availableModuleTags: state.availableModuleTags,
+  };
+}
+
+export function subscribeToPreferenceChanges(): () => void {
+  let previousJson = JSON.stringify(extractPreferences(useStore.getState()));
+  let saveTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  const unsubscribe = useStore.subscribe((state) => {
+    const currentPrefs = extractPreferences(state);
+    const currentJson = JSON.stringify(currentPrefs);
+
+    if (currentJson === previousJson) return;
+    previousJson = currentJson;
+
+    if (saveTimeout) clearTimeout(saveTimeout);
+    saveTimeout = setTimeout(() => {
+      window.electronAPI.savePreferences(currentPrefs).catch((err) => {
+        console.warn('Failed to save preferences:', err);
+      });
+    }, 500);
+  });
+
+  return () => {
+    if (saveTimeout) clearTimeout(saveTimeout);
+    unsubscribe();
+  };
+}

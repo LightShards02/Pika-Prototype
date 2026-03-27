@@ -244,3 +244,47 @@ ipcMain.handle('pika:resume-refine', async (_event, { projectRoot, runId, config
 
   pikaProcess = spawnPikaCommand(args);
 });
+
+// ---------------------------------------------------------------------------
+// IPC Handlers: Preferences Persistence
+// ---------------------------------------------------------------------------
+
+const PREFS_FILENAME = 'pika-preferences.json';
+
+function getPrefsPath() {
+  return path.join(app.getPath('userData'), PREFS_FILENAME);
+}
+
+ipcMain.handle('preferences:load', async () => {
+  const prefsPath = getPrefsPath();
+  try {
+    if (!fs.existsSync(prefsPath)) {
+      return null;
+    }
+    const content = fs.readFileSync(prefsPath, 'utf-8');
+    return JSON.parse(content);
+  } catch (error) {
+    console.error('Error loading preferences:', error);
+    return null;
+  }
+});
+
+ipcMain.handle('preferences:save', async (_event, preferences) => {
+  const prefsPath = getPrefsPath();
+  try {
+    const content = JSON.stringify(preferences, null, 2);
+    fs.writeFileSync(prefsPath, content, 'utf-8');
+    return true;
+  } catch (error) {
+    console.error('Error saving preferences:', error);
+    return false;
+  }
+});
+
+ipcMain.handle('preferences:pathExists', async (_event, targetPath) => {
+  try {
+    return fs.existsSync(targetPath);
+  } catch {
+    return false;
+  }
+});

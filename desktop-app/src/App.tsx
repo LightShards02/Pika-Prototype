@@ -5,14 +5,15 @@ import { PipelineView } from './components/PipelineView';
 import { GatePanel } from './components/GatePanel';
 import { EntryScreen } from './components/EntryScreen';
 import { SettingsPage } from './components/SettingsPage';
-import { useStore } from './store';
+import { useStore, subscribeToPreferenceChanges } from './store';
 import {
   parseStderrLine,
   mapStderrToPhaseUpdates,
   computeProgress,
   transformAgentItems,
 } from './services/pikaService';
-import type { RawAgentItem } from './types';
+import { buildAppendixFromContent } from './services/appendixLoader';
+import type { RawAgentItem, PikaPreferences } from './types';
 
 function App() {
   const {
@@ -21,6 +22,73 @@ function App() {
     designSpecPath, projectRootPath, configPath,
     view,
   } = useStore();
+
+  // --- Preferences: load on mount, subscribe for auto-save ---
+  useEffect(() => {
+    let cancelled = false;
+
+    const hydrate = async () => {
+      try {
+        const prefs = await window.electronAPI.loadPreferences();
+        if (cancelled || !prefs) return;
+
+        const validated = { ...prefs };
+
+        if (validated.projectRootPath) {
+          const exists = await window.electronAPI.pathExists(validated.projectRootPath);
+          if (!exists) validated.projectRootPath = null;
+        }
+        if (validated.designSpecPath) {
+          const exists = await window.electronAPI.pathExists(validated.designSpecPath);
+          if (!exists) {
+            validated.designSpecPath = null;
+            validated.appendixRefs = [];
+            validated.availableModuleTags = [];
+          }
+        }
+        if (validated.configPath) {
+          const exists = await window.electronAPI.pathExists(validated.configPath);
+          if (!exists) validated.configPath = null;
+        }
+
+        const validRefs = [];
+        for (const ref of validated.appendixRefs) {
+          const exists = await window.electronAPI.pathExists(ref.filePath);
+          if (exists) validRefs.push(ref);
+        }
+        validated.appendixRefs = validRefs;
+
+        if (cancelled) return;
+        useStore.getState().hydrateFromPreferences(validated as PikaPreferences);
+
+        // Reload appendix content from disk
+        for (const ref of validRefs) {
+          if (cancelled) return;
+          try {
+            const content = await window.electronAPI.readFile(ref.filePath);
+            const full = buildAppendixFromContent(ref, content);
+            useStore.setState((state) => ({
+              appendixes: state.appendixes.map((a) => a.id === ref.id ? full : a),
+            }));
+          } catch {
+            useStore.setState((state) => ({
+              appendixes: state.appendixes.filter((a) => a.id !== ref.id),
+            }));
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to load preferences:', err);
+      }
+    };
+
+    hydrate();
+    const unsubscribe = subscribeToPreferenceChanges();
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
 
   const cleanupRef = useRef<(() => void) | null>(null);
 

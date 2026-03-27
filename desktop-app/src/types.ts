@@ -20,6 +20,26 @@ export interface Appendix {
   columns?: string[];
 }
 
+export interface AppendixRef {
+  id: string;
+  fileName: string;
+  filePath: string;
+  type: AppendixType;
+  moduleTag: string;
+}
+
+export interface PikaPreferences {
+  version: 1;
+  projectRootPath: string | null;
+  designSpecPath: string | null;
+  configPath: string | null;
+  refineEnabled: boolean;
+  implementEnabled: boolean;
+  decompositionEnabled: boolean;
+  appendixRefs: AppendixRef[];
+  availableModuleTags: string[];
+}
+
 export type PhaseStatus = 'pending' | 'running' | 'done' | 'failed' | 'blocked' | 'waiting';
 
 export interface Phase {
@@ -129,6 +149,11 @@ export interface ElectronAPI {
   // Resolve + Resume
   applyResolutions: (args: { projectRoot: string; runId: string; configPath?: string }) => Promise<void>;
   resumeRefine: (args: { projectRoot: string; runId: string; configPath?: string }) => Promise<void>;
+
+  // Preferences persistence
+  loadPreferences: () => Promise<PikaPreferences | null>;
+  savePreferences: (prefs: PikaPreferences) => Promise<boolean>;
+  pathExists: (targetPath: string) => Promise<boolean>;
 
   // Event listeners (main → renderer)
   onPikaStderr: (callback: (line: string) => void) => () => void;
