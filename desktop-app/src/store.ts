@@ -22,6 +22,8 @@ interface AppStore {
   activeItemIndex: number;
   setActiveItemIndex: (index: number) => void;
   resolveItem: (itemId: string, optionId: string) => void;
+  setItemEditorOutput: (itemId: string, editorOutput: Record<string, unknown>) => void;
+  setItemUserGuide: (itemId: string, userGuide: string) => void;
 
   // UI
   view: 'main' | 'settings';
@@ -111,6 +113,16 @@ export const useStore = create<AppStore>((set) => ({
   resolveItem: (itemId, optionId) => set((state) => ({
     currentGateItems: state.currentGateItems.map((item) =>
       item.id === itemId ? { ...item, selectedOption: optionId } : item
+    ),
+  })),
+  setItemEditorOutput: (itemId, editorOutput) => set((state) => ({
+    currentGateItems: state.currentGateItems.map((item) =>
+      item.id === itemId ? { ...item, editorOutput } : item
+    ),
+  })),
+  setItemUserGuide: (itemId, userGuide) => set((state) => ({
+    currentGateItems: state.currentGateItems.map((item) =>
+      item.id === itemId ? { ...item, userGuide } : item
     ),
   })),
 

@@ -546,13 +546,23 @@ def agent_resolve_command(
     project_root: str = typer.Option(..., "--project-root", help="Workspace root (required)."),
     verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logs."),
     apply_only: bool = typer.Option(False, "--apply-only", help="Skip interactive TUI; validate and apply a pre-filled resolutions.yaml."),
+    invoke_editor: bool = typer.Option(False, "--invoke-editor", help="Invoke spec_editor agent for a single item and return editor_output JSON. Requires --run and --item-index."),
+    item_index: int | None = typer.Option(None, "--item-index", help="Item index in resolutions.yaml to invoke the editor for (used with --invoke-editor)."),
+    user_guide: str | None = typer.Option(None, "--user-guide", help="Optional free-text guidance for the spec_editor agent (used with --invoke-editor)."),
 ) -> None:
     """Interactive manual resolution for blocked runs. Presents items one by one until all are resolved."""
+    if invoke_editor and item_index is None:
+        raise typer.BadParameter("--invoke-editor requires --item-index.", param_hint="'--item-index'")
     overrides: dict[str, str] = {}
     if run:
         overrides["run_id"] = run
     if apply_only:
         overrides["apply_only"] = "true"
+    if invoke_editor:
+        overrides["invoke_editor"] = "true"
+        overrides["item_index"] = str(item_index)
+        if user_guide:
+            overrides["user_guide"] = user_guide
     _execute_command(
         "resolve",
         config=config,

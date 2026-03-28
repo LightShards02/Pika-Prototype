@@ -98,6 +98,48 @@ function spawnPikaCommand(args) {
   return child;
 }
 
+/**
+ * Promise-based spawn for short-lived request/response CLI calls.
+ * Does NOT use the global pikaProcess singleton.
+ */
+function spawnPikaCommandAsync(args) {
+  return new Promise((resolve, reject) => {
+    const condaArgs = ['run', '-n', 'Local', 'python', '-m', 'cli', ...args];
+    const child = spawn('conda', condaArgs, {
+      cwd: PIKA_ROOT,
+      shell: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stdoutBuf = '';
+
+    child.stdout.on('data', (chunk) => {
+      stdoutBuf += chunk.toString();
+    });
+
+    child.stderr.on('data', (chunk) => {
+      const lines = chunk.toString().split(/\r?\n/).filter(Boolean);
+      for (const line of lines) {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('pika:stderr', line);
+        }
+      }
+    });
+
+    child.on('close', (code) => {
+      let summary = null;
+      try {
+        summary = JSON.parse(stdoutBuf.trim());
+      } catch {
+        // stdout may not be valid JSON
+      }
+      resolve({ code, summary });
+    });
+
+    child.on('error', (err) => reject(err));
+  });
+}
+
 // ---------------------------------------------------------------------------
 // IPC Handlers: File System (existing)
 // ---------------------------------------------------------------------------
@@ -208,9 +250,12 @@ ipcMain.handle('pika:write-resolution', async (_event, { runDir, resolutions }) 
     const content = fs.readFileSync(resolutionsPath, 'utf-8');
     const data = yaml.load(content);
 
-    for (const { itemIndex, chosenOptionId } of resolutions) {
+    for (const { itemIndex, chosenOptionId, editorOutput } of resolutions) {
       if (data.items && data.items[itemIndex]) {
         data.items[itemIndex].chosen_option_id = chosenOptionId;
+        if (editorOutput) {
+          data.items[itemIndex].editor_output = editorOutput;
+        }
       }
     }
 
@@ -245,6 +290,30 @@ ipcMain.handle('pika:resume-refine', async (_event, { projectRoot, runId, config
   if (configPath) args.push('--config', configPath);
 
   pikaProcess = spawnPikaCommand(args);
+});
+
+// ---------------------------------------------------------------------------
+// IPC Handler: Invoke spec_editor for a single gate item (desktop agent-edit)
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('pika:invoke-spec-editor', async (_event, { projectRoot, runId, itemIndex, userGuide, configPath }) => {
+  const args = [
+    'agent', 'resolve',
+    '--run', runId,
+    '--project-root', projectRoot,
+    '--invoke-editor',
+    '--item-index', String(itemIndex),
+  ];
+  if (userGuide) args.push('--user-guide', userGuide);
+  if (configPath) args.push('--config', configPath);
+
+  const { code, summary } = await spawnPikaCommandAsync(args);
+
+  if (code !== 0 || !summary || summary.status !== 'completed') {
+    throw new Error(summary?.reason || 'spec_editor invocation failed');
+  }
+
+  return summary;
 });
 
 // ---------------------------------------------------------------------------

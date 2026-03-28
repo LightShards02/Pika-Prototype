@@ -26,6 +26,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   applyResolutions: (args) => ipcRenderer.invoke('pika:apply-resolutions', args),
   resumeRefine: (args) => ipcRenderer.invoke('pika:resume-refine', args),
 
+  // Spec editor invocation (single-item agent edit for desktop gate)
+  invokeSpecEditor: (args) => ipcRenderer.invoke('pika:invoke-spec-editor', args),
+
   // Preferences persistence
   loadPreferences: () => ipcRenderer.invoke('preferences:load'),
   savePreferences: (prefs) => ipcRenderer.invoke('preferences:save', prefs),

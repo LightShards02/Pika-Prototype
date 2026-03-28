@@ -736,6 +736,56 @@ def _apply_only(
     }
 
 
+def _invoke_editor_only(
+    run_dir: Path,
+    run_id: str,
+    data: dict[str, Any],
+    items: list[dict[str, Any]],
+    config: dict[str, Any],
+    ctx: Any,
+) -> dict[str, Any]:
+    """Invoke spec_editor for a single item and return editor_output.
+
+    Used by the desktop GUI to get an agent edit preview before the user
+    decides to accept or reject.  Does NOT write to resolutions.yaml.
+    """
+    idx_str = ctx.input_overrides.get("item_index", "")
+    try:
+        item_index = int(idx_str)
+    except (ValueError, TypeError):
+        return {
+            "command": "resolve",
+            "status": "failed",
+            "reason": f"invalid item_index: {idx_str!r}",
+        }
+
+    if item_index < 0 or item_index >= len(items):
+        return {
+            "command": "resolve",
+            "status": "failed",
+            "reason": f"item_index {item_index} out of range (0..{len(items) - 1})",
+        }
+
+    user_guide = ctx.input_overrides.get("user_guide") or None
+    item = items[item_index]
+
+    editor_output = _invoke_spec_editor(item, config, ctx, run_dir, user_guide=user_guide)
+    if editor_output is None:
+        return {
+            "command": "resolve",
+            "status": "failed",
+            "reason": "spec_editor_failed",
+        }
+
+    return {
+        "command": "resolve",
+        "status": "completed",
+        "run_id": run_id,
+        "item_index": item_index,
+        "editor_output": editor_output,
+    }
+
+
 def run_resolve(config: dict[str, Any], ctx: Any) -> dict[str, Any]:
     """Run interactive resolution loop for a blocked run.
 
@@ -829,6 +879,12 @@ def run_resolve(config: dict[str, Any], ctx: Any) -> dict[str, Any]:
     # Validates a pre-filled resolutions.yaml and applies changes without TUI.
     if ctx.input_overrides.get("apply_only") == "true":
         return _apply_only(run_dir, run_id, data, items, config, ctx)
+
+    # Single-item editor invocation mode (for desktop GUI).
+    # Invokes spec_editor for one item and returns editor_output JSON without
+    # writing to resolutions.yaml or applying changes.
+    if ctx.input_overrides.get("invoke_editor") == "true":
+        return _invoke_editor_only(run_dir, run_id, data, items, config, ctx)
 
     spec_lookup = _build_spec_lookup(run_dir)
 

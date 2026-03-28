@@ -69,6 +69,8 @@ export interface ResolutionItem {
   selectedOption?: string;
   field?: string;
   itemIndex?: number;
+  editorOutput?: Record<string, unknown>;
+  userGuide?: string;
 }
 
 export interface RunErrorDetails {
@@ -151,11 +153,20 @@ export interface ElectronAPI {
 
   // Gate I/O
   readGateOutput: (args: { runDir: string }) => Promise<{ stage: string; items: RawAgentItem[] }>;
-  writeResolution: (args: { runDir: string; resolutions: { itemIndex: number; chosenOptionId: string }[] }) => Promise<void>;
+  writeResolution: (args: { runDir: string; resolutions: { itemIndex: number; chosenOptionId: string; editorOutput?: Record<string, unknown> }[] }) => Promise<void>;
 
   // Resolve + Resume
   applyResolutions: (args: { projectRoot: string; runId: string; configPath?: string }) => Promise<void>;
   resumeRefine: (args: { projectRoot: string; runId: string; configPath?: string }) => Promise<void>;
+
+  // Spec editor invocation (single-item agent edit for desktop gate)
+  invokeSpecEditor: (args: {
+    projectRoot: string;
+    runId: string;
+    itemIndex: number;
+    userGuide?: string;
+    configPath?: string;
+  }) => Promise<{ editor_output: Record<string, unknown>; item_index: number }>;
 
   // Preferences persistence
   loadPreferences: () => Promise<PikaPreferences | null>;
