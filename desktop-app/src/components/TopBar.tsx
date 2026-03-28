@@ -1,11 +1,13 @@
 import { useState } from 'react';
-import { ArrowLeft, X, Settings, RotateCcw, FileWarning, Copy, Check } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { ArrowLeft, X, Settings, RotateCcw, FileWarning, Copy, Check, Info } from 'lucide-react';
 import { useStore } from '../store';
 import { clsx } from 'clsx';
 
 export const TopBar = () => {
   const { run, setRun, resetForNewRun, view, setView } = useStore();
   const [showErrorDetails, setShowErrorDetails] = useState(false);
+  const [showRunInfo, setShowRunInfo] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const isEntryScreen = run.status === 'idle' && view === 'main';
@@ -67,7 +69,7 @@ export const TopBar = () => {
           <h1 className="text-[15px] font-semibold text-text-primary">PIKA</h1>
         ) : (
           <>
-            <div className="flex items-center gap-2 mb-1">
+            <div className="flex items-center gap-2">
               <h1 className="text-[15px] font-semibold text-text-primary">Design Improvement</h1>
               {run.status !== 'idle' && (
                 <div className={clsx(
@@ -84,11 +86,15 @@ export const TopBar = () => {
                   {getStatusLabel(run.status)}
                 </div>
               )}
-            </div>
-            <div className="text-[12px] text-text-tertiary flex items-center gap-2">
-              <span>Run #{run.runId || '—'}</span>
-              <span>·</span>
-              <span className="truncate">{run.specPath || 'No spec loaded'}</span>
+              {run.status !== 'idle' && (
+                <button
+                  onClick={() => setShowRunInfo(true)}
+                  className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium text-text-secondary border border-border-medium rounded-md hover:bg-bg-elevated hover:text-text-primary transition-all cursor-pointer"
+                >
+                  <Info size={13} />
+                  See Run Info
+                </button>
+              )}
             </div>
           </>
         )}
@@ -149,8 +155,55 @@ export const TopBar = () => {
         </button>
       )}
 
-      {/* Error Details Modal */}
-      {showErrorDetails && run.errorDetails && (
+      {/* Run Info Modal — portaled to escape TopBar stacking context */}
+      {showRunInfo && createPortal(
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+          onClick={() => setShowRunInfo(false)}
+        >
+          <div
+            className="bg-white rounded-xl shadow-2xl border border-border-subtle w-[480px] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-6 py-4 border-b border-border-subtle">
+              <div className="flex items-center gap-2">
+                <Info size={18} className="text-accent-primary" />
+                <h2 className="text-[15px] font-semibold text-text-primary">Run Info</h2>
+              </div>
+              <button
+                onClick={() => setShowRunInfo(false)}
+                className="p-1.5 hover:bg-bg-elevated rounded-full transition-colors cursor-pointer"
+              >
+                <X size={16} className="text-text-tertiary" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div>
+                <div className="text-[11px] font-semibold text-text-tertiary uppercase tracking-wider mb-1">Run ID</div>
+                <div className="text-[14px] font-mono text-text-primary">{run.runId || '—'}</div>
+              </div>
+              <div>
+                <div className="text-[11px] font-semibold text-text-tertiary uppercase tracking-wider mb-1">Design Spec Path</div>
+                <div className="text-[13px] text-text-secondary break-all">{run.specPath || 'No spec loaded'}</div>
+              </div>
+            </div>
+
+            <div className="px-6 py-4 border-t border-border-subtle flex justify-end">
+              <button
+                onClick={() => setShowRunInfo(false)}
+                className="px-4 py-2 text-[13px] font-medium text-text-secondary border border-border-medium rounded-md hover:bg-bg-elevated transition-colors cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Error Details Modal — portaled to escape TopBar stacking context */}
+      {showErrorDetails && run.errorDetails && createPortal(
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
           onClick={() => setShowErrorDetails(false)}
@@ -226,7 +279,8 @@ export const TopBar = () => {
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

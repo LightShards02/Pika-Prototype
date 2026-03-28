@@ -1,5 +1,5 @@
-import { useMemo, useState, useRef, useEffect } from 'react';
-import { Search, Filter, CheckCircle2 } from 'lucide-react';
+import { useMemo, useState, useRef, useEffect, useCallback } from 'react';
+import { Search, Filter, CheckCircle2, ChevronDown, ChevronUp } from 'lucide-react';
 import { useStore } from '../store';
 import { clsx } from 'clsx';
 
@@ -11,7 +11,17 @@ export const SpecViewer = () => {
   } = useStore();
 
   const [showFilters, setShowFilters] = useState(false);
+  const [expandedSpecIds, setExpandedSpecIds] = useState<Set<string>>(new Set());
   const filterRef = useRef<HTMLDivElement>(null);
+
+  const toggleExpand = useCallback((specId: string) => {
+    setExpandedSpecIds(prev => {
+      const next = new Set(prev);
+      if (next.has(specId)) next.delete(specId);
+      else next.add(specId);
+      return next;
+    });
+  }, []);
 
   const hasActiveFilters = activeModuleFilters.length > 0 || showHighlightedOnly;
 
@@ -163,27 +173,50 @@ export const SpecViewer = () => {
           <tbody className="divide-y divide-border-subtle bg-bg-primary">
             {filteredSpecs.map((spec) => {
               const isHighlighted = highlightedSpecIds.includes(spec.spec_id);
+              const isExpanded = expandedSpecIds.has(spec.spec_id);
               return (
                 <tr
                   key={spec.spec_id}
                   className={clsx(
-                    "group h-10 hover:bg-bg-elevated transition-colors cursor-pointer text-[13px]",
+                    "group hover:bg-bg-elevated transition-colors text-[13px]",
                     isHighlighted ? "bg-bg-highlighted-row border-l-4 border-l-accent-primary" : "border-l-4 border-l-transparent"
                   )}
                 >
-                  <td className="px-4 py-2 font-mono text-indigo-mid font-semibold whitespace-nowrap">
+                  <td className={clsx(
+                    "px-4 py-2 font-mono font-semibold whitespace-nowrap align-top",
+                    isHighlighted ? "text-indigo-dark" : "text-indigo-mid"
+                  )}>
                     <div className="flex items-center gap-2">
                       {spec.status === 'done' && <CheckCircle2 size={12} className="text-success" />}
                       {spec.spec_id}
                     </div>
                   </td>
-                  <td className="px-4 py-2">
+                  <td className="px-4 py-2 align-top">
                     <span className="px-2 py-0.5 bg-indigo-light text-indigo-mid text-[11px] font-medium rounded-full">
                       {spec.module_tag}
                     </span>
                   </td>
-                  <td className="px-4 py-2 text-text-secondary truncate max-w-xs">
-                    {spec.requirement}
+                  <td className="px-4 py-2 text-text-secondary">
+                    <div className="flex items-start gap-2">
+                      <div className="flex-1 min-w-0">
+                        <div className={isExpanded ? "" : "truncate max-w-xs"}>
+                          {spec.requirement}
+                        </div>
+                        {isExpanded && spec.acceptance_criteria && (
+                          <div className="mt-2 pt-2 border-t border-border-subtle">
+                            <div className="text-[11px] font-semibold text-text-tertiary uppercase tracking-wider mb-1">Acceptance Criteria</div>
+                            <div className="text-[12px] text-text-secondary whitespace-pre-wrap">{spec.acceptance_criteria}</div>
+                          </div>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => toggleExpand(spec.spec_id)}
+                        className="shrink-0 p-0.5 rounded hover:bg-bg-elevated text-text-tertiary hover:text-text-secondary transition-colors cursor-pointer"
+                        title={isExpanded ? "Collapse" : "Expand"}
+                      >
+                        {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                      </button>
+                    </div>
                   </td>
                 </tr>
               );

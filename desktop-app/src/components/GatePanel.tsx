@@ -136,13 +136,17 @@ export const GatePanel = () => {
 
       <div className="flex-1 p-8 overflow-y-auto">
         <div className="max-w-2xl mx-auto space-y-6">
-          <div className="flex items-center justify-between text-[12px] font-semibold text-text-tertiary uppercase tracking-wider">
+          <div className="text-[12px] font-semibold text-text-tertiary uppercase tracking-wider">
             <span>ITEM {activeItemIndex + 1} OF {currentGateItems.length}</span>
-            <span>{currentItem.spec_ids.join(', ')}</span>
           </div>
 
           <div className="bg-white rounded-xl border border-border-subtle shadow-sm p-6 space-y-6">
             <div>
+              <div className="mb-3">
+                <span className="px-2 py-0.5 bg-indigo-light text-indigo-dark text-[12px] font-mono font-semibold rounded">
+                  {currentItem.spec_ids.join(', ')}
+                </span>
+              </div>
               <div className="inline-block px-2 py-0.5 bg-error/10 text-error text-[11px] font-bold rounded uppercase mb-3">
                 {currentItem.type}
               </div>
