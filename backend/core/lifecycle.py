@@ -706,11 +706,31 @@ def _filter_to_oneof_branch(
 ) -> dict[str, Any]:
     """Pick the best-matching ``oneOf`` branch and strip keys from other branches.
 
-    Scores each branch by counting required fields that have non-empty values
-    in *output*.  The branch with the highest score wins; the output is then
-    filtered to only that branch's declared properties.
+    Uses a two-pass strategy:
+
+    1. **Discriminator match** — if any branch defines a property with a ``const``
+       constraint and the output's value for that property matches exactly, that
+       branch wins immediately.  This handles the common discriminator pattern
+       (e.g. ``edit_type: "field"`` vs ``edit_type: "structural"``).
+    2. **Fallback score** — counts required fields that have non-empty values in
+       *output*.  The branch with the highest score wins.
+
+    The output is then filtered to only the winning branch's declared properties.
     """
     branches = schema.get("oneOf", [])
+
+    # Pass 1: discriminator const match
+    for branch in branches:
+        if not isinstance(branch, dict):
+            continue
+        props = branch.get("properties", {})
+        for prop_name, prop_schema in props.items():
+            if isinstance(prop_schema, dict) and "const" in prop_schema:
+                if output.get(prop_name) == prop_schema["const"]:
+                    allowed = set(props.keys())
+                    return {k: v for k, v in output.items() if k in allowed}
+
+    # Pass 2: required-field score fallback
     best_branch: dict[str, Any] | None = None
     best_score = -1
     for branch in branches:
@@ -824,6 +844,18 @@ def _flatten_oneof_for_api(schema: dict[str, Any]) -> dict[str, Any]:
     for branch in schema["oneOf"]:
         if isinstance(branch, dict):
             for prop_name, prop_schema in branch.get("properties", {}).items():
+                if prop_name in merged_properties:
+                    existing = merged_properties[prop_name]
+                    # When the same property has conflicting ``const`` values
+                    # across branches (discriminator pattern), merge them into
+                    # an ``enum`` so the API allows either value.
+                    ex_const = existing.get("const") if isinstance(existing, dict) else None
+                    new_const = prop_schema.get("const") if isinstance(prop_schema, dict) else None
+                    if ex_const is not None and new_const is not None and ex_const != new_const:
+                        merged = {k: v for k, v in prop_schema.items() if k != "const"}
+                        merged["enum"] = [ex_const, new_const]
+                        merged_properties[prop_name] = merged
+                        continue
                 merged_properties[prop_name] = prop_schema
 
     # Strip minItems from top-level array properties — the branching semantics

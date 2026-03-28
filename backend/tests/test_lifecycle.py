@@ -16,6 +16,8 @@ from core.lifecycle import (
     _emit_agent_conclusion,
     _backfill_missing_required_output_fields,
     _filter_output_to_schema_properties,
+    _filter_to_oneof_branch,
+    _flatten_oneof_for_api,
     get_agent_provider,
     get_local_command,
     get_local_exec_timeout_sec,
@@ -1306,6 +1308,166 @@ class FilterAndBackfillTests(unittest.TestCase):
         self.assertIn("created_at", result)
         self.assertEqual(len(result["mappings"]), 1)
         self.assertEqual(result["mappings"][0]["spec_id"], "A1")
+
+
+class TestFlattenOneOfForApi(unittest.TestCase):
+    """Tests for _flatten_oneof_for_api discriminator handling."""
+
+    _DISCRIMINATOR_SCHEMA: dict = {
+        "oneOf": [
+            {
+                "required": ["edit_type", "spec_id", "field", "new_text", "rationale"],
+                "additionalProperties": False,
+                "properties": {
+                    "edit_type": {"type": "string", "const": "field"},
+                    "spec_id": {"type": "string"},
+                    "field": {"type": "string"},
+                    "new_text": {"type": "string"},
+                    "rationale": {"type": "string"},
+                },
+            },
+            {
+                "required": ["edit_type", "edits", "rationale"],
+                "additionalProperties": False,
+                "properties": {
+                    "edit_type": {"type": "string", "const": "structural"},
+                    "rationale": {"type": "string"},
+                    "edits": {"type": "array", "minItems": 1, "items": {"type": "object"}},
+                },
+            },
+        ],
+    }
+
+    def test_conflicting_const_becomes_enum(self) -> None:
+        flat = _flatten_oneof_for_api(self._DISCRIMINATOR_SCHEMA)
+        et = flat["properties"]["edit_type"]
+        self.assertNotIn("const", et, "const should be removed after merge")
+        self.assertIn("enum", et)
+        self.assertEqual(sorted(et["enum"]), ["field", "structural"])
+
+    def test_non_conflicting_properties_preserved(self) -> None:
+        flat = _flatten_oneof_for_api(self._DISCRIMINATOR_SCHEMA)
+        self.assertIn("spec_id", flat["properties"])
+        self.assertIn("edits", flat["properties"])
+        self.assertIn("field", flat["properties"])
+
+    def test_minItems_stripped_from_arrays(self) -> None:
+        flat = _flatten_oneof_for_api(self._DISCRIMINATOR_SCHEMA)
+        self.assertNotIn("minItems", flat["properties"]["edits"])
+
+    def test_all_properties_required(self) -> None:
+        flat = _flatten_oneof_for_api(self._DISCRIMINATOR_SCHEMA)
+        self.assertEqual(
+            sorted(flat["required"]),
+            sorted(flat["properties"].keys()),
+        )
+
+    def test_no_oneof_returns_unchanged(self) -> None:
+        simple = {"type": "object", "properties": {"a": {"type": "string"}}}
+        self.assertIs(_flatten_oneof_for_api(simple), simple)
+
+    def test_same_const_not_converted_to_enum(self) -> None:
+        schema = {
+            "oneOf": [
+                {"properties": {"kind": {"type": "string", "const": "ok"}}},
+                {"properties": {"kind": {"type": "string", "const": "ok"}}},
+            ],
+        }
+        flat = _flatten_oneof_for_api(schema)
+        self.assertEqual(flat["properties"]["kind"].get("const"), "ok")
+        self.assertNotIn("enum", flat["properties"]["kind"])
+
+
+class TestFilterToOneOfBranch(unittest.TestCase):
+    """Tests for _filter_to_oneof_branch discriminator-aware routing."""
+
+    _SCHEMA: dict = {
+        "oneOf": [
+            {
+                "required": ["edit_type", "spec_id", "field", "new_text", "rationale"],
+                "additionalProperties": False,
+                "properties": {
+                    "edit_type": {"type": "string", "const": "field"},
+                    "spec_id": {"type": "string"},
+                    "field": {"type": "string"},
+                    "new_text": {"type": "string"},
+                    "rationale": {"type": "string"},
+                },
+            },
+            {
+                "required": ["edit_type", "edits", "rationale"],
+                "additionalProperties": False,
+                "properties": {
+                    "edit_type": {"type": "string", "const": "structural"},
+                    "rationale": {"type": "string"},
+                    "edits": {"type": "array", "minItems": 1, "items": {"type": "object"}},
+                },
+            },
+        ],
+    }
+
+    def test_field_mode_routes_to_field_branch(self) -> None:
+        output = {
+            "edit_type": "field",
+            "spec_id": "S1",
+            "field": "requirement",
+            "new_text": "Clear.",
+            "rationale": "Made measurable.",
+            "edits": [],
+        }
+        result = _filter_to_oneof_branch(output, self._SCHEMA)
+        self.assertIn("new_text", result)
+        self.assertNotIn("edits", result)
+        self.assertEqual(result["edit_type"], "field")
+
+    def test_structural_mode_routes_to_structural_branch(self) -> None:
+        output = {
+            "edit_type": "structural",
+            "spec_id": "S1",
+            "field": "requirement",
+            "new_text": "some text",
+            "rationale": "Split.",
+            "edits": [{"action": "add", "spec_id": "S1a"}],
+        }
+        result = _filter_to_oneof_branch(output, self._SCHEMA)
+        self.assertIn("edits", result)
+        self.assertNotIn("spec_id", result)
+        self.assertNotIn("field", result)
+        self.assertNotIn("new_text", result)
+        self.assertEqual(result["edit_type"], "structural")
+
+    def test_structural_with_more_cross_branch_props_still_routes_correctly(self) -> None:
+        """Previously, cross-branch props inflated the field branch score and won."""
+        output = {
+            "edit_type": "structural",
+            "spec_id": "S1",
+            "field": "requirement",
+            "new_text": "text",
+            "rationale": "reason",
+            "edits": [{"action": "delete", "spec_id": "S1"}],
+        }
+        result = _filter_to_oneof_branch(output, self._SCHEMA)
+        self.assertIn("edits", result)
+        self.assertNotIn("new_text", result)
+
+    def test_fallback_scoring_when_no_const(self) -> None:
+        schema = {
+            "oneOf": [
+                {
+                    "required": ["a", "b"],
+                    "properties": {"a": {"type": "string"}, "b": {"type": "string"}},
+                },
+                {
+                    "required": ["a", "c", "d"],
+                    "properties": {"a": {"type": "string"}, "c": {"type": "string"}, "d": {"type": "string"}},
+                },
+            ],
+        }
+        output = {"a": "x", "b": "", "c": "y", "d": "z"}
+        result = _filter_to_oneof_branch(output, schema)
+        self.assertIn("c", result)
+        self.assertIn("d", result)
+        self.assertNotIn("b", result)
 
 
 if __name__ == "__main__":
