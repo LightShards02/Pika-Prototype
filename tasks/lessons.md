@@ -43,3 +43,9 @@
   Rule: For any request touching the implement command (new validators, prompt changes, gate changes, new config flags), always reference docs/implement-checks-execution-order.md phase numbers. Name new phases with their proposed insertion point and [vX.X.X] tag.
 - Pattern: User asked for schema-instance links, but I returned two schema files and missed the concrete artifact instance.
   Rule: When asked for schema-instance relationship, always provide one schema definition path and one concrete runtime/document instance path for the same object type, with exact line anchors.
+- Pattern: Dataset-planning artifact naming was left ambiguous even though the repo already had an established convention.
+  Rule: For dataset packages in this repo, default to the existing `PROJECT_CONTEXT.md` convention unless the user explicitly asks to introduce a new artifact name.
+- Pattern: A reusable skill was created in the user-global registry even though the user intended project-scoped reuse across repository tools.
+  Rule: For skills derived from a specific repository workflow, default to project-level installation first and mirror them into Claude/Cursor project surfaces when the repo already has those integrations.
+- Pattern: New workspace config keys were added to `config.schema.json` without updating `backend/config/config.example.yaml`, leaving discoverability and copy-paste defaults out of sync.
+  Rule: Whenever new project (workspace) config is added to `backend/config/config.schema.json`, update `backend/config/config.example.yaml` in the same change so the canonical example stays valid and documents the new fields.

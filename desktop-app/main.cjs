@@ -7,7 +7,48 @@ const yaml = require('js-yaml');
 let mainWindow;
 let pikaProcess = null;
 
-const PIKA_ROOT = path.join(__dirname, '..', 'backend');
+/**
+ * Directory that contains cli.py, config/, core/, handlers/ (PIKA Python backend).
+ * Override when the app runs from a layout where ../backend is wrong or stale:
+ *   set PIKA_BACKEND_ROOT to an absolute path, e.g. C:\Work\Pika\backend
+ */
+function resolvePikaBackendRoot() {
+  const raw = process.env.PIKA_BACKEND_ROOT;
+  if (raw != null && String(raw).trim()) {
+    return path.resolve(String(raw).trim());
+  }
+  return path.resolve(__dirname, '..', 'backend');
+}
+
+const PIKA_ROOT = resolvePikaBackendRoot();
+
+/**
+ * Warn once if the backend's JSON schema cannot validate refine consensus keys.
+ * Prevents silent "additional properties" failures when the UI points at an updated project config
+ * but Electron still spawns an older PIKA checkout.
+ */
+function warnIfRefineConsensusSchemaMissing() {
+  const schemaPath = path.join(PIKA_ROOT, 'config', 'config.schema.json');
+  try {
+    if (!fs.existsSync(schemaPath)) {
+      console.warn(
+        `[PIKA desktop] Missing ${schemaPath}. Check PIKA_BACKEND_ROOT (currently ${PIKA_ROOT}).`,
+      );
+      return;
+    }
+    const doc = JSON.parse(fs.readFileSync(schemaPath, 'utf8'));
+    const refineProps = doc?.properties?.commands?.properties?.refine?.properties;
+    if (!refineProps || !Object.prototype.hasOwnProperty.call(refineProps, 'agent_replicas')) {
+      console.warn(
+        '[PIKA desktop] This PIKA backend config.schema.json is missing commands.refine.agent_replicas. ',
+        'Project configs that set agent_replicas / consensus_min_votes will fail validation. ',
+        `Pull the latest PIKA repo or set PIKA_BACKEND_ROOT to a backend that includes those keys. Using: ${PIKA_ROOT}`,
+      );
+    }
+  } catch (err) {
+    console.warn('[PIKA desktop] Could not read config.schema.json:', err.message);
+  }
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -32,6 +73,7 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  warnIfRefineConsensusSchemaMissing();
   createWindow();
 
   app.on('activate', () => {

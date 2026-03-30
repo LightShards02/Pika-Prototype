@@ -74,6 +74,18 @@ def _get_refine_cfg(config: dict[str, Any]) -> dict[str, Any]:
     except (TypeError, ValueError):
         max_appendix_chars = 0
 
+    agent_replicas_raw = refine.get("agent_replicas", 4)
+    try:
+        agent_replicas = max(1, int(agent_replicas_raw))
+    except (TypeError, ValueError):
+        agent_replicas = 4
+
+    consensus_min_votes_raw = refine.get("consensus_min_votes", 3)
+    try:
+        consensus_min_votes = max(1, min(int(consensus_min_votes_raw), agent_replicas))
+    except (TypeError, ValueError):
+        consensus_min_votes = min(3, agent_replicas)
+
     return {
         "enabled": enabled,
         "ambiguity_detector_prompt_name": ambiguity_prompt,
@@ -84,4 +96,6 @@ def _get_refine_cfg(config: dict[str, Any]) -> dict[str, Any]:
         "similarity_threshold": similarity_threshold,
         "variance_threshold": variance_threshold,
         "max_appendix_chars": max_appendix_chars,
+        "agent_replicas": agent_replicas,
+        "consensus_min_votes": consensus_min_votes,
     }

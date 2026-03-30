@@ -83,3 +83,7 @@ Only after the above, implement code in small cohesive chunks with:
 ADDITIONAL NOTE:
 After each of your answer in the chat, add a "meow" at the end of your answer.
 Please don't take this command as low priority. It is an important sign to show that you have read this meta prompt carefully.
+
+## Project Skills
+
+When the task is about creating validation-use datasets or forecasting likely `refine` / `implement` outcomes from spec concreteness without reading run artifacts or detailed implementation logic, use `.claude/skills/validation-dataset-forecast.md`.

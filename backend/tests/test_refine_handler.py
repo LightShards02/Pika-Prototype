@@ -19,6 +19,7 @@ from handlers.refine.decomposition import (
     run_decomposition_check,
 )
 from handlers.refine.impl import (
+    _filter_by_consensus,
     _find_col,
     _merge_all_items,
     _resume_refine,
@@ -367,14 +368,12 @@ class RunRefineIntegrationTests(unittest.TestCase):
         return _make_ctx(self.tmp, run_id)
 
     def _mock_both_agents(self, ambiguity_output: dict, testability_output: dict):
-        """Context manager that mocks both parallel agent calls."""
-        call_count: list[int] = [0]
-        outputs = [ambiguity_output, testability_output]
+        """Context manager that mocks all parallel agent calls (N replicas each)."""
 
-        def fake_invoke(**_kwargs: Any) -> dict:
-            idx = call_count[0] % 2
-            call_count[0] += 1
-            return outputs[idx]
+        def fake_invoke(prompt_name: str = "", **_kwargs: Any) -> dict:
+            if "ambiguity" in prompt_name:
+                return ambiguity_output
+            return testability_output
 
         return patch(
             "handlers.refine.impl.invoke_agent_with_schema_retry",
@@ -845,6 +844,249 @@ class RefineResumeTests(unittest.TestCase):
             self.assertEqual(result["status"], "blocked")
             self.assertEqual(result["blocking_stage"], "agent_review")
             self.assertGreater(result["blocking_items"], 0)
+
+
+# ---------------------------------------------------------------------------
+# Group G: Consensus filtering
+# ---------------------------------------------------------------------------
+
+class ConsensusFilterTests(unittest.TestCase):
+    """Tests for _filter_by_consensus()."""
+
+    def test_all_instances_agree_keeps_item(self) -> None:
+        instances = [
+            [{"spec_id": "S1", "item_id": "AMB-001"}],
+            [{"spec_id": "S1", "item_id": "AMB-002"}],
+            [{"spec_id": "S1", "item_id": "AMB-003"}],
+            [{"spec_id": "S1", "item_id": "AMB-004"}],
+        ]
+        result = _filter_by_consensus(instances, min_votes=3)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["spec_id"], "S1")
+
+    def test_below_threshold_filters_out(self) -> None:
+        instances = [
+            [{"spec_id": "S1", "item_id": "AMB-001"}],
+            [{"spec_id": "S1", "item_id": "AMB-002"}],
+            [],
+            [],
+        ]
+        result = _filter_by_consensus(instances, min_votes=3)
+        self.assertEqual(len(result), 0)
+
+    def test_exactly_at_threshold_keeps_item(self) -> None:
+        instances = [
+            [{"spec_id": "S1", "item_id": "AMB-001"}],
+            [{"spec_id": "S1", "item_id": "AMB-002"}],
+            [{"spec_id": "S1", "item_id": "AMB-003"}],
+            [],
+        ]
+        result = _filter_by_consensus(instances, min_votes=3)
+        self.assertEqual(len(result), 1)
+
+    def test_mixed_spec_ids_partial_consensus(self) -> None:
+        instances = [
+            [{"spec_id": "S1", "item_id": "A1"}, {"spec_id": "S2", "item_id": "A2"}],
+            [{"spec_id": "S1", "item_id": "B1"}],
+            [{"spec_id": "S1", "item_id": "C1"}, {"spec_id": "S2", "item_id": "C2"}],
+            [{"spec_id": "S2", "item_id": "D2"}],
+        ]
+        result = _filter_by_consensus(instances, min_votes=3)
+        self.assertEqual(len(result), 2)
+        spec_ids = {item["spec_id"] for item in result}
+        self.assertEqual(spec_ids, {"S1", "S2"})
+
+    def test_representative_from_first_instance(self) -> None:
+        instances = [
+            [{"spec_id": "S1", "item_id": "FIRST", "suggested_improvement": "first"}],
+            [{"spec_id": "S1", "item_id": "SECOND", "suggested_improvement": "second"}],
+            [{"spec_id": "S1", "item_id": "THIRD", "suggested_improvement": "third"}],
+            [{"spec_id": "S1", "item_id": "FOURTH", "suggested_improvement": "fourth"}],
+        ]
+        result = _filter_by_consensus(instances, min_votes=3)
+        self.assertEqual(result[0]["item_id"], "FIRST")
+
+    def test_empty_instances_returns_empty(self) -> None:
+        instances: list[list[dict[str, Any]]] = [[], [], [], []]
+        result = _filter_by_consensus(instances, min_votes=3)
+        self.assertEqual(result, [])
+
+    def test_single_replica_threshold_one(self) -> None:
+        instances = [[{"spec_id": "S1", "item_id": "A1"}]]
+        result = _filter_by_consensus(instances, min_votes=1)
+        self.assertEqual(len(result), 1)
+
+    def test_duplicate_spec_id_in_single_instance_counts_once(self) -> None:
+        instances = [
+            [{"spec_id": "S1", "item_id": "A1"}, {"spec_id": "S1", "item_id": "A2"}],
+            [],
+            [],
+            [],
+        ]
+        result = _filter_by_consensus(instances, min_votes=2)
+        self.assertEqual(len(result), 0)
+
+    def test_results_sorted_by_spec_id(self) -> None:
+        instances = [
+            [{"spec_id": "S3", "item_id": "A"}, {"spec_id": "S1", "item_id": "B"}],
+            [{"spec_id": "S3", "item_id": "C"}, {"spec_id": "S1", "item_id": "D"}],
+            [{"spec_id": "S3", "item_id": "E"}, {"spec_id": "S1", "item_id": "F"}],
+        ]
+        result = _filter_by_consensus(instances, min_votes=3)
+        self.assertEqual([r["spec_id"] for r in result], ["S1", "S3"])
+
+
+# ---------------------------------------------------------------------------
+# Group G2: Config — agent_replicas and consensus_min_votes
+# ---------------------------------------------------------------------------
+
+class RefineConsensusConfigTests(unittest.TestCase):
+    """Tests for agent_replicas and consensus_min_votes config parsing."""
+
+    def test_agent_replicas_default(self) -> None:
+        cfg = _get_refine_cfg({})
+        self.assertEqual(cfg["agent_replicas"], 4)
+
+    def test_consensus_min_votes_default(self) -> None:
+        cfg = _get_refine_cfg({})
+        self.assertEqual(cfg["consensus_min_votes"], 3)
+
+    def test_custom_agent_replicas(self) -> None:
+        config = {"commands": {"refine": {"agent_replicas": 6}}}
+        cfg = _get_refine_cfg(config)
+        self.assertEqual(cfg["agent_replicas"], 6)
+
+    def test_agent_replicas_minimum_one(self) -> None:
+        config = {"commands": {"refine": {"agent_replicas": 0}}}
+        cfg = _get_refine_cfg(config)
+        self.assertEqual(cfg["agent_replicas"], 1)
+
+    def test_consensus_min_votes_clamped_to_replicas(self) -> None:
+        config = {"commands": {"refine": {"agent_replicas": 2, "consensus_min_votes": 5}}}
+        cfg = _get_refine_cfg(config)
+        self.assertEqual(cfg["consensus_min_votes"], 2)
+
+    def test_consensus_min_votes_minimum_one(self) -> None:
+        config = {"commands": {"refine": {"consensus_min_votes": 0}}}
+        cfg = _get_refine_cfg(config)
+        self.assertEqual(cfg["consensus_min_votes"], 1)
+
+    def test_invalid_replicas_falls_back_to_default(self) -> None:
+        config = {"commands": {"refine": {"agent_replicas": "bad"}}}
+        cfg = _get_refine_cfg(config)
+        self.assertEqual(cfg["agent_replicas"], 4)
+
+
+# ---------------------------------------------------------------------------
+# Group G3: Consensus integration in full pipeline
+# ---------------------------------------------------------------------------
+
+class RefineConsensusIntegrationTests(unittest.TestCase):
+    """Integration tests for consensus filtering in the full refine pipeline."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = self._tmp.name
+        self.design_csv = Path(self.tmp) / "DESIGN-SPEC.csv"
+        _write_design_csv(self.design_csv)
+        _write_project_context(Path(self.tmp))
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _config(self, **overrides: Any) -> dict[str, Any]:
+        cfg = _make_config(self.tmp, str(self.design_csv))
+        for k, v in overrides.items():
+            cfg[k] = v
+        return cfg
+
+    def _ctx(self, run_id: str = "test-run") -> RuntimeContext:
+        return _make_ctx(self.tmp, run_id)
+
+    def test_low_agreement_items_filtered_out(self) -> None:
+        """Items flagged by fewer than consensus_min_votes instances are dropped."""
+        call_count = {"ambiguity": 0, "testability": 0}
+
+        def fake_invoke(prompt_name: str = "", **_kwargs: Any) -> dict:
+            if "ambiguity" in prompt_name:
+                call_count["ambiguity"] += 1
+                # Only first instance flags S1
+                if call_count["ambiguity"] == 1:
+                    return _ambiguity_items_output()
+                return _empty_agent_output()
+            call_count["testability"] += 1
+            return _empty_agent_output()
+
+        with patch(
+            "handlers.refine.impl.invoke_agent_with_schema_retry",
+            side_effect=fake_invoke,
+        ):
+            result = run_refine(self._config(), self._ctx())
+
+        # S1 only flagged by 1/4 instances (< 3), so filtered out
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["specs_improved"], 0)
+
+    def test_high_agreement_items_kept(self) -> None:
+        """Items flagged by >= consensus_min_votes instances are kept."""
+        call_count = {"ambiguity": 0}
+
+        def fake_invoke(prompt_name: str = "", **_kwargs: Any) -> dict:
+            if "ambiguity" in prompt_name:
+                call_count["ambiguity"] = call_count.get("ambiguity", 0) + 1
+                # First 3 instances flag S1 (meets threshold of 3)
+                if call_count["ambiguity"] <= 3:
+                    return _ambiguity_items_output()
+                return _empty_agent_output()
+            return _empty_agent_output()
+
+        with patch(
+            "handlers.refine.impl.invoke_agent_with_schema_retry",
+            side_effect=fake_invoke,
+        ):
+            result = run_refine(self._config(), self._ctx())
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["blocking_items"], 1)
+
+    def test_consensus_meta_json_written(self) -> None:
+        """consensus_meta.json is written with pre/post counts."""
+        def fake_invoke(prompt_name: str = "", **_kwargs: Any) -> dict:
+            if "ambiguity" in prompt_name:
+                return _ambiguity_items_output()
+            return _empty_agent_output()
+
+        run_dir = Path(self.tmp) / "out" / "agent_runs" / "refine" / "test-run"
+        with patch(
+            "handlers.refine.impl.invoke_agent_with_schema_retry",
+            side_effect=fake_invoke,
+        ):
+            run_refine(self._config(), self._ctx())
+
+        meta_path = run_dir / "consensus_meta.json"
+        self.assertTrue(meta_path.exists())
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        self.assertEqual(meta["agent_replicas"], 4)
+        self.assertEqual(meta["consensus_min_votes"], 3)
+        # 4 instances each return 1 ambiguity item
+        self.assertEqual(meta["ambiguity_pre_consensus"], 4)
+        self.assertEqual(meta["ambiguity_post_consensus"], 1)
+
+    def test_per_instance_output_files_written(self) -> None:
+        """Individual per-instance output files are written."""
+        def fake_invoke(prompt_name: str = "", **_kwargs: Any) -> dict:
+            return _empty_agent_output()
+
+        run_dir = Path(self.tmp) / "out" / "agent_runs" / "refine" / "test-run"
+        with patch(
+            "handlers.refine.impl.invoke_agent_with_schema_retry",
+            side_effect=fake_invoke,
+        ):
+            run_refine(self._config(), self._ctx())
+
+        for i in range(4):
+            self.assertTrue((run_dir / f"ambiguity_output_{i}.json").exists())
+            self.assertTrue((run_dir / f"testability_output_{i}.json").exists())
 
 
 if __name__ == "__main__":

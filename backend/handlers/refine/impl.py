@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import sys
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -72,6 +73,44 @@ def _merge_all_items(
 ) -> list[dict[str, Any]]:
     """Combine manual_resolution_items from all three sources in order."""
     return list(decomp_items) + list(ambiguity_items) + list(testability_items)
+
+
+def _filter_by_consensus(
+    all_instance_items: list[list[dict[str, Any]]],
+    min_votes: int,
+) -> list[dict[str, Any]]:
+    """Filter agent resolution items by cross-instance consensus.
+
+    For each spec_id, count how many distinct instances flagged it. Keep only
+    spec_ids where the count >= min_votes. Return one representative item per
+    surviving spec_id, taken from the first instance that flagged it.
+
+    Args:
+        all_instance_items: List of N item-lists, one per agent instance.
+        min_votes: Minimum number of instances that must flag the same spec_id.
+
+    Returns:
+        Consensus-filtered items sorted by spec_id.
+    """
+    spec_id_counts: Counter[str] = Counter()
+    for items in all_instance_items:
+        seen_in_instance: set[str] = set()
+        for item in items:
+            sid = item.get("spec_id", "")
+            if sid and sid not in seen_in_instance:
+                spec_id_counts[sid] += 1
+                seen_in_instance.add(sid)
+
+    passing_spec_ids = {sid for sid, count in spec_id_counts.items() if count >= min_votes}
+
+    representatives: dict[str, dict[str, Any]] = {}
+    for items in all_instance_items:
+        for item in items:
+            sid = item.get("spec_id", "")
+            if sid in passing_spec_ids and sid not in representatives:
+                representatives[sid] = item
+
+    return [representatives[sid] for sid in sorted(representatives)]
 
 
 def _resolve_refine_schema(config: dict[str, Any], project_root: Path, schema_key: str) -> Path:
@@ -161,41 +200,55 @@ def _run_refine_agents(
     ambiguity_vars = {**common_vars, "output_schema_file": str(ambiguity_schema)}
     testability_vars = {**common_vars, "output_schema_file": str(testability_schema)}
 
-    _report_refine_step("Agents", "running", "ambiguity detector + testability auditor")
+    agent_replicas = cfg["agent_replicas"]
+    consensus_min_votes = cfg["consensus_min_votes"]
 
-    def _call_ambiguity() -> dict[str, Any]:
-        return invoke_agent_with_schema_retry(
-            prompt_name=cfg["ambiguity_detector_prompt_name"],
-            template_vars=ambiguity_vars,
-            schema_path=ambiguity_schema,
-            config=config,
-            ctx=ctx,
-        )
+    _report_refine_step(
+        "Agents", "running",
+        f"ambiguity detector x{agent_replicas} + testability auditor x{agent_replicas}",
+    )
 
-    def _call_testability() -> dict[str, Any]:
-        return invoke_agent_with_schema_retry(
-            prompt_name=cfg["testability_auditor_prompt_name"],
-            template_vars=testability_vars,
-            schema_path=testability_schema,
-            config=config,
-            ctx=ctx,
-        )
+    def _make_caller(prompt_name: str, template_vars: dict[str, Any],
+                     schema_path: Path, label: str, index: int):
+        def _call() -> tuple[str, int, dict[str, Any]]:
+            result = invoke_agent_with_schema_retry(
+                prompt_name=prompt_name,
+                template_vars=template_vars,
+                schema_path=schema_path,
+                config=config,
+                ctx=ctx,
+            )
+            return (label, index, result)
+        return _call
 
-    ambiguity_output: dict[str, Any] | None = None
-    testability_output: dict[str, Any] | None = None
+    ambiguity_outputs: list[dict[str, Any] | None] = [None] * agent_replicas
+    testability_outputs: list[dict[str, Any] | None] = [None] * agent_replicas
     agent_errors: list[str] = []
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        fut_ambiguity = executor.submit(_call_ambiguity)
-        fut_testability = executor.submit(_call_testability)
-        try:
-            ambiguity_output = fut_ambiguity.result()
-        except Exception as exc:
-            agent_errors.append(f"ambiguity_detector: {exc}")
-        try:
-            testability_output = fut_testability.result()
-        except Exception as exc:
-            agent_errors.append(f"testability_auditor: {exc}")
+    with ThreadPoolExecutor(max_workers=agent_replicas * 2) as executor:
+        futures = {}
+        for i in range(agent_replicas):
+            fut_a = executor.submit(_make_caller(
+                cfg["ambiguity_detector_prompt_name"], ambiguity_vars,
+                ambiguity_schema, "ambiguity", i,
+            ))
+            futures[fut_a] = ("ambiguity", i)
+            fut_t = executor.submit(_make_caller(
+                cfg["testability_auditor_prompt_name"], testability_vars,
+                testability_schema, "testability", i,
+            ))
+            futures[fut_t] = ("testability", i)
+
+        for future in futures:
+            agent_type, idx = futures[future]
+            try:
+                _, _, result = future.result()
+                if agent_type == "ambiguity":
+                    ambiguity_outputs[idx] = result
+                else:
+                    testability_outputs[idx] = result
+            except Exception as exc:
+                agent_errors.append(f"{agent_type}[{idx}]: {exc}")
 
     if agent_errors:
         detail = "; ".join(agent_errors)
@@ -205,14 +258,35 @@ def _run_refine_agents(
     completed_stages.append("agents")
     log_lifecycle_event("lifecycle_agent_invoked", command="refine", run_id=ctx.run_id)
 
-    ambiguity_items: list[dict[str, Any]] = (
-        ambiguity_output.get("manual_resolution_items", []) if isinstance(ambiguity_output, dict) else []
-    )
-    testability_items: list[dict[str, Any]] = (
-        testability_output.get("manual_resolution_items", []) if isinstance(testability_output, dict) else []
-    )
-    _write_json(run_dir / "ambiguity_output.json", ambiguity_output or {})
-    _write_json(run_dir / "testability_output.json", testability_output or {})
+    # Write per-instance outputs
+    for i in range(agent_replicas):
+        _write_json(run_dir / f"ambiguity_output_{i}.json", ambiguity_outputs[i] or {})
+        _write_json(run_dir / f"testability_output_{i}.json", testability_outputs[i] or {})
+
+    # Extract items from all instances and apply consensus filtering
+    all_ambiguity_instance_items: list[list[dict[str, Any]]] = [
+        (out.get("manual_resolution_items", []) if isinstance(out, dict) else [])
+        for out in ambiguity_outputs
+    ]
+    all_testability_instance_items: list[list[dict[str, Any]]] = [
+        (out.get("manual_resolution_items", []) if isinstance(out, dict) else [])
+        for out in testability_outputs
+    ]
+
+    ambiguity_items = _filter_by_consensus(all_ambiguity_instance_items, consensus_min_votes)
+    testability_items = _filter_by_consensus(all_testability_instance_items, consensus_min_votes)
+
+    # Write consensus-filtered outputs
+    _write_json(run_dir / "ambiguity_output.json", {"manual_resolution_items": ambiguity_items})
+    _write_json(run_dir / "testability_output.json", {"manual_resolution_items": testability_items})
+    _write_json(run_dir / "consensus_meta.json", {
+        "agent_replicas": agent_replicas,
+        "consensus_min_votes": consensus_min_votes,
+        "ambiguity_pre_consensus": sum(len(items) for items in all_ambiguity_instance_items),
+        "ambiguity_post_consensus": len(ambiguity_items),
+        "testability_pre_consensus": sum(len(items) for items in all_testability_instance_items),
+        "testability_post_consensus": len(testability_items),
+    })
 
     all_items = _merge_all_items([], ambiguity_items, testability_items)
 

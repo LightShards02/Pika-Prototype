@@ -1,0 +1,4 @@
+interface:
+  display_name: "Validation Dataset Forecast"
+  short_description: "Design datasets and forecast agent behavior"
+  default_prompt: "Use $validation-dataset-forecast to design a validation dataset and predict likely refine or implement outcomes from spec concreteness."

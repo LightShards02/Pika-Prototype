@@ -1,0 +1,46 @@
+---
+description: Apply this rule when creating validation-use datasets or forecasting likely refine/implement behavior from package-level spec concreteness without reading implementation internals or run artifacts.
+globs:
+  - "dataset/**/PROJECT_CONTEXT.md"
+  - "dataset/**/raw-design-spec.csv"
+  - "dataset/**/state/DESIGN-SPEC.csv"
+  - "dataset/**/config.yaml"
+  - "dataset/**/appendix*.csv"
+  - "dataset/**/appendix*.md"
+alwaysApply: false
+---
+
+When the task is validation dataset creation or forecast-only dataset assessment:
+
+1. Use package artifacts only:
+   - `PROJECT_CONTEXT.md`
+   - design-spec CSVs
+   - appendices
+   - `config.yaml`
+   - visible folder structure
+2. Do not read implementation internals or run artifacts unless the user explicitly asks to include them.
+3. Separate:
+   - hard blockers vs quality risks
+   - dataset blockers vs environment blockers
+4. For dataset creation:
+   - keep module ownership explicit,
+   - use the repo package convention,
+   - include required config and error-code appendices,
+   - add data-flow or DTO appendices when needed,
+   - keep the SADS near 55-70 rows with atomic specs.
+5. For refine forecasts, look for:
+   - multi-behavior rows,
+   - ambiguous triggers,
+   - implied contracts missing from SHARED specs or appendices,
+   - rule names without definitions.
+6. For implement forecasts, look for:
+   - missing stack anchors,
+   - unnamed or underspecified external interfaces,
+   - DTOs without field-level detail,
+   - policy codes without trigger logic.
+7. Structure the answer as:
+   - Dataset Readiness
+   - Refine Forecast
+   - Implement Forecast
+   - Top Gaps
+   - Best Next Additions

@@ -628,6 +628,16 @@
               }
             },
             "appendix": { "$ref": "#/$defs/appendix_settings" },
+            "agent_replicas": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Number of parallel ambiguity-detector and testability-auditor agent instances each (same N for both)."
+            },
+            "consensus_min_votes": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Minimum cross-instance votes required to keep a flagged spec_id after consensus filtering; runtime clamps to agent_replicas."
+            },
             "outputs": {
               "type": "object",
               "additionalProperties": false,

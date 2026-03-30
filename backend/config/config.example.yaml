@@ -211,6 +211,9 @@ commands:
       blocking: false          # set true to gate on split/merge candidates before agents run
       similarity_threshold: 0.85
       variance_threshold: 0.15
+    # Ambiguity detector + testability auditor: N parallel instances each; consensus filters by spec_id vote count.
+    agent_replicas: 4
+    consensus_min_votes: 3
     # Optional: same appendix knobs as implement (refine loads appendices for ambiguity/testability agents only).
     # appendix:
     #   max_appendix_chars: 500000

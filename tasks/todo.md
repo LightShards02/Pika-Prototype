@@ -1,5 +1,34 @@
 # TODO
 
+## Current Task: Annotate Implement Execution Order with Planning Insertions
+
+- [x] Read the current implement execution-order document and map each proposed harness methodology to a concrete insertion point.
+- [x] Update `backend/docs/implement-checks-execution-order.md` with explicit `(planning)` insertion flags.
+- [x] Review the updated document for coverage and placement clarity.
+
+## Current Task Review: Annotate Implement Execution Order with Planning Insertions
+
+- Updated `backend/docs/implement-checks-execution-order.md` with inline `(planning)` markers at the relevant insertion points in the workflow instead of adding vague future-work notes.
+- Mapped runtime insertions to concrete workflow locations:
+  - after planner manual-resolution gating: round handoff packet,
+  - after dependency-context validation: batch acceptance contract,
+  - after verification: batch evaluator gate and failure-class round-control policy.
+- Added a separate planning-only section for the two non-runtime harness methodologies so the doc stays honest about execution order:
+  - benchmark/ablation lane,
+  - evaluator calibration corpus.
+
+## Current Task: Harness Methodology Brainstorm for PIKA
+
+- [x] Read the Anthropic harness design article and extract transferable methodology ideas.
+- [x] Inspect PIKA orchestration modules and current harness patterns.
+- [x] Produce prioritized recommendations tailored to PIKA with adoption notes.
+
+## Current Task Review: Harness Methodology Brainstorm for PIKA
+
+- Read the Anthropic article and extracted the transferable methodology themes: context resets/clean handoffs, planner-generator-evaluator separation, criteria-driven grading, negotiated contracts before execution, and periodic harness simplification through ablation.
+- Reviewed PIKA's active backend orchestration and found strong existing foundations already aligned with the article: central prompt registry, schema-gated agent outputs, manual-resolution blocking, batch-scoped implement briefs, semantic retry, isolated local workspaces, structured run artifacts, and consensus filtering in `refine`.
+- Identified the main improvement gap as evaluator methodology rather than basic harness safety: PIKA has strong deterministic guards, but limited first-class evaluator loops with explicit quality rubrics, negotiated acceptance contracts, and systematic "which harness steps are still load-bearing?" measurement.
+
 - [x] Implement verification worktree bootstrap when project-root path is missing inside detached worktree.
 - [x] Add regression tests for ignored/untracked subproject roots in detached worktree verification.
 - [x] Run targeted tests in `Local` conda env and record outcomes.
@@ -1468,3 +1497,103 @@
   - `npm run typecheck` -> pass
   - `npm test` -> `23 passed`
   - Manual GUI walkthrough recorded for wide/narrow panel behavior.
+
+## Current Task: Plan Validation-Use Dataset Construction
+
+- [x] Read project-level rules, prior lessons, and the SADS drafting skill.
+- [x] Inspect the nutrition dataset package structure, design-spec scale, and appendix usage.
+- [x] Draft a reusable plan for new medical-software validation datasets, including required artifacts, schemas, edge cases, and milestones.
+- [x] Call out open questions where the repo conventions or request leave dataset construction details ambiguous.
+
+## Current Task Review: Plan Validation-Use Dataset Construction
+
+- Established the nutrition dataset baseline to mirror:
+  - `PROJECT_CONTEXT.md` as the dataset-level project brief.
+  - `state/DESIGN-SPEC.csv` as a 19-column SADS contract with 63 rows across `UI`, `API`, `CORE`, `DATA`, `SHARED`, and `OBS`.
+  - `appendix_config_proposals.csv` as the existing appendix example with 29 configurable-item rows.
+- Drafted a reusable construction plan for future validation datasets that keeps the same scale and drafting style while expanding appendix coverage to include configurable items, error-code dictionaries, optional data-flow diagrams, optional DTO definitions, and other domain-heavy references.
+- Identified the main ambiguity to confirm before actual dataset authoring:
+  - whether the new artifact should be named `project.md` or follow the existing repo convention `PROJECT_CONTEXT.md`.
+
+## Current Task: Select Dataset Batch + Draft Per-Dataset Plans
+
+- [x] Incorporate user clarifications on artifact naming and allowed architecture diversity.
+- [x] Select a small dataset batch sized for nutrition-level quality within current context limits.
+- [x] Draft a slightly more detailed plan for each selected dataset before dataset generation starts.
+
+## Current Task Review: Select Dataset Batch + Draft Per-Dataset Plans
+
+- Chose a three-dataset first batch as the quality-safe scope for this turn series:
+  - one UI-facing medical workflow dataset,
+  - one non-UI / non-REST integration dataset,
+  - one data-facing batch-processing dataset.
+- Locked the naming convention to the repo-standard `PROJECT_CONTEXT.md`.
+- Drafted per-dataset plans with concrete user stories, module roles, workflow buckets, expected row budgets, and appendix sets before any dataset generation begins.
+
+## Current Task: Create `qc_run_release` Validation Dataset
+
+- [x] Scaffold the new dataset directory in the existing dataset package shape.
+- [x] Author `PROJECT_CONTEXT.md`, `vocab.yaml`, `config.yaml`, and appendix files.
+- [x] Author a nutrition-scale raw design spec for the QC run review and release workflow.
+- [x] Run deterministic `format` in the `Local` conda environment to generate canonical state artifacts.
+- [x] Verify appendix loading through the backend appendix loader and fix malformed CSV rows.
+
+## Current Task Review: Create `qc_run_release` Validation Dataset
+
+- Created `dataset/qc_run_release` with:
+  - `PROJECT_CONTEXT.md`
+  - `vocab.yaml`
+  - `config.yaml`
+  - `raw-design-spec.csv`
+  - `appendix_config_proposals.csv`
+  - `appendix_error_codes.csv`
+  - `appendix_dto_definitions.csv`
+  - `appendix_data_flow.md`
+  - `state/DESIGN-SPEC.csv`
+  - `state/id_registry.json`
+- Authored 64 SADS rows for a laboratory QC run review/release product spanning `UI`, `API`, `CORE`, `DATA`, `SHARED`, and `OBS`.
+- Verification:
+  - `conda run -n Local python .\\cli.py agent format --project-root ..\\dataset\\qc_run_release --config config.yaml` -> `status: completed`
+  - PowerShell CSV import checks confirmed `64` raw and canonical design-spec rows, `29` config appendix rows, and `15` error-code appendix rows.
+  - Backend appendix loader resolved `55` appendix entries for `implement` after fixing malformed CSV notes fields.
+
+## Current Task: Add Validation Dataset Forecast Skill
+
+- [x] Review project lessons and the `skill-creator` guidance.
+- [x] Scaffold a new reusable skill in the default user skill registry.
+- [x] Author the skill so it covers dataset creation and agent-output prediction from spec concreteness without run artifacts.
+- [x] Validate the skill folder and record the result.
+
+## Current Task Review: Add Validation Dataset Forecast Skill
+
+- Created a new user-global skill at `C:\Users\night\.codex\skills\validation-dataset-forecast`.
+- Wrote the skill to cover:
+  - validation dataset package creation,
+  - spec-concreteness assessment,
+  - refine forecast heuristics,
+  - implement forecast heuristics,
+  - guardrails against using implementation details or run artifacts for forecast-only requests.
+- Corrected the generated `agents/openai.yaml` default prompt and fixed quoted YAML frontmatter in `SKILL.md`.
+- Verification:
+  - `C:\Users\night\miniconda3\envs\Local\python.exe C:\Users\night\.codex\skills\.system\skill-creator\scripts\quick_validate.py C:\Users\night\.codex\skills\validation-dataset-forecast` -> `Skill is valid!`
+
+## Current Task: Move Validation Dataset Forecast Skill To Project Scope
+
+- [x] Record the correction that repo-derived skills should default to project scope.
+- [x] Copy the validated skill into project-level `.codex/skills`.
+- [x] Add project-level Claude and Cursor equivalents.
+- [x] Remove the user-global copy and validate the repo-level Codex skill.
+
+## Current Task Review: Move Validation Dataset Forecast Skill To Project Scope
+
+- Moved the skill into the repository at `.codex/skills/validation-dataset-forecast`.
+- Added Claude project guidance at:
+  - `.claude/skills/validation-dataset-forecast.md`
+  - `.claude/CLAUDE.md` project-skills reference
+- Added Cursor project guidance at:
+  - `.cursor/skills/validation-dataset-forecast/SKILL.md`
+  - `.cursor/rules/Validation-Dataset-Forecast.mdc`
+- Removed the user-global copy from `C:\Users\night\.codex\skills\validation-dataset-forecast`.
+- Verification:
+  - `C:\Users\night\miniconda3\envs\Local\python.exe C:\Users\night\.codex\skills\.system\skill-creator\scripts\quick_validate.py .\.codex\skills\validation-dataset-forecast` -> `Skill is valid!`
+  - Presence check confirmed the project-level Codex, Claude, and Cursor files exist and the user-global copy is absent.

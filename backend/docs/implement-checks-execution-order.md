@@ -44,6 +44,8 @@
    d. Produces: `manual_resolution/{stage}.json`, `manual_resolution/resolutions.yaml` (when blocked).
 
    > **Placement rationale:** The planner output schema is `oneOf` — it produces *either* `manual_resolution_items` *or* a valid plan (`module_plans`, `spec_dependencies`, etc.). If the planner chose the manual-resolution branch, no plan object exists and steps 8+ would operate on missing data. This gate must run before any plan-dependent validation.
+   >
+   > `(planning)` **Insert after step 7 and reuse after any non-successful exit from steps 18-26: Write Round Handoff Packet.** Persist a compact handoff artifact for retries and resumes containing: what changed, what failed, resolved decisions already accepted, strategies that should not be retried, remaining risks, and the next exact objective. This keeps later agent rounds clean-slate and prevents raw-log replay from becoming the only state transfer mechanism.
 
 8. `[v0.0.3][deterministic]` **Gate Spec Consistency Issues** (`implement.spec_issue_escalation.enabled`): Escalate all planner-detected `spec_issues` to blocking `manual_resolution_items`.
    a. Iterate all `spec_issues` from the planner output (kinds: `contradiction`, `overlap`, `dependency_gap`, `ambiguity`, `orphan_reference`).
@@ -106,6 +108,8 @@
     c. Stop if dependency context drifts from the plan contract.
     d. Produces: `dependency_context_edge_validation.json`.
 
+    > `(planning)` **Insert after step 16: Construct Batch Acceptance Contract.** Before runtime-path prep and batch code generation, materialize a deterministic batch-local "definition of done" artifact from the validated brief. It should capture the expected behaviors, boundary contracts, verification scenarios, and explicit non-goals that the implementer and any later evaluator must use as the batch completion contract.
+
 17. `[v0.0.0][deterministic]` **Prepare Batch Runtime Path Context** (`implement.batch_runtime_path_contract_prep.enabled`): Build batch path contract and runtime file facts for execution prompt context.
     a. Build per-batch path constraints for execution-time safety.
     b. Gather runtime file facts needed by the implementer prompt.
@@ -165,3 +169,13 @@
     b. Capture exit codes and logs for traceability.
     c. Mark batch failed if any command exits non-zero.
     d. Produces: verification logs (e.g. `trace/trace.jsonl`).
+
+    > `(planning)` **Insert after step 26: Run Batch Evaluator Gate.** Add a first-class evaluator phase that consumes the batch acceptance contract, touched-file summary, verification logs, runtime evidence, and relevant contract artifacts. It should score completeness, contract fidelity, behavioral correctness, and test sufficiency with hard thresholds. The evaluator must prefer executed evidence over diff plausibility; if evidence and claimed completion disagree, the evidence wins.
+    >
+    > `(planning)` **Insert after the future evaluator gate: Apply Failure-Class Round Control Policy.** Do not treat all failures as "retry implementer once more." Route the next action by failure class: schema/path/semantic failures regenerate the same batch; evaluator or verification misses trigger a repair round; repeated conceptual misses trigger re-planning for the affected batch/spec set; repeated stagnant scores or unchanged failure modes trigger block/escalation.
+
+## Planning-Only Harness Engineering Loops
+
+- `(planning)` **Out-of-band benchmark + ablation lane (not a per-run phase):** Maintain a representative implement benchmark suite and periodically re-run it while disabling or simplifying individual steps in this document. Use the measured impact on cost, latency, block rate, verification outcomes, and downstream issue rate to decide which harness components are still load-bearing.
+
+- `(planning)` **Out-of-band evaluator calibration corpus (fed by blocked/failed/evaluated runs):** After runs that block, fail, or receive low evaluator scores, persist labeled artifacts into a harness-improvement corpus. Use those cases to tune evaluator prompts, refine acceptance-contract structure, and decide where deterministic checks should be added versus removed.
