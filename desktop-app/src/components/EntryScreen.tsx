@@ -124,6 +124,7 @@ export const EntryScreen = () => {
       setRun({
         status: 'running',
         progress: 0,
+        command: 'refine',
         specPath: designSpecPath,
         projectRoot: projectRootPath,
       });

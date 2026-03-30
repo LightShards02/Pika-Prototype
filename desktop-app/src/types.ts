@@ -40,7 +40,9 @@ export interface PikaPreferences {
   availableModuleTags: string[];
 }
 
-export type PhaseStatus = 'pending' | 'running' | 'done' | 'failed' | 'blocked' | 'waiting';
+export type PhaseStatus = 'pending' | 'running' | 'done' | 'failed' | 'blocked';
+
+export type PikaCommand = 'refine' | 'implement' | 'batch';
 
 export interface Phase {
   id: string;
@@ -83,6 +85,7 @@ export interface RunState {
   currentPhaseId: string;
   progress: number;
   status: 'idle' | 'running' | 'paused' | 'completed' | 'failed';
+  command?: PikaCommand;
   runId?: string;
   specPath?: string;
   projectRoot?: string;
@@ -166,7 +169,12 @@ export interface ElectronAPI {
     itemIndex: number;
     userGuide?: string;
     configPath?: string;
-  }) => Promise<{ editor_output: Record<string, unknown>; item_index: number }>;
+  }) => Promise<{
+    status: string;
+    editor_output?: Record<string, unknown>;
+    item_index?: number;
+    [key: string]: unknown;
+  }>;
 
   // Preferences persistence
   loadPreferences: () => Promise<PikaPreferences | null>;

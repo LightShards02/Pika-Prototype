@@ -1,4 +1,4 @@
-import { CheckCircle2, AlertTriangle, XCircle, Circle, Loader2, Clock } from 'lucide-react';
+import { CheckCircle2, AlertTriangle, XCircle, Loader2, Clock } from 'lucide-react';
 import { useStore } from '../store';
 import { clsx } from 'clsx';
 import type { PhaseStatus } from '../types';
@@ -9,9 +9,18 @@ const StatusIcon = ({ status }: { status: PhaseStatus }) => {
     case 'failed': return <XCircle size={18} className="text-error" />;
     case 'blocked': return <AlertTriangle size={18} className="text-warning" />;
     case 'running': return <Loader2 size={18} className="text-accent-primary animate-spin" />;
-    case 'waiting': return <Circle size={18} className="text-text-tertiary" />;
     case 'pending': return <Clock size={18} className="text-border-medium" />;
     default: return <Clock size={18} className="text-border-medium" />;
+  }
+};
+
+const statusLabel = (status: PhaseStatus): string => {
+  switch (status) {
+    case 'done': return '[DONE]';
+    case 'running': return '[RUNNING]';
+    case 'blocked': return '[BLOCKED]';
+    case 'failed': return '[FAILED]';
+    default: return '[PENDING]';
   }
 };
 
@@ -50,10 +59,7 @@ export const PipelineView = () => {
                 <div className="text-[12px] text-text-secondary truncate">{phase.description}</div>
               </div>
               <div className="text-[11px] font-semibold uppercase tracking-wider text-text-tertiary ml-4">
-                {phase.status === 'done' ? '[DONE]' : 
-                 phase.status === 'running' ? '[RUNNING]' : 
-                 phase.status === 'blocked' ? '[BLOCKED]' : 
-                 '[PENDING]'}
+                {statusLabel(phase.status)}
               </div>
             </div>
           ))}
@@ -86,7 +92,7 @@ export const PipelineView = () => {
                 <div className="text-[12px] text-text-secondary truncate">{phase.description}</div>
               </div>
               <div className="text-[11px] font-semibold uppercase tracking-wider text-text-tertiary ml-4">
-                {phase.status === 'done' ? '[DONE]' : '[PENDING]'}
+                {statusLabel(phase.status)}
               </div>
             </div>
           ))}
@@ -113,7 +119,7 @@ export const PipelineView = () => {
                 <div className="text-[12px] text-text-secondary">Code generation and verification per batch.</div>
               </div>
               <div className="text-[11px] font-semibold uppercase tracking-wider text-text-tertiary ml-4">
-                [PENDING]
+                {statusLabel(phase.status)}
               </div>
             </div>
           ))}

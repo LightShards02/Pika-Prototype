@@ -115,7 +115,11 @@ def _validate_referenced_files_exist(
 
 
 def _emit_summary(
-    command_name: str, config_path: Path, runtime_ctx: SummaryContext, status: str
+    command_name: str,
+    config_path: Path,
+    runtime_ctx: SummaryContext,
+    status: str,
+    extra: dict[str, Any] | None = None,
 ) -> None:
     """Emit JSON summary to stdout."""
     payload = {
@@ -128,6 +132,10 @@ def _emit_summary(
         "command_only_validation": runtime_ctx["command_only_validation"],
         "status": status,
     }
+    if extra:
+        for key, value in extra.items():
+            if key not in payload:
+                payload[key] = value
     print(json.dumps(payload, separators=(",", ":"), sort_keys=False))
 
 
@@ -304,7 +312,7 @@ def _execute_command(
             "command_end",
             extra={"event": "command_end", "status": status},
         )
-        _emit_summary(command_name, config_path, runtime_ctx, status)
+        _emit_summary(command_name, config_path, runtime_ctx, status, extra=dispatch_result)
     except Exception as exc:
         if run_logger is not None:
             run_logger.log(
