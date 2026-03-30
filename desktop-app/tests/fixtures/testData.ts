@@ -62,6 +62,29 @@ export const stderrLines = {
   loadFailed: '[PIKA] Load: failed \u2014 Missing required columns',
   invalidLine: 'Some random log line without PIKA format',
   malformed: '[PIKA] BadFormat',
+
+  // Implement steps
+  workspaceOk: '[PIKA] Workspace: ok \u2014 run impl-001',
+  catalogOk: '[PIKA] Catalog: ok \u2014 3 modules (AUTH, EXPORT, CORE)',
+  appendixOk: '[PIKA] Appendix: ok \u2014 2 entries loaded (1 with IDs)',
+  appendixFailed: '[PIKA] Appendix: failed \u2014 File not found',
+  plannerRunning: '[PIKA] Planner: running \u2014 unified planner',
+  plannerOk: '[PIKA] Planner: ok \u2014 3 modules, 2 anchors, 1 cross-dep, 4 contracts',
+  plannerFailed: '[PIKA] Planner: failed \u2014 timeout',
+  plannerBlocked: '[PIKA] Planner: blocked \u2014 2 manual resolution items',
+  planValidationOk: '[PIKA] Plan validation: ok \u2014 DAG valid, all specs covered',
+  planValidationBlocked: '[PIKA] Plan validation: blocked \u2014 dependency cycle requires manual resolution',
+  contractFieldOk: '[PIKA] Contract field check: ok \u2014 all contract fields consistent',
+  requiredFieldOk: '[PIKA] Required field coverage check: ok \u2014 contract fields are covered',
+  batchPlanOk: '[PIKA] Batch plan: ok \u2014 3 batches',
+  briefsOk: '[PIKA] Briefs: ok \u2014 3 batch briefs',
+  briefValidationOk: '[PIKA] Brief validation: ok \u2014 all briefs batch-scoped',
+  depCheckOk: '[PIKA] Dependency context edge check: ok \u2014 dependency context matches planner',
+  depCheckFailed: '[PIKA] Dependency context edge check: failed \u2014 mismatch detected',
+  executeRunning: '[PIKA] Execute: running \u2014 B0 (1/3)',
+  executeOk: '[PIKA] Execute: ok \u2014 3 batches completed (parallel)',
+  executeFailed: '[PIKA] Execute: failed \u2014 code_gen: timeout',
+  executeBlocked: '[PIKA] Execute: blocked \u2014 B1 manual resolution',
 };
 
 export function buildGateItems(): ResolutionItem[] {

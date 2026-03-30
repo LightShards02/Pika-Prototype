@@ -14,6 +14,7 @@ function setupGateState() {
       currentPhaseId: 'R3',
       progress: 75,
       status: 'paused',
+      command: 'refine',
       runDir: '/test/run/dir',
       runId: 'test-run',
       projectRoot: '/test/project',

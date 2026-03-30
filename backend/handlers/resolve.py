@@ -329,7 +329,8 @@ def _invoke_spec_editor(
         issue_parts.append(item.get("title", ""))
     issue_description = " | ".join(issue_parts)
     if user_guide:
-        issue_description = f"{issue_description}\n\nUser editing guide: {user_guide}"
+        capped_guide = user_guide.strip()[:200]
+        issue_description = f"{issue_description}\n\nUser editing guide: {capped_guide}"
 
     spec_id = item.get("spec_id", "")
     field = item.get("field", "") if issue_kind == "field" else ""

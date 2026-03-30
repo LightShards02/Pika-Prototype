@@ -127,6 +127,144 @@ describe('mapStderrToPhaseUpdates', () => {
   it('Known step with unknown status -> empty array', () => {
     expect(mapStderrToPhaseUpdates({ step: 'Load', status: 'running', detail: '' })).toEqual([]);
   });
+
+  // --- Implement command: Load disambiguation ---
+
+  it('Load ok (implement) -> I1 running', () => {
+    expect(mapStderrToPhaseUpdates({ step: 'Load', status: 'ok', detail: '' }, 'implement')).toEqual([
+      { phaseId: 'I1', status: 'running' },
+    ]);
+  });
+
+  it('Load failed (implement) -> I1 failed', () => {
+    expect(mapStderrToPhaseUpdates({ step: 'Load', status: 'failed', detail: '' }, 'implement')).toEqual([
+      { phaseId: 'I1', status: 'failed' },
+    ]);
+  });
+
+  it('Load ok (no command) -> R1 done (backward compat)', () => {
+    expect(mapStderrToPhaseUpdates({ step: 'Load', status: 'ok', detail: '' })).toEqual([
+      { phaseId: 'R1', status: 'done' },
+    ]);
+  });
+
+  // --- Implement steps: I1 (Normalize Config) ---
+
+  it('Workspace ok -> I1 running', () => {
+    expect(mapStderrToPhaseUpdates({ step: 'Workspace', status: 'ok', detail: '' })).toEqual([
+      { phaseId: 'I1', status: 'running' },
+    ]);
+  });
+
+  it('Catalog ok -> I1 running', () => {
+    expect(mapStderrToPhaseUpdates({ step: 'Catalog', status: 'ok', detail: '' })).toEqual([
+      { phaseId: 'I1', status: 'running' },
+    ]);
+  });
+
+  it('Appendix ok -> I1 done', () => {
+    expect(mapStderrToPhaseUpdates({ step: 'Appendix', status: 'ok', detail: '' })).toEqual([
+      { phaseId: 'I1', status: 'done' },
+    ]);
+  });
+
+  it('Appendix failed -> I1 failed', () => {
+    expect(mapStderrToPhaseUpdates({ step: 'Appendix', status: 'failed', detail: '' })).toEqual([
+      { phaseId: 'I1', status: 'failed' },
+    ]);
+  });
+
+  // --- Implement steps: I5 (Run Unified Planner) ---
+
+  it('Planner running -> I5 running', () => {
+    expect(mapStderrToPhaseUpdates({ step: 'Planner', status: 'running', detail: '' })).toEqual([
+      { phaseId: 'I5', status: 'running' },
+    ]);
+  });
+
+  it('Planner ok -> I5 done', () => {
+    expect(mapStderrToPhaseUpdates({ step: 'Planner', status: 'ok', detail: '' })).toEqual([
+      { phaseId: 'I5', status: 'done' },
+    ]);
+  });
+
+  it('Planner failed -> I5 failed', () => {
+    expect(mapStderrToPhaseUpdates({ step: 'Planner', status: 'failed', detail: '' })).toEqual([
+      { phaseId: 'I5', status: 'failed' },
+    ]);
+  });
+
+  it('Planner blocked -> I7 blocked', () => {
+    expect(mapStderrToPhaseUpdates({ step: 'Planner', status: 'blocked', detail: '' })).toEqual([
+      { phaseId: 'I7', status: 'blocked' },
+    ]);
+  });
+
+  // --- Implement steps: I7 (Gate: Planner Blockers) ---
+
+  it('Plan validation ok -> I7 running', () => {
+    expect(mapStderrToPhaseUpdates({ step: 'Plan validation', status: 'ok', detail: '' })).toEqual([
+      { phaseId: 'I7', status: 'running' },
+    ]);
+  });
+
+  it('Plan validation blocked -> I7 blocked', () => {
+    expect(mapStderrToPhaseUpdates({ step: 'Plan validation', status: 'blocked', detail: '' })).toEqual([
+      { phaseId: 'I7', status: 'blocked' },
+    ]);
+  });
+
+  it('Required field coverage check ok -> I7 done', () => {
+    expect(mapStderrToPhaseUpdates({ step: 'Required field coverage check', status: 'ok', detail: '' })).toEqual([
+      { phaseId: 'I7', status: 'done' },
+    ]);
+  });
+
+  // --- Implement steps: I14 (Construct Batch Plan) ---
+
+  it('Batch plan ok -> I14 running', () => {
+    expect(mapStderrToPhaseUpdates({ step: 'Batch plan', status: 'ok', detail: '' })).toEqual([
+      { phaseId: 'I14', status: 'running' },
+    ]);
+  });
+
+  it('Dependency context edge check ok -> I14 done', () => {
+    expect(mapStderrToPhaseUpdates({ step: 'Dependency context edge check', status: 'ok', detail: '' })).toEqual([
+      { phaseId: 'I14', status: 'done' },
+    ]);
+  });
+
+  it('Dependency context edge check failed -> I14 failed', () => {
+    expect(mapStderrToPhaseUpdates({ step: 'Dependency context edge check', status: 'failed', detail: '' })).toEqual([
+      { phaseId: 'I14', status: 'failed' },
+    ]);
+  });
+
+  // --- Batch step: B-EXEC ---
+
+  it('Execute running -> B-EXEC running', () => {
+    expect(mapStderrToPhaseUpdates({ step: 'Execute', status: 'running', detail: '' })).toEqual([
+      { phaseId: 'B-EXEC', status: 'running' },
+    ]);
+  });
+
+  it('Execute ok -> B-EXEC done', () => {
+    expect(mapStderrToPhaseUpdates({ step: 'Execute', status: 'ok', detail: '' })).toEqual([
+      { phaseId: 'B-EXEC', status: 'done' },
+    ]);
+  });
+
+  it('Execute failed -> B-EXEC failed', () => {
+    expect(mapStderrToPhaseUpdates({ step: 'Execute', status: 'failed', detail: '' })).toEqual([
+      { phaseId: 'B-EXEC', status: 'failed' },
+    ]);
+  });
+
+  it('Execute blocked -> B-EXEC blocked', () => {
+    expect(mapStderrToPhaseUpdates({ step: 'Execute', status: 'blocked', detail: '' })).toEqual([
+      { phaseId: 'B-EXEC', status: 'blocked' },
+    ]);
+  });
 });
 
 // --- computeProgress ---
@@ -137,31 +275,80 @@ describe('computeProgress', () => {
     { id: 'R2', name: '', group: 'Refine', status: (statuses.R2 ?? 'pending') as Phase['status'], description: '', isBlocking: false },
     { id: 'R3', name: '', group: 'Refine', status: (statuses.R3 ?? 'pending') as Phase['status'], description: '', isBlocking: false },
     { id: 'R4', name: '', group: 'Refine', status: (statuses.R4 ?? 'pending') as Phase['status'], description: '', isBlocking: false },
-    { id: 'I1', name: '', group: 'Implement', status: 'done' as const, description: '', isBlocking: false },
+    { id: 'I1', name: '', group: 'Implement', status: (statuses.I1 ?? 'pending') as Phase['status'], description: '', isBlocking: false },
+    { id: 'I5', name: '', group: 'Implement', status: (statuses.I5 ?? 'pending') as Phase['status'], description: '', isBlocking: false },
+    { id: 'I7', name: '', group: 'Implement', status: (statuses.I7 ?? 'pending') as Phase['status'], description: '', isBlocking: false },
+    { id: 'I14', name: '', group: 'Implement', status: (statuses.I14 ?? 'pending') as Phase['status'], description: '', isBlocking: false },
+    { id: 'B-EXEC', name: '', group: 'Batch', status: (statuses['B-EXEC'] ?? 'pending') as Phase['status'], description: '', isBlocking: false },
   ];
 
-  it('all pending -> 0%', () => {
-    expect(computeProgress(makePhases({}))).toBe(0);
+  // --- Refine command (default) ---
+
+  it('all pending (refine) -> 0%', () => {
+    expect(computeProgress(makePhases({}), 'refine')).toBe(0);
   });
 
   it('R1 done -> 25%', () => {
-    expect(computeProgress(makePhases({ R1: 'done' }))).toBe(25);
+    expect(computeProgress(makePhases({ R1: 'done' }), 'refine')).toBe(25);
   });
 
   it('R1 done + R2 running -> 38%', () => {
-    expect(computeProgress(makePhases({ R1: 'done', R2: 'running' }))).toBe(38);
+    expect(computeProgress(makePhases({ R1: 'done', R2: 'running' }), 'refine')).toBe(38);
   });
 
-  it('all done -> 100%', () => {
-    expect(computeProgress(makePhases({ R1: 'done', R2: 'done', R3: 'done', R4: 'done' }))).toBe(100);
+  it('all done (refine) -> 100%', () => {
+    expect(computeProgress(makePhases({ R1: 'done', R2: 'done', R3: 'done', R4: 'done' }), 'refine')).toBe(100);
   });
 
-  it('ignores non-Refine phases', () => {
-    // I1 is done but should be ignored
-    const phases: Phase[] = [
-      { id: 'I1', name: '', group: 'Implement', status: 'done', description: '', isBlocking: false },
-    ];
-    expect(computeProgress(phases)).toBe(0);
+  it('defaults to refine when command omitted', () => {
+    expect(computeProgress(makePhases({ R1: 'done' }))).toBe(25);
+  });
+
+  it('ignores non-scoped phases (refine ignores I1)', () => {
+    expect(computeProgress(makePhases({ I1: 'done' }), 'refine')).toBe(0);
+  });
+
+  // --- Blocked/failed weighting ---
+
+  it('R1 done + R2 blocked -> 50% (blocked = full weight)', () => {
+    expect(computeProgress(makePhases({ R1: 'done', R2: 'blocked' }), 'refine')).toBe(50);
+  });
+
+  it('R1 done + R2 failed -> 38% (failed = half weight)', () => {
+    expect(computeProgress(makePhases({ R1: 'done', R2: 'failed' }), 'refine')).toBe(38);
+  });
+
+  it('blocked phases do not cause backward progress vs running', () => {
+    const runningProgress = computeProgress(makePhases({ R1: 'done', R2: 'running' }), 'refine');
+    const blockedProgress = computeProgress(makePhases({ R1: 'done', R2: 'blocked' }), 'refine');
+    expect(blockedProgress).toBeGreaterThanOrEqual(runningProgress);
+  });
+
+  // --- Implement command ---
+
+  it('all done (implement) -> 100%', () => {
+    expect(computeProgress(
+      makePhases({ I1: 'done', I5: 'done', I7: 'done', I14: 'done', 'B-EXEC': 'done' }),
+      'implement',
+    )).toBe(100);
+  });
+
+  it('I1 done + I5 running (implement) -> 30%', () => {
+    expect(computeProgress(makePhases({ I1: 'done', I5: 'running' }), 'implement')).toBe(30);
+  });
+
+  it('ignores refine phases in implement scope', () => {
+    expect(computeProgress(makePhases({ R1: 'done', R2: 'done', R3: 'done', R4: 'done' }), 'implement')).toBe(0);
+  });
+
+  // --- Batch command ---
+
+  it('B-EXEC done (batch) -> 100%', () => {
+    expect(computeProgress(makePhases({ 'B-EXEC': 'done' }), 'batch')).toBe(100);
+  });
+
+  it('B-EXEC running (batch) -> 50%', () => {
+    expect(computeProgress(makePhases({ 'B-EXEC': 'running' }), 'batch')).toBe(50);
   });
 });
 

@@ -47,6 +47,7 @@ async function startRun(user: ReturnType<typeof userEvent.setup>) {
 
   await waitFor(() => {
     expect(useStore.getState().run.status).toBe('running');
+    expect(useStore.getState().run.command).toBe('refine');
   });
 }
 
@@ -115,10 +116,10 @@ describe('Refine flow integration', () => {
     fireStderr(stderrLines.decompDone);
     fireStderr(stderrLines.agentsRunning);
 
-    // Simulate blocked exit
+    // Simulate blocked exit with blocking_stage
     fireExit({
       code: 0,
-      summary: { status: 'blocked', run_id: 'test-run-123' },
+      summary: { status: 'blocked', run_id: 'test-run-123', blocking_stage: 'agent_review' },
     });
 
     await waitFor(() => {
@@ -126,6 +127,11 @@ describe('Refine flow integration', () => {
       expect(state.run.status).toBe('paused');
       expect(state.run.runId).toBe('test-run-123');
       expect(state.currentGateItems).toHaveLength(2);
+      // Verify blocked phases are marked
+      expect(state.phases.find((p) => p.id === 'R3')?.status).toBe('blocked');
+      expect(state.phases.find((p) => p.id === 'R4')?.status).toBe('blocked');
+      // Verify progress is explicitly set (not frozen)
+      expect(state.run.progress).toBeGreaterThan(0);
     });
 
     // Verify GatePanel is visible

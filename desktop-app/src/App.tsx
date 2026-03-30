@@ -111,14 +111,15 @@ function App() {
         const event = parseStderrLine(line);
         if (!event) return;
 
-        const updates = mapStderrToPhaseUpdates(event);
+        const command = useStore.getState().run.command;
+        const updates = mapStderrToPhaseUpdates(event, command);
         for (const { phaseId, status } of updates) {
           updatePhase(phaseId, { status });
         }
 
         // Update progress based on current phase states
         const currentPhases = useStore.getState().phases;
-        setRun({ progress: computeProgress(currentPhases) });
+        setRun({ progress: computeProgress(currentPhases, command) });
       });
 
       const unsubExit = window.electronAPI.onPikaExit(async (data) => {
@@ -126,11 +127,20 @@ function App() {
         const status = summary?.status as string | undefined;
 
         if (status === 'completed') {
-          // Mark all refine phases done
-          for (const id of ['R1', 'R2', 'R3', 'R4']) {
-            updatePhase(id, { status: 'done' });
+          // Safety net: mark phases done only if still pending/running
+          const cmd = useStore.getState().run.command;
+          const phaseIds = cmd === 'implement'
+            ? ['I1', 'I5', 'I7', 'I14', 'B-EXEC']
+            : ['R1', 'R2', 'R3', 'R4'];
+          const currentPhases = useStore.getState().phases;
+          for (const id of phaseIds) {
+            const phase = currentPhases.find((p) => p.id === id);
+            if (phase && (phase.status === 'pending' || phase.status === 'running')) {
+              updatePhase(id, { status: 'done' });
+            }
           }
-          setRun({ status: 'completed', progress: 100 });
+          const updatedPhases = useStore.getState().phases;
+          setRun({ status: 'completed', progress: computeProgress(updatedPhases, cmd) });
         } else if (status === 'blocked') {
           const runId = summary?.run_id as string | undefined;
           // Construct runDir from project root and run_id
@@ -147,7 +157,19 @@ function App() {
               );
               setCurrentGateItems(items);
               setActiveItemIndex(0);
-              setRun({ status: 'paused', runDir, runId });
+
+              // Mark the blocked phase(s) based on blocking_stage from summary
+              const blockingStage = summary?.blocking_stage as string | undefined;
+              if (blockingStage === 'decomposition') {
+                updatePhase('R2', { status: 'blocked' });
+              } else if (blockingStage === 'agent_review') {
+                updatePhase('R3', { status: 'blocked' });
+                updatePhase('R4', { status: 'blocked' });
+              }
+
+              const pausedPhases = useStore.getState().phases;
+              const cmd = useStore.getState().run.command;
+              setRun({ status: 'paused', runDir, runId, progress: computeProgress(pausedPhases, cmd) });
             } catch {
               setRun({
                 status: 'failed',
@@ -161,8 +183,11 @@ function App() {
             });
           }
         } else {
+          const failedPhases = useStore.getState().phases;
+          const cmd = useStore.getState().run.command;
           setRun({
             status: 'failed',
+            progress: computeProgress(failedPhases, cmd),
             errorDetails: { exitCode: code, stderr: stderrLines, summary },
           });
         }

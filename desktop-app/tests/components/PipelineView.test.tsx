@@ -51,4 +51,29 @@ describe('PipelineView', () => {
     render(<PipelineView />);
     expect(screen.getByText('[BLOCKED]')).toBeInTheDocument();
   });
+
+  it('shows [FAILED] when a phase is failed', () => {
+    useStore.getState().updatePhase('R1', { status: 'failed' });
+    render(<PipelineView />);
+    expect(screen.getByText('[FAILED]')).toBeInTheDocument();
+  });
+
+  it('shows [RUNNING] for implement phase when running', () => {
+    useStore.getState().updatePhase('I5', { status: 'running' });
+    render(<PipelineView />);
+    expect(screen.getByText('[RUNNING]')).toBeInTheDocument();
+  });
+
+  it('shows [BLOCKED] for implement phase when blocked', () => {
+    useStore.getState().updatePhase('I7', { status: 'blocked' });
+    render(<PipelineView />);
+    expect(screen.getByText('[BLOCKED]')).toBeInTheDocument();
+  });
+
+  it('shows actual status for batch phase', () => {
+    useStore.getState().updatePhase('B-EXEC', { status: 'running' });
+    render(<PipelineView />);
+    const runningLabels = screen.getAllByText('[RUNNING]');
+    expect(runningLabels.length).toBeGreaterThanOrEqual(1);
+  });
 });

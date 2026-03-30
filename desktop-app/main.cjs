@@ -48,7 +48,9 @@ app.on('window-all-closed', () => {
 // ---------------------------------------------------------------------------
 
 function spawnPikaCommand(args) {
-  const condaArgs = ['run', '-n', 'Local', 'python', '-m', 'cli', ...args];
+  // Quote any arg containing spaces so shell: true doesn't split them
+  const safeArgs = args.map((a) => (typeof a === 'string' && a.includes(' ')) ? `"${a}"` : a);
+  const condaArgs = ['run', '-n', 'Local', 'python', '-m', 'cli', ...safeArgs];
   const child = spawn('conda', condaArgs, {
     cwd: PIKA_ROOT,
     shell: true,
@@ -104,7 +106,9 @@ function spawnPikaCommand(args) {
  */
 function spawnPikaCommandAsync(args) {
   return new Promise((resolve, reject) => {
-    const condaArgs = ['run', '-n', 'Local', 'python', '-m', 'cli', ...args];
+    // Quote any arg containing spaces so shell: true doesn't split them
+    const safeArgs = args.map((a) => (typeof a === 'string' && a.includes(' ')) ? `"${a}"` : a);
+    const condaArgs = ['run', '-n', 'Local', 'python', '-m', 'cli', ...safeArgs];
     const child = spawn('conda', condaArgs, {
       cwd: PIKA_ROOT,
       shell: true,
@@ -112,6 +116,7 @@ function spawnPikaCommandAsync(args) {
     });
 
     let stdoutBuf = '';
+    const stderrLines = [];
 
     child.stdout.on('data', (chunk) => {
       stdoutBuf += chunk.toString();
@@ -120,6 +125,7 @@ function spawnPikaCommandAsync(args) {
     child.stderr.on('data', (chunk) => {
       const lines = chunk.toString().split(/\r?\n/).filter(Boolean);
       for (const line of lines) {
+        stderrLines.push(line);
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('pika:stderr', line);
         }
@@ -133,7 +139,7 @@ function spawnPikaCommandAsync(args) {
       } catch {
         // stdout may not be valid JSON
       }
-      resolve({ code, summary });
+      resolve({ code, summary, stderrLines });
     });
 
     child.on('error', (err) => reject(err));
@@ -307,10 +313,19 @@ ipcMain.handle('pika:invoke-spec-editor', async (_event, { projectRoot, runId, i
   if (userGuide) args.push('--user-guide', userGuide);
   if (configPath) args.push('--config', configPath);
 
-  const { code, summary } = await spawnPikaCommandAsync(args);
+  const { code, summary, stderrLines } = await spawnPikaCommandAsync(args);
+
+  console.log('[invoke-spec-editor] exit code:', code);
+  console.log('[invoke-spec-editor] summary:', JSON.stringify(summary, null, 2));
+  if (stderrLines.length > 0) {
+    console.log('[invoke-spec-editor] stderr (last 10):', stderrLines.slice(-10).join('\n'));
+  }
 
   if (code !== 0 || !summary || summary.status !== 'completed') {
-    throw new Error(summary?.reason || 'spec_editor invocation failed');
+    // Surface the real error from stderr
+    const pikaErrors = stderrLines.slice(-5).join(' | ');
+    const reason = summary?.reason || 'spec_editor invocation failed';
+    throw new Error(pikaErrors ? `${reason} — ${pikaErrors}` : `${reason} (exit code: ${code})`);
   }
 
   return summary;

@@ -3,6 +3,7 @@ import { useStore } from '../store';
 import { clsx } from 'clsx';
 import { useEffect, useState } from 'react';
 import type { ResolutionItem } from '../types';
+import { computeProgress } from '../services/pikaService';
 
 export const GatePanel = () => {
   const {
@@ -29,6 +30,7 @@ export const GatePanel = () => {
   const [pendingPreview, setPendingPreview] = useState<Record<string, unknown> | null>(null);
   const [userGuideInput, setUserGuideInput] = useState('');
   const [agentError, setAgentError] = useState<string | null>(null);
+  const [agentEditCompleted, setAgentEditCompleted] = useState(0);
 
   const currentItem = currentGateItems[activeItemIndex];
   const allResolved = currentGateItems.every(item => item.selectedOption);
@@ -51,7 +53,9 @@ export const GatePanel = () => {
 
     try {
       // 1. Write resolutions to YAML (including editorOutput for agent-edit items)
-      const resolutions = currentGateItems.map((item, idx) => ({
+      // Read fresh state to avoid stale closure after agent-edit accepts
+      const freshItems = useStore.getState().currentGateItems;
+      const resolutions = freshItems.map((item, idx) => ({
         itemIndex: item.itemIndex ?? idx,
         chosenOptionId: item.selectedOption!,
         editorOutput: item.editorOutput,
@@ -74,7 +78,8 @@ export const GatePanel = () => {
 
       // 3. Resume refine
       setCurrentGateItems([]);
-      setRun({ status: 'running', progress: 90 });
+      const resumePhases = useStore.getState().phases;
+      setRun({ status: 'running', progress: computeProgress(resumePhases, run.command) });
 
       await window.electronAPI.resumeRefine({
         projectRoot: run.projectRoot,
@@ -83,11 +88,26 @@ export const GatePanel = () => {
 
       const unsubResume = window.electronAPI.onPikaExit((data) => {
         unsubResume();
-        const status = data.summary?.status as string | undefined;
-        if (status === 'completed') {
-          setRun({ status: 'completed', progress: 100 });
+        const exitStatus = data.summary?.status as string | undefined;
+        if (exitStatus === 'completed') {
+          // Conditionally mark phases done (preserve failed/blocked state)
+          const phases = useStore.getState().phases;
+          const cmd = useStore.getState().run.command;
+          const phaseIds = cmd === 'implement'
+            ? ['I1', 'I5', 'I7', 'I14', 'B-EXEC']
+            : ['R1', 'R2', 'R3', 'R4'];
+          for (const id of phaseIds) {
+            const phase = phases.find((p) => p.id === id);
+            if (phase && (phase.status === 'pending' || phase.status === 'running' || phase.status === 'blocked')) {
+              useStore.getState().updatePhase(id, { status: 'done' });
+            }
+          }
+          const updatedPhases = useStore.getState().phases;
+          setRun({ status: 'completed', progress: computeProgress(updatedPhases, cmd) });
         } else {
-          setRun({ status: 'failed' });
+          const failedPhases = useStore.getState().phases;
+          const cmd = useStore.getState().run.command;
+          setRun({ status: 'failed', progress: computeProgress(failedPhases, cmd) });
         }
       });
     } catch {
@@ -112,7 +132,8 @@ export const GatePanel = () => {
       setAgentEditPhase(true);
       setAgentEditQueue(pendingAgentEdits);
       setAgentEditIndex(0);
-      setUserGuideInput('');
+      setAgentEditCompleted(0);
+      setUserGuideInput(pendingAgentEdits[0]?.userGuide ?? '');
       setPendingPreview(null);
       setAgentError(null);
       return;
@@ -128,6 +149,11 @@ export const GatePanel = () => {
     const item = agentEditQueue[agentEditIndex];
     if (!run.runId || !run.projectRoot) return;
 
+    if (item.itemIndex === undefined || item.itemIndex === null) {
+      setAgentError('Internal error: missing item index');
+      return;
+    }
+
     setIsInvokingAgent(true);
     setAgentError(null);
     setPendingPreview(null);
@@ -136,15 +162,17 @@ export const GatePanel = () => {
       const result = await window.electronAPI.invokeSpecEditor({
         projectRoot: run.projectRoot,
         runId: run.runId,
-        itemIndex: item.itemIndex!,
+        itemIndex: item.itemIndex,
         userGuide: userGuideInput || undefined,
         configPath: configPath ?? undefined,
       });
-      setPendingPreview(result.editor_output);
-      // Persist the user guide in store
-      if (userGuideInput) {
-        setItemUserGuide(item.id, userGuideInput);
+      if (!result.editor_output) {
+        setAgentError('Agent returned no edit proposal');
+        return;
       }
+      setPendingPreview(result.editor_output);
+      // Always sync guidance to store (including empty, to clear stale values)
+      setItemUserGuide(item.id, userGuideInput);
     } catch (err) {
       setAgentError(err instanceof Error ? err.message : 'Agent invocation failed');
     } finally {
@@ -152,21 +180,19 @@ export const GatePanel = () => {
     }
   };
 
-  const handleAcceptEdit = async () => {
+  const handleAcceptEdit = () => {
     const item = agentEditQueue[agentEditIndex];
     setItemEditorOutput(item.id, pendingPreview!);
     setPendingPreview(null);
-    setUserGuideInput('');
     setAgentError(null);
+    setAgentEditCompleted((c) => c + 1);
 
     if (agentEditIndex + 1 < agentEditQueue.length) {
       // Advance to next agent-edit item
       setAgentEditIndex(agentEditIndex + 1);
+      setUserGuideInput(agentEditQueue[agentEditIndex + 1]?.userGuide ?? '');
     } else {
-      // All agent edits accepted — proceed with resolutions
-      setAgentEditPhase(false);
-      // Small delay to let store settle before reading currentGateItems
-      setTimeout(() => proceedWithResolutions(), 50);
+      // Stay on current item — user can review or click "Apply All"
     }
   };
 
@@ -182,6 +208,37 @@ export const GatePanel = () => {
     setPendingPreview(null);
     setUserGuideInput('');
     setAgentError(null);
+  };
+
+  const handleSkipAgentEdit = () => {
+    const item = agentEditQueue[agentEditIndex];
+    resolveItem(item.id, 'skip');
+    setPendingPreview(null);
+    setAgentError(null);
+    setAgentEditCompleted((c) => c + 1);
+
+    if (agentEditIndex + 1 < agentEditQueue.length) {
+      setAgentEditIndex(agentEditIndex + 1);
+      setUserGuideInput(agentEditQueue[agentEditIndex + 1]?.userGuide ?? '');
+    } else {
+      // Stay on current item; user can use "Apply All" or navigate back
+    }
+  };
+
+  const navigateAgentEdit = (newIndex: number) => {
+    if (newIndex < 0 || newIndex >= agentEditQueue.length) return;
+    setPendingPreview(null);
+    setAgentError(null);
+    setAgentEditIndex(newIndex);
+    // Read fresh userGuide from store for the target item
+    const targetId = agentEditQueue[newIndex].id;
+    const storeItem = currentGateItems.find((i) => i.id === targetId);
+    setUserGuideInput(storeItem?.userGuide ?? '');
+  };
+
+  const handleApplyAll = async () => {
+    setIsContinuing(true);
+    await proceedWithResolutions();
   };
 
   // ── Icon helper ──────────────────────────────────────────────────────
@@ -200,7 +257,23 @@ export const GatePanel = () => {
   // ── Render: Agent-edit review sub-flow ───────────────────────────────
 
   if (agentEditPhase) {
+    if (isContinuing) {
+      return (
+        <div className="flex flex-col items-center justify-center h-full bg-bg-gate-active gap-4">
+          <Loader2 size={28} className="animate-spin text-accent-primary" />
+          <span className="text-[14px] font-medium text-text-secondary">Applying resolutions...</span>
+        </div>
+      );
+    }
+
     const editItem = agentEditQueue[agentEditIndex];
+    // Check if current item already has an accepted edit in the store
+    const storedOutput = currentGateItems.find((i) => i.id === editItem.id)?.editorOutput ?? null;
+    // Check if all queue items are done (accepted or skipped)
+    const allAgentEditsDone = agentEditQueue.every((qItem) => {
+      const storeItem = currentGateItems.find((i) => i.id === qItem.id);
+      return storeItem?.editorOutput || storeItem?.selectedOption === 'skip';
+    });
 
     return (
       <div className="flex flex-col h-full bg-bg-gate-active overflow-hidden">
@@ -213,13 +286,13 @@ export const GatePanel = () => {
             <h2 className="text-[16px] font-semibold text-text-primary">Agent Edit Review</h2>
           </div>
           <p className="text-[14px] text-text-secondary mb-4">
-            Review agent edits before applying. {agentEditIndex + 1} of {agentEditQueue.length} items.
+            Review agent edits before applying. {agentEditCompleted} of {agentEditQueue.length} completed.
           </p>
           <div className="flex items-center gap-4">
             <div className="flex-1 h-2 bg-bg-elevated rounded-full overflow-hidden">
               <div
                 className="h-full bg-accent-primary transition-all duration-300"
-                style={{ width: `${Math.round((agentEditIndex / agentEditQueue.length) * 100)}%` }}
+                style={{ width: `${Math.round((agentEditCompleted / agentEditQueue.length) * 100)}%` }}
               />
             </div>
             <button
@@ -229,6 +302,15 @@ export const GatePanel = () => {
               <ArrowLeft size={16} />
               Back to Gate
             </button>
+            {allAgentEditsDone && (
+              <button
+                onClick={handleApplyAll}
+                className="flex items-center gap-2 px-5 py-2 rounded-md text-[13px] font-semibold bg-accent-primary text-white hover:bg-accent-deep shadow-md transition-all cursor-pointer"
+              >
+                <Check size={16} />
+                Apply All
+              </button>
+            )}
           </div>
         </div>
 
@@ -248,70 +330,17 @@ export const GatePanel = () => {
               {editItem.currentText && (
                 <div>
                   <div className="text-[12px] font-semibold text-text-tertiary uppercase mb-1">Current Text</div>
-                  <div className="p-3 bg-bg-elevated rounded-lg font-mono text-[13px] text-text-primary leading-relaxed">
+                  <div className="p-3 bg-bg-elevated rounded-lg font-mono text-[13px] text-text-primary leading-relaxed whitespace-pre-wrap break-words">
                     {editItem.currentText}
                   </div>
                 </div>
               )}
               <p className="text-[14px] text-text-secondary leading-relaxed">
-                <span className="font-semibold text-text-primary">Reason:</span> {editItem.reason}
+                <span className="font-semibold text-text-primary">Vague Phrases:</span> {editItem.reason}
               </p>
             </div>
 
-            {/* User guidance input */}
-            {!pendingPreview && (
-              <div className="bg-white rounded-xl border border-border-subtle shadow-sm p-6 space-y-4">
-                <div className="text-[12px] font-semibold text-text-tertiary uppercase">
-                  Guidance for Agent (optional)
-                </div>
-                <textarea
-                  value={userGuideInput}
-                  onChange={(e) => setUserGuideInput(e.target.value)}
-                  placeholder="e.g., Make the requirement measurable with a specific SLA..."
-                  disabled={isInvokingAgent}
-                  className="w-full p-3 rounded-lg border border-border-medium text-[14px] text-text-primary placeholder:text-text-tertiary resize-none focus:outline-none focus:border-accent-primary transition-colors"
-                  rows={3}
-                />
-                <button
-                  onClick={handleInvokeAgent}
-                  disabled={isInvokingAgent}
-                  className={clsx(
-                    "flex items-center gap-2 px-6 py-2.5 rounded-md text-[13px] font-semibold transition-all cursor-pointer",
-                    isInvokingAgent
-                      ? "bg-border-medium text-text-tertiary cursor-not-allowed"
-                      : "bg-accent-primary text-white hover:bg-accent-deep shadow-md"
-                  )}
-                >
-                  {isInvokingAgent ? (
-                    <>
-                      <Loader2 size={16} className="animate-spin" />
-                      Running Agent...
-                    </>
-                  ) : (
-                    <>
-                      <Wand2 size={16} />
-                      Run Agent
-                    </>
-                  )}
-                </button>
-              </div>
-            )}
-
-            {/* Error display */}
-            {agentError && (
-              <div className="bg-error/5 border border-error/20 rounded-xl p-4">
-                <div className="text-[13px] font-semibold text-error mb-1">Agent Error</div>
-                <div className="text-[13px] text-error/80">{agentError}</div>
-                <button
-                  onClick={() => setAgentError(null)}
-                  className="mt-2 text-[12px] text-error underline cursor-pointer"
-                >
-                  Dismiss and retry
-                </button>
-              </div>
-            )}
-
-            {/* Preview of agent edit */}
+            {/* State 1: Fresh pending preview (just returned from agent, not yet accepted) */}
             {pendingPreview && (
               <div className="bg-white rounded-xl border-2 border-accent-primary/30 shadow-sm p-6 space-y-5">
                 <div className="text-[12px] font-semibold text-accent-primary uppercase">
@@ -319,7 +348,6 @@ export const GatePanel = () => {
                 </div>
 
                 {(pendingPreview.edit_type as string) === 'field' ? (
-                  /* Field edit preview */
                   <div className="space-y-4">
                     <div>
                       <div className="text-[11px] font-bold text-text-tertiary uppercase mb-1">Field</div>
@@ -329,13 +357,13 @@ export const GatePanel = () => {
                     </div>
                     <div>
                       <div className="text-[11px] font-bold text-error/70 uppercase mb-1">Old</div>
-                      <div className="p-3 bg-error/5 border border-error/15 rounded-lg font-mono text-[13px] text-text-primary leading-relaxed">
+                      <div className="p-3 bg-error/5 border border-error/15 rounded-lg font-mono text-[13px] text-text-primary leading-relaxed whitespace-pre-wrap break-words">
                         {editItem.currentText || '(empty)'}
                       </div>
                     </div>
                     <div>
                       <div className="text-[11px] font-bold text-green-700 uppercase mb-1">New</div>
-                      <div className="p-3 bg-green-50 border border-green-200 rounded-lg font-mono text-[13px] text-text-primary leading-relaxed">
+                      <div className="p-3 bg-green-50 border border-green-200 rounded-lg font-mono text-[13px] text-text-primary leading-relaxed whitespace-pre-wrap break-words">
                         {pendingPreview.new_text as string}
                       </div>
                     </div>
@@ -347,7 +375,6 @@ export const GatePanel = () => {
                     )}
                   </div>
                 ) : (
-                  /* Structural edit preview */
                   <div className="space-y-3">
                     {(pendingPreview.edits as Array<Record<string, unknown>>)?.map((edit, i) => (
                       <div key={i} className="flex items-start gap-3 p-3 bg-bg-elevated rounded-lg">
@@ -364,9 +391,8 @@ export const GatePanel = () => {
                             {edit.spec_id as string}
                           </span>
                           {edit.row_data && (
-                            <div className="mt-1 text-[12px] text-text-secondary truncate">
-                              {(edit.row_data as Record<string, string>).requirement?.slice(0, 120)}
-                              {((edit.row_data as Record<string, string>).requirement?.length ?? 0) > 120 ? '...' : ''}
+                            <div className="mt-1 text-[12px] text-text-secondary whitespace-pre-wrap break-words">
+                              {(edit.row_data as Record<string, string>).requirement}
                             </div>
                           )}
                         </div>
@@ -381,7 +407,6 @@ export const GatePanel = () => {
                   </div>
                 )}
 
-                {/* Accept / Reject */}
                 <div className="flex gap-3 pt-2">
                   <button
                     onClick={handleAcceptEdit}
@@ -400,6 +425,173 @@ export const GatePanel = () => {
                 </div>
               </div>
             )}
+
+            {/* State 2: Previously accepted edit (navigated back to a completed item) */}
+            {!pendingPreview && storedOutput && (
+              <div className="bg-white rounded-xl border-2 border-green-200 shadow-sm p-6 space-y-5">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 size={16} className="text-green-600" />
+                  <span className="text-[12px] font-semibold text-green-700 uppercase">Accepted Edit</span>
+                </div>
+
+                {(storedOutput.edit_type as string) === 'field' ? (
+                  <div className="space-y-4">
+                    <div>
+                      <div className="text-[11px] font-bold text-text-tertiary uppercase mb-1">Field</div>
+                      <span className="px-2 py-0.5 bg-bg-elevated text-text-secondary text-[12px] font-mono rounded">
+                        {storedOutput.field as string}
+                      </span>
+                    </div>
+                    <div>
+                      <div className="text-[11px] font-bold text-green-700 uppercase mb-1">Amended Text</div>
+                      <div className="p-3 bg-green-50 border border-green-200 rounded-lg font-mono text-[13px] text-text-primary leading-relaxed whitespace-pre-wrap break-words">
+                        {storedOutput.new_text as string}
+                      </div>
+                    </div>
+                    {storedOutput.rationale && (
+                      <div>
+                        <div className="text-[11px] font-bold text-text-tertiary uppercase mb-1">Rationale</div>
+                        <p className="text-[13px] text-text-secondary italic">{storedOutput.rationale as string}</p>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {(storedOutput.edits as Array<Record<string, unknown>>)?.map((edit, i) => (
+                      <div key={i} className="flex items-start gap-3 p-3 bg-bg-elevated rounded-lg">
+                        <span className={clsx(
+                          "px-2 py-0.5 text-[11px] font-bold uppercase rounded",
+                          (edit.action as string) === 'add' && "bg-green-100 text-green-700",
+                          (edit.action as string) === 'update' && "bg-amber-100 text-amber-700",
+                          (edit.action as string) === 'delete' && "bg-error/10 text-error",
+                        )}>
+                          {edit.action as string}
+                        </span>
+                        <div className="flex-1 min-w-0">
+                          <span className="font-mono text-[12px] text-indigo-dark font-semibold">
+                            {edit.spec_id as string}
+                          </span>
+                          {edit.row_data && (
+                            <div className="mt-1 text-[12px] text-text-secondary whitespace-pre-wrap break-words">
+                              {(edit.row_data as Record<string, string>).requirement}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                    {storedOutput.rationale && (
+                      <div>
+                        <div className="text-[11px] font-bold text-text-tertiary uppercase mb-1">Rationale</div>
+                        <p className="text-[13px] text-text-secondary italic">{storedOutput.rationale as string}</p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <button
+                  onClick={() => {
+                    setItemEditorOutput(editItem.id, undefined as unknown as Record<string, unknown>);
+                    setAgentEditCompleted((c) => Math.max(0, c - 1));
+                  }}
+                  className="flex items-center gap-2 px-5 py-2.5 rounded-md text-[13px] font-medium text-text-secondary hover:text-text-primary hover:bg-bg-elevated border border-border-medium transition-all cursor-pointer"
+                >
+                  <RefreshCcw size={16} />
+                  Re-run Agent
+                </button>
+              </div>
+            )}
+
+            {/* State 3: No preview, no stored output — show guidance form */}
+            {!pendingPreview && !storedOutput && (
+              <>
+                <div className="bg-white rounded-xl border border-border-subtle shadow-sm p-6 space-y-4">
+                  <div className="text-[12px] font-semibold text-text-tertiary uppercase">
+                    Guidance for Agent (optional)
+                  </div>
+                  <textarea
+                    value={userGuideInput}
+                    onChange={(e) => setUserGuideInput(e.target.value.slice(0, 200))}
+                    placeholder="e.g., Make the requirement measurable with a specific SLA..."
+                    disabled={isInvokingAgent}
+                    maxLength={200}
+                    className="w-full p-3 rounded-lg border border-border-medium text-[14px] text-text-primary placeholder:text-text-tertiary resize-none focus:outline-none focus:border-accent-primary transition-colors"
+                    rows={3}
+                  />
+                  <div className="text-[11px] text-text-tertiary text-right">
+                    {userGuideInput.length}/200
+                  </div>
+                  <div className="flex gap-3">
+                    <button
+                      onClick={handleInvokeAgent}
+                      disabled={isInvokingAgent}
+                      className={clsx(
+                        "flex items-center gap-2 px-6 py-2.5 rounded-md text-[13px] font-semibold transition-all cursor-pointer",
+                        isInvokingAgent
+                          ? "bg-border-medium text-text-tertiary cursor-not-allowed"
+                          : "bg-accent-primary text-white hover:bg-accent-deep shadow-md"
+                      )}
+                    >
+                      {isInvokingAgent ? (
+                        <>
+                          <Loader2 size={16} className="animate-spin" />
+                          Running Agent...
+                        </>
+                      ) : (
+                        <>
+                          <Wand2 size={16} />
+                          Run Agent
+                        </>
+                      )}
+                    </button>
+                    {!isInvokingAgent && (
+                      <button
+                        onClick={handleSkipAgentEdit}
+                        className="flex items-center gap-2 px-4 py-2.5 rounded-md text-[13px] font-medium text-text-secondary hover:text-text-primary hover:bg-bg-elevated border border-border-medium transition-all cursor-pointer"
+                      >
+                        <SkipForward size={16} />
+                        Skip Item
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {agentError && (
+                  <div className="bg-error/5 border border-error/20 rounded-xl p-4">
+                    <div className="text-[13px] font-semibold text-error mb-1">Agent Error</div>
+                    <div className="text-[13px] text-error/80">{agentError}</div>
+                    <button
+                      onClick={() => setAgentError(null)}
+                      className="mt-2 text-[12px] text-error underline cursor-pointer"
+                    >
+                      Dismiss and retry
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Navigation */}
+            <div className="flex justify-between items-center pt-4">
+              <button
+                disabled={agentEditIndex === 0 || isInvokingAgent}
+                onClick={() => navigateAgentEdit(agentEditIndex - 1)}
+                className="flex items-center gap-2 px-4 py-2 text-[14px] font-medium text-text-secondary hover:text-accent-primary disabled:opacity-30 cursor-pointer"
+              >
+                <ChevronLeft size={20} />
+                Previous
+              </button>
+              <span className="text-[12px] font-medium text-text-tertiary">
+                {agentEditIndex + 1} / {agentEditQueue.length}
+              </span>
+              <button
+                disabled={agentEditIndex === agentEditQueue.length - 1 || isInvokingAgent}
+                onClick={() => navigateAgentEdit(agentEditIndex + 1)}
+                className="flex items-center gap-2 px-4 py-2 text-[14px] font-medium text-text-secondary hover:text-accent-primary disabled:opacity-30 cursor-pointer"
+              >
+                Next
+                <ChevronRight size={20} />
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -466,7 +658,7 @@ export const GatePanel = () => {
                 "{currentItem.currentText}"
               </h3>
               <p className="text-[14px] text-text-secondary leading-relaxed">
-                <span className="font-semibold text-text-primary">Reason:</span> {currentItem.reason}
+                <span className="font-semibold text-text-primary">Vague Phrases:</span> {currentItem.reason}
               </p>
             </div>
 
@@ -512,21 +704,6 @@ export const GatePanel = () => {
               ))}
             </div>
 
-            {/* User guidance input shown when "let_agent_edit" is selected */}
-            {currentItem.selectedOption === 'let_agent_edit' && (
-              <div className="space-y-2 pt-2 border-t border-border-subtle">
-                <div className="text-[12px] font-semibold text-text-tertiary uppercase">
-                  Guidance for Agent (optional)
-                </div>
-                <textarea
-                  value={currentItem.userGuide ?? ''}
-                  onChange={(e) => setItemUserGuide(currentItem.id, e.target.value)}
-                  placeholder="e.g., Make the requirement measurable with a specific SLA..."
-                  className="w-full p-3 rounded-lg border border-border-medium text-[14px] text-text-primary placeholder:text-text-tertiary resize-none focus:outline-none focus:border-accent-primary transition-colors"
-                  rows={2}
-                />
-              </div>
-            )}
           </div>
 
           <div className="flex justify-between items-center pt-4">
