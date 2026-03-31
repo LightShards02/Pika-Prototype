@@ -641,6 +641,15 @@ def _run_refine_inner(
 
     _report_refine_step("Load", "ok", f"{len(rows)} specs from {design_path.name}")
 
+    # Early exit: --load-validate-only
+    if getattr(ctx, "phase_only", None) == "load_validate_only":
+        return {
+            "command": "refine",
+            "status": "load_validate_only",
+            "spec_count": len(rows),
+            "design_spec_path": str(design_path),
+        }
+
     # 5. setup run dir
     run_dir = resolve_agent_runs_dir_for_command(config, project_root, "refine", ctx.run_id)
     try:
@@ -664,7 +673,15 @@ def _run_refine_inner(
     completed_stages: list[str] = []
 
     # 6. decomposition check
-    if cfg["decomposition_enabled"]:
+    _phase_only = getattr(ctx, "phase_only", None)
+    if _phase_only == "agents_only":
+        _write_json(
+            run_dir / "decomposition_flags.json",
+            {"skipped": True, "reason": "skipped by --agents-only flag"},
+        )
+        _report_refine_step("Decomposition", "skipped", "skipped by --agents-only flag")
+
+    elif cfg["decomposition_enabled"] or _phase_only == "decomposition_only":
         _report_refine_step("Decomposition", "running", "analyzing topic coherence")
         decomp_flags = run_decomposition_check(
             rows,
@@ -673,6 +690,24 @@ def _run_refine_inner(
         )
         _write_json(run_dir / "decomposition_flags.json", decomp_flags)
         completed_stages.append("decomposition")
+
+        # --decomposition-only: return immediately; skip blocking gate
+        if _phase_only == "decomposition_only":
+            n_split = len(decomp_flags.get("split_candidates", []))
+            n_merge = len(decomp_flags.get("merge_candidates", []))
+            _report_refine_step(
+                "Decomposition",
+                "ok",
+                f"{n_split} split, {n_merge} merge candidates (decomposition-only mode)",
+            )
+            return {
+                "command": "refine",
+                "status": "decomposition_only",
+                "run_id": ctx.run_id,
+                "split_candidates": n_split,
+                "merge_candidates": n_merge,
+                "skipped": decomp_flags.get("skipped", False),
+            }
 
         if cfg["decomposition_blocking"] and not decomp_flags.get("skipped", False):
             decomp_items = _build_decomposition_items(decomp_flags)
@@ -707,6 +742,7 @@ def _run_refine_inner(
             "ok",
             f"{n_split} split, {n_merge} merge candidates{skipped_msg}",
         )
+
     else:
         _write_json(
             run_dir / "decomposition_flags.json",
