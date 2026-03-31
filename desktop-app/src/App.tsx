@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { TopBar } from './components/TopBar';
 import { LeftPanel } from './components/LeftPanel';
-import { PipelineView } from './components/PipelineView';
-import { GatePanel } from './components/GatePanel';
+import { RightPanel } from './components/RightPanel';
 import { EntryScreen } from './components/EntryScreen';
 import { SettingsPage } from './components/SettingsPage';
 import { useStore, subscribeToPreferenceChanges } from './store';
@@ -10,17 +9,19 @@ import {
   parseStderrLine,
   mapStderrToPhaseUpdates,
   computeProgress,
+  getEnabledPhaseIds,
   transformAgentItems,
+  transformImplementItems,
 } from './services/pikaService';
 import { buildAppendixFromContent } from './services/appendixLoader';
-import type { RawAgentItem, PikaPreferences } from './types';
+import type { RawAgentItem, RawImplementItem, PikaPreferences } from './types';
 
 function App() {
   const {
     run, setRun, updatePhase,
     setCurrentGateItems, setActiveItemIndex,
     designSpecPath, projectRootPath, configPath,
-    view,
+    view, refineEnabled, implementEnabled, decompositionEnabled,
   } = useStore();
 
   // --- Preferences: load on mount, subscribe for auto-save ---
@@ -92,12 +93,15 @@ function App() {
 
   const cleanupRef = useRef<(() => void) | null>(null);
 
-  // Start refine process when run status transitions to 'running' and no process is active
+  // Start refine/implement process when run status transitions to 'running' and no process is active
   useEffect(() => {
     if (run.status !== 'running' || !projectRootPath) return;
 
-    // Avoid re-triggering if we already have listeners (e.g. after gate resume)
+    // Avoid re-triggering if we already have listeners
     if (cleanupRef.current) return;
+
+    // If runId is set this is a gate resume — GatePanel owns the spawn, don't double-start
+    if (useStore.getState().run.runId) return;
 
     const startRefine = async () => {
       // Accumulate ALL stderr lines for error diagnostics
@@ -117,9 +121,10 @@ function App() {
           updatePhase(phaseId, { status });
         }
 
-        // Update progress based on current phase states
+        // Update progress based on current phase states across whole pipeline
         const currentPhases = useStore.getState().phases;
-        setRun({ progress: computeProgress(currentPhases, command) });
+        const { refineEnabled: re, implementEnabled: ie, decompositionEnabled: de } = useStore.getState();
+        setRun({ progress: computeProgress(currentPhases, getEnabledPhaseIds(re, ie, de)) });
       });
 
       const unsubExit = window.electronAPI.onPikaExit(async (data) => {
@@ -140,36 +145,40 @@ function App() {
             }
           }
           const updatedPhases = useStore.getState().phases;
-          setRun({ status: 'completed', progress: computeProgress(updatedPhases, cmd) });
+          const { refineEnabled: re2, implementEnabled: ie2, decompositionEnabled: de2 } = useStore.getState();
+          setRun({ status: 'completed', progress: computeProgress(updatedPhases, getEnabledPhaseIds(re2, ie2, de2)) });
         } else if (status === 'blocked') {
           const runId = summary?.run_id as string | undefined;
-          // Construct runDir from project root and run_id
+          // Construct runDir from project root, active command, and run_id
+          const activeCmd = useStore.getState().run.command ?? 'refine';
           const runDir = runId
-            ? `${projectRootPath}/out/agent_runs/refine/${runId}`
+            ? `${projectRootPath}/out/agent_runs/${activeCmd}/${runId}`
             : undefined;
 
           if (runDir) {
+            // Mark the blocked phase(s) immediately — before the async read so it always happens
+            const blockingStage = summary?.blocking_stage as string | undefined;
+            if (activeCmd === 'implement') {
+              updatePhase('I7', { status: 'blocked' });
+            } else if (blockingStage === 'decomposition') {
+              updatePhase('R2', { status: 'blocked' });
+            } else {
+              // agent_review (or unknown refine stage) — mark R3 + R4
+              updatePhase('R3', { status: 'blocked' });
+              updatePhase('R4', { status: 'blocked' });
+            }
+
             try {
               const gateData = await window.electronAPI.readGateOutput({ runDir });
-              const items = transformAgentItems(
-                gateData.items as RawAgentItem[],
-                useStore.getState().specs,
-              );
+              const items = activeCmd === 'implement'
+                ? transformImplementItems(gateData.items as RawImplementItem[])
+                : transformAgentItems(gateData.items as RawAgentItem[], useStore.getState().specs);
               setCurrentGateItems(items);
               setActiveItemIndex(0);
 
-              // Mark the blocked phase(s) based on blocking_stage from summary
-              const blockingStage = summary?.blocking_stage as string | undefined;
-              if (blockingStage === 'decomposition') {
-                updatePhase('R2', { status: 'blocked' });
-              } else if (blockingStage === 'agent_review') {
-                updatePhase('R3', { status: 'blocked' });
-                updatePhase('R4', { status: 'blocked' });
-              }
-
               const pausedPhases = useStore.getState().phases;
-              const cmd = useStore.getState().run.command;
-              setRun({ status: 'paused', runDir, runId, progress: computeProgress(pausedPhases, cmd) });
+              const { refineEnabled: re3, implementEnabled: ie3, decompositionEnabled: de3 } = useStore.getState();
+              setRun({ status: 'paused', runDir, runId, progress: computeProgress(pausedPhases, getEnabledPhaseIds(re3, ie3, de3)) });
             } catch {
               setRun({
                 status: 'failed',
@@ -184,10 +193,10 @@ function App() {
           }
         } else {
           const failedPhases = useStore.getState().phases;
-          const cmd = useStore.getState().run.command;
+          const { refineEnabled: re4, implementEnabled: ie4, decompositionEnabled: de4 } = useStore.getState();
           setRun({
             status: 'failed',
-            progress: computeProgress(failedPhases, cmd),
+            progress: computeProgress(failedPhases, getEnabledPhaseIds(re4, ie4, de4)),
             errorDetails: { exitCode: code, stderr: stderrLines, summary },
           });
         }
@@ -206,11 +215,23 @@ function App() {
 
       // Now spawn the process — listeners are already registered
       try {
-        await window.electronAPI.startRefine({
-          projectRoot: projectRootPath,
-          designSpecPath: designSpecPath ?? undefined,
-          configPath: configPath ?? undefined,
-        });
+        const cmd = useStore.getState().run.command;
+
+        // Mark the first phase of the command as running so the UI shows activity immediately
+        updatePhase(cmd === 'implement' ? 'I1' : 'R1', { status: 'running' });
+        if (cmd === 'implement') {
+          await window.electronAPI.startImplement({
+            projectRoot: projectRootPath,
+            designSpecPath: designSpecPath ?? undefined,
+            configPath: configPath ?? undefined,
+          });
+        } else {
+          await window.electronAPI.startRefine({
+            projectRoot: projectRootPath,
+            designSpecPath: designSpecPath ?? undefined,
+            configPath: configPath ?? undefined,
+          });
+        }
       } catch (err) {
         cleanup();
         setRun({
@@ -232,6 +253,15 @@ function App() {
       }
     };
   }, [run.status, projectRootPath]);
+
+  // Auto-advance: when a command completes, start the next enabled command
+  useEffect(() => {
+    if (run.status !== 'completed') return;
+    if (run.command === 'refine' && implementEnabled) {
+      // Clear runId/runDir so the useEffect above knows this is a fresh spawn, not a resume
+      setRun({ status: 'running', command: 'implement', progress: 0, runId: undefined, runDir: undefined });
+    }
+  }, [run.status]);
 
   // --- Resizable split panel ---
   const [leftWidthPercent, setLeftWidthPercent] = useState(45);
@@ -294,15 +324,9 @@ function App() {
           className="w-1 flex-shrink-0 bg-border-primary hover:bg-accent-primary active:bg-accent-primary cursor-col-resize transition-colors duration-150"
         />
 
-        {/* Right Panel: Pipeline or Gate */}
-        <div className="flex-1 overflow-hidden relative">
-          {run.status === 'paused' ? (
-            <div className="absolute inset-0 z-20 animate-in fade-in slide-in-from-right-4 duration-300">
-              <GatePanel />
-            </div>
-          ) : (
-            <PipelineView />
-          )}
+        {/* Right Panel: Phase Status + Gate View tabs */}
+        <div className="flex-1 overflow-hidden">
+          <RightPanel />
         </div>
       </main>
     </div>

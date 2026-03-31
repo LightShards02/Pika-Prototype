@@ -3,7 +3,7 @@ import { useStore } from '../store';
 import { clsx } from 'clsx';
 import { useEffect, useState } from 'react';
 import type { ResolutionItem } from '../types';
-import { computeProgress } from '../services/pikaService';
+import { computeProgress, getEnabledPhaseIds } from '../services/pikaService';
 
 export const GatePanel = () => {
   const {
@@ -18,6 +18,9 @@ export const GatePanel = () => {
     setItemEditorOutput,
     setItemUserGuide,
     configPath,
+    refineEnabled,
+    implementEnabled,
+    decompositionEnabled,
   } = useStore();
 
   const [isContinuing, setIsContinuing] = useState(false);
@@ -40,6 +43,7 @@ export const GatePanel = () => {
       setHighlightedSpecIds(currentItem.spec_ids);
     }
   }, [currentItem, setHighlightedSpecIds]);
+
 
   if (!currentItem && !agentEditPhase) return null;
 
@@ -76,15 +80,17 @@ export const GatePanel = () => {
       });
       await waitForExit();
 
-      // 3. Resume refine
+      // 3. Resume the active command
       setCurrentGateItems([]);
       const resumePhases = useStore.getState().phases;
-      setRun({ status: 'running', progress: computeProgress(resumePhases, run.command) });
+      setRun({ status: 'running', progress: computeProgress(resumePhases, getEnabledPhaseIds(refineEnabled, implementEnabled, decompositionEnabled)) });
 
-      await window.electronAPI.resumeRefine({
-        projectRoot: run.projectRoot,
-        runId: run.runId,
-      });
+      const resumeArgs = { projectRoot: run.projectRoot, runId: run.runId };
+      if (run.command === 'implement') {
+        await window.electronAPI.resumeImplement(resumeArgs);
+      } else {
+        await window.electronAPI.resumeRefine(resumeArgs);
+      }
 
       const unsubResume = window.electronAPI.onPikaExit((data) => {
         unsubResume();
@@ -103,11 +109,12 @@ export const GatePanel = () => {
             }
           }
           const updatedPhases = useStore.getState().phases;
-          setRun({ status: 'completed', progress: computeProgress(updatedPhases, cmd) });
+          const { refineEnabled: re, implementEnabled: ie, decompositionEnabled: de } = useStore.getState();
+          setRun({ status: 'completed', progress: computeProgress(updatedPhases, getEnabledPhaseIds(re, ie, de)) });
         } else {
           const failedPhases = useStore.getState().phases;
-          const cmd = useStore.getState().run.command;
-          setRun({ status: 'failed', progress: computeProgress(failedPhases, cmd) });
+          const { refineEnabled: re2, implementEnabled: ie2, decompositionEnabled: de2 } = useStore.getState();
+          setRun({ status: 'failed', progress: computeProgress(failedPhases, getEnabledPhaseIds(re2, ie2, de2)) });
         }
       });
     } catch {

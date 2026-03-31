@@ -13,7 +13,9 @@
     "electron:build": "npm run build && electron-builder",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "storybook": "storybook dev -p 6006",
+    "build-storybook": "storybook build"
   },
   "dependencies": {
     "@tanstack/react-table": "^8.21.3",
@@ -30,7 +32,14 @@
     "zustand": "^5.0.12"
   },
   "devDependencies": {
+    "@chromatic-com/storybook": "^5.1.1",
     "@eslint/js": "^9.39.4",
+    "@storybook/addon-a11y": "^10.3.3",
+    "@storybook/addon-docs": "^10.3.3",
+    "@storybook/addon-mcp": "^0.4.2",
+    "@storybook/addon-onboarding": "^10.3.3",
+    "@storybook/addon-vitest": "^10.3.3",
+    "@storybook/react-vite": "^10.3.3",
     "@tailwindcss/vite": "^4.2.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
@@ -41,20 +50,26 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.0",
-    "@vitest/coverage-v8": "^4.1.0",
+    "@vitest/browser": "^4.1.2",
+    "@vitest/browser-playwright": "^4.1.2",
+    "@vitest/coverage-v8": "^4.1.2",
     "autoprefixer": "^10.4.27",
+    "chromatic": "^16.0.0",
     "concurrently": "^9.2.1",
     "cross-env": "^10.1.0",
     "eslint": "^9.39.4",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.5.2",
+    "eslint-plugin-storybook": "^10.3.3",
     "globals": "^17.4.0",
     "jsdom": "^29.0.0",
+    "playwright": "^1.58.2",
     "postcss": "^8.5.8",
+    "storybook": "^10.3.3",
     "tailwindcss": "^4.2.1",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.56.1",
     "vite": "^6.0.0",
-    "vitest": "^4.1.0"
+    "vitest": "^4.1.2"
   }
 }
