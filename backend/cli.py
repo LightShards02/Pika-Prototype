@@ -150,6 +150,7 @@ def _execute_command(
     input_overrides: dict[str, str] | None = None,
     resume_run_id: str | None = None,
     auto_resume: bool = False,
+    phase_only: str | None = None,
 ) -> None:
     """Execute command with config load, validation, and dispatch."""
     resolved_workspace_root = _resolve_workspace_root(project_root)
@@ -283,6 +284,7 @@ def _execute_command(
             input_overrides=overrides,
             resume_run_id=resume_run_id,
             resolved_decisions=resolved_decisions,
+            phase_only=phase_only,
         )
         validate_command_preconditions(command_name, config_data, preflight_ctx)
 
@@ -298,6 +300,7 @@ def _execute_command(
             input_overrides=overrides,
             resume_run_id=resume_run_id,
             resolved_decisions=resolved_decisions,
+            phase_only=phase_only,
         )
         _ = init_run_logger(
             project_root=resolved_workspace_root, config=config_data, ctx=router_ctx
@@ -594,13 +597,54 @@ def agent_refine_command(
     command_only_validation: bool = typer.Option(
         False, "--command-only-validation", help="Validate only; skip execution."
     ),
+    load_validate_only: bool = typer.Option(
+        False, "--load-validate-only",
+        help="Stop after loading and validating the CSV (phases 1-4). No run dir created.",
+    ),
+    decomposition_only: bool = typer.Option(
+        False, "--decomposition-only",
+        help="Run decomposition check only (phases 1-6). Always runs even if disabled in config.",
+    ),
+    agents_only: bool = typer.Option(
+        False, "--agents-only",
+        help="Skip decomposition; run ambiguity+testability agents only (phases 5, 7-10).",
+    ),
 ) -> None:
     """Spec quality review: ambiguity detection, testability audit, and refinement suggestions."""
     if run and not resume:
         raise typer.BadParameter("--run requires --resume to be set.", param_hint="'--run'")
+
+    active_phase_flags = [
+        name
+        for flag, name in zip(
+            [load_validate_only, decomposition_only, agents_only],
+            ["--load-validate-only", "--decomposition-only", "--agents-only"],
+        )
+        if flag
+    ]
+    if len(active_phase_flags) > 1:
+        raise typer.BadParameter(
+            f"{' and '.join(active_phase_flags)} are mutually exclusive.",
+            param_hint=f"'{active_phase_flags[0]}'",
+        )
+    if resume and active_phase_flags:
+        raise typer.BadParameter(
+            f"--resume and {active_phase_flags[0]} are mutually exclusive.",
+            param_hint="'--resume'",
+        )
+
     overrides = {}
     if design_spec:
         overrides["design_spec_path"] = design_spec
+
+    phase_only: str | None = None
+    if load_validate_only:
+        phase_only = "load_validate_only"
+    elif decomposition_only:
+        phase_only = "decomposition_only"
+    elif agents_only:
+        phase_only = "agents_only"
+
     _execute_command(
         "refine",
         config=config,
@@ -611,6 +655,7 @@ def agent_refine_command(
         input_overrides=overrides if overrides else None,
         resume_run_id=run if resume else None,
         auto_resume=resume and not run,
+        phase_only=phase_only,
     )
 
 

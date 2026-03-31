@@ -1089,5 +1089,227 @@ class RefineConsensusIntegrationTests(unittest.TestCase):
             self.assertTrue((run_dir / f"testability_output_{i}.json").exists())
 
 
+# ---------------------------------------------------------------------------
+# Group I: Phase-only modes
+# ---------------------------------------------------------------------------
+
+class PhaseOnlyModeTests(unittest.TestCase):
+    """Tests for --load-validate-only, --decomposition-only, and --agents-only modes."""
+
+    def setUp(self) -> None:
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self.tmp = self._tmp_dir.name
+        self.design_csv = Path(self.tmp) / "DESIGN-SPEC.csv"
+        _write_design_csv(self.design_csv)
+        _write_project_context(Path(self.tmp))
+
+    def tearDown(self) -> None:
+        self._tmp_dir.cleanup()
+
+    def _config(self, decomposition_enabled: bool = False, decomposition_blocking: bool = False) -> dict[str, Any]:
+        cfg = _make_config(self.tmp, str(self.design_csv))
+        cfg["commands"]["refine"]["decomposition"]["enabled"] = decomposition_enabled
+        cfg["commands"]["refine"]["decomposition"]["blocking"] = decomposition_blocking
+        return cfg
+
+    def _ctx(self, phase_only: str | None = None, run_id: str = "test-run") -> RuntimeContext:
+        return RuntimeContext(
+            command="refine",
+            dry_run=False,
+            verbose=False,
+            command_only_validation=False,
+            run_id=run_id,
+            project_root=self.tmp,
+            config_path="config/config.yaml",
+            input_overrides={"design_spec_path": str(self.design_csv)},
+            phase_only=phase_only,
+        )
+
+    def _mock_agents(self, output: dict[str, Any] | None = None):
+        return patch(
+            "handlers.refine.impl.invoke_agent_with_schema_retry",
+            return_value=output or _empty_agent_output(),
+        )
+
+    # -------------------------------------------------------------------
+    # load_validate_only
+    # -------------------------------------------------------------------
+
+    def test_load_validate_only_returns_correct_status(self) -> None:
+        result = run_refine(self._config(), self._ctx("load_validate_only"))
+        self.assertEqual(result["status"], "load_validate_only")
+        self.assertEqual(result["command"], "refine")
+
+    def test_load_validate_only_returns_spec_count(self) -> None:
+        result = run_refine(self._config(), self._ctx("load_validate_only"))
+        self.assertEqual(result["spec_count"], len(_SAMPLE_ROWS))
+
+    def test_load_validate_only_returns_design_spec_path(self) -> None:
+        result = run_refine(self._config(), self._ctx("load_validate_only"))
+        self.assertIn("design_spec_path", result)
+        self.assertTrue(result["design_spec_path"].endswith(".csv"))
+
+    def test_load_validate_only_does_not_create_run_dir(self) -> None:
+        run_dir = Path(self.tmp) / "out" / "agent_runs" / "refine" / "test-run"
+        run_refine(self._config(), self._ctx("load_validate_only"))
+        self.assertFalse(run_dir.exists())
+
+    def test_load_validate_only_does_not_invoke_agents(self) -> None:
+        with self._mock_agents() as mock_agent:
+            run_refine(self._config(), self._ctx("load_validate_only"))
+        mock_agent.assert_not_called()
+
+    def test_load_validate_only_invalid_csv_returns_failed(self) -> None:
+        bad_csv = Path(self.tmp) / "bad.csv"
+        bad_csv.write_text("spec_id,module_tag\nS1,core\n", encoding="utf-8")
+        ctx = RuntimeContext(
+            command="refine",
+            dry_run=False,
+            verbose=False,
+            command_only_validation=False,
+            run_id="test-run",
+            project_root=self.tmp,
+            config_path="config/config.yaml",
+            input_overrides={"design_spec_path": str(bad_csv)},
+            phase_only="load_validate_only",
+        )
+        result = run_refine(self._config(), ctx)
+        self.assertEqual(result["status"], "failed")
+
+    def test_load_validate_only_missing_file_returns_skipped(self) -> None:
+        ctx = RuntimeContext(
+            command="refine",
+            dry_run=False,
+            verbose=False,
+            command_only_validation=False,
+            run_id="test-run",
+            project_root=self.tmp,
+            config_path="config/config.yaml",
+            input_overrides={"design_spec_path": str(Path(self.tmp) / "no_such_file.csv")},
+            phase_only="load_validate_only",
+        )
+        result = run_refine(self._config(), ctx)
+        self.assertEqual(result["status"], "skipped")
+
+    # -------------------------------------------------------------------
+    # decomposition_only
+    # -------------------------------------------------------------------
+
+    def _decomp_patch(self, split: int = 0, merge: int = 0, skipped: bool = False):
+        return patch(
+            "handlers.refine.impl.run_decomposition_check",
+            return_value={
+                "split_candidates": [{"spec_id": f"S{i}", "variance": 0.2, "reason": "r"} for i in range(split)],
+                "merge_candidates": [{"spec_ids": [f"S{i}", f"S{i+1}"], "similarity": 0.9, "reason": "r"} for i in range(merge)],
+                "skipped": skipped,
+            },
+        )
+
+    def test_decomposition_only_returns_correct_status(self) -> None:
+        with self._decomp_patch():
+            result = run_refine(self._config(), self._ctx("decomposition_only"))
+        self.assertEqual(result["status"], "decomposition_only")
+        self.assertEqual(result["command"], "refine")
+
+    def test_decomposition_only_returns_run_id(self) -> None:
+        with self._decomp_patch():
+            result = run_refine(self._config(), self._ctx("decomposition_only", run_id="decomp-run"))
+        self.assertEqual(result["run_id"], "decomp-run")
+
+    def test_decomposition_only_returns_candidate_counts(self) -> None:
+        with self._decomp_patch(split=1, merge=2):
+            result = run_refine(self._config(), self._ctx("decomposition_only"))
+        self.assertEqual(result["split_candidates"], 1)
+        self.assertEqual(result["merge_candidates"], 2)
+        self.assertFalse(result["skipped"])
+
+    def test_decomposition_only_creates_run_dir_and_flags_file(self) -> None:
+        run_dir = Path(self.tmp) / "out" / "agent_runs" / "refine" / "test-run"
+        with self._decomp_patch():
+            run_refine(self._config(), self._ctx("decomposition_only"))
+        self.assertTrue((run_dir / "decomposition_flags.json").exists())
+
+    def test_decomposition_only_runs_even_when_disabled_in_config(self) -> None:
+        with self._decomp_patch() as mock_decomp:
+            result = run_refine(self._config(decomposition_enabled=False), self._ctx("decomposition_only"))
+        mock_decomp.assert_called_once()
+        self.assertEqual(result["status"], "decomposition_only")
+
+    def test_decomposition_only_does_not_invoke_agents(self) -> None:
+        with self._decomp_patch():
+            with self._mock_agents() as mock_agent:
+                run_refine(self._config(), self._ctx("decomposition_only"))
+        mock_agent.assert_not_called()
+
+    def test_decomposition_only_bypasses_blocking_gate(self) -> None:
+        with self._decomp_patch(split=1):
+            result = run_refine(
+                self._config(decomposition_blocking=True),
+                self._ctx("decomposition_only"),
+            )
+        self.assertEqual(result["status"], "decomposition_only")
+
+    def test_decomposition_only_invalid_csv_returns_failed(self) -> None:
+        bad_csv = Path(self.tmp) / "bad.csv"
+        bad_csv.write_text("spec_id,module_tag\nS1,core\n", encoding="utf-8")
+        ctx = RuntimeContext(
+            command="refine",
+            dry_run=False,
+            verbose=False,
+            command_only_validation=False,
+            run_id="test-run",
+            project_root=self.tmp,
+            config_path="config/config.yaml",
+            input_overrides={"design_spec_path": str(bad_csv)},
+            phase_only="decomposition_only",
+        )
+        result = run_refine(self._config(), ctx)
+        self.assertEqual(result["status"], "failed")
+
+    # -------------------------------------------------------------------
+    # agents_only
+    # -------------------------------------------------------------------
+
+    def test_agents_only_no_issues_returns_completed(self) -> None:
+        with self._mock_agents(_empty_agent_output()):
+            result = run_refine(self._config(), self._ctx("agents_only"))
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["command"], "refine")
+
+    def test_agents_only_with_items_returns_blocked(self) -> None:
+        with self._mock_agents(_ambiguity_items_output()):
+            result = run_refine(self._config(), self._ctx("agents_only"))
+        self.assertEqual(result["status"], "blocked")
+
+    def test_agents_only_skips_decomposition_even_when_enabled_in_config(self) -> None:
+        with patch("handlers.refine.impl.run_decomposition_check") as mock_decomp:
+            with self._mock_agents(_empty_agent_output()):
+                run_refine(self._config(decomposition_enabled=True), self._ctx("agents_only"))
+        mock_decomp.assert_not_called()
+
+    def test_agents_only_writes_skipped_decomposition_flags(self) -> None:
+        run_dir = Path(self.tmp) / "out" / "agent_runs" / "refine" / "test-run"
+        with self._mock_agents(_empty_agent_output()):
+            run_refine(self._config(), self._ctx("agents_only"))
+        flags_path = run_dir / "decomposition_flags.json"
+        self.assertTrue(flags_path.exists())
+        data = json.loads(flags_path.read_text(encoding="utf-8"))
+        self.assertTrue(data.get("skipped"))
+
+    def test_agents_only_creates_run_meta(self) -> None:
+        run_dir = Path(self.tmp) / "out" / "agent_runs" / "refine" / "test-run"
+        with self._mock_agents(_empty_agent_output()):
+            run_refine(self._config(), self._ctx("agents_only"))
+        self.assertTrue((run_dir / "run_meta.json").exists())
+
+    def test_agents_only_completed_output_shape_matches_normal(self) -> None:
+        with self._mock_agents(_empty_agent_output()):
+            normal = run_refine(self._config(), self._ctx(None, run_id="normal-run"))
+        with self._mock_agents(_empty_agent_output()):
+            agents_only = run_refine(self._config(), self._ctx("agents_only", run_id="agents-run"))
+        self.assertEqual(normal["status"], agents_only["status"])
+        self.assertEqual(set(normal.keys()), set(agents_only.keys()))
+
+
 if __name__ == "__main__":
     unittest.main()
