@@ -54,6 +54,24 @@ Only after the above, implement code in small cohesive chunks with:
 - Ask yourself: "Would a staff engineer approve this?"
 - Run tests, check logs, demonstrate correctness
 
+### 4.1 UI Verification
+- For UI or component changes, do not stop after unit tests.
+- Use the `playwright` MCP server to validate the changed flow in a real browser.
+- Check desktop and mobile widths before declaring the task done.
+- Verify hover, focus, keyboard navigation, scrolling, and modal behavior.
+- Report concrete UI defects such as overflow, clipping, invisible focus, broken tab order, z-index issues, layout shift, and off-screen dialogs.
+
+#### Recommended Browser Verification Stack
+Use these three tools together for thorough UI validation:
+
+a. **`playwright` MCP** — low-level browser control. Use for targeted, scripted interactions: navigate to a specific URL, fill a form, click a button, assert an element is visible, take a screenshot at a precise moment. This is your scalpel.
+
+b. **`agent-browser` skill** — higher-level browser automation for multi-step flows. Use when the verification task involves a sequence of actions that reads more naturally as a goal ("log in, navigate to settings, verify the toggle persists after reload") rather than individual tool calls. Wrap `playwright` calls inside agent-browser tasks to keep the main context clean.
+
+c. **`dogfood` skill** — exploratory QA sweep. After targeted verification with playwright/agent-browser, invoke `dogfood` to do a broad pass over the affected surface. It finds regressions, UX rough edges, and bugs you didn't think to check for. Use it as a final gate before marking any UI task done.
+
+**Recommended order**: `playwright` (targeted checks) → `agent-browser` (flow-level validation) → `dogfood` (exploratory sweep).
+
 ### 5. Demand Elegance (Balanced)
 - For non-trivial changes: pause and ask "is there a more elegant way?"
 - If a fix feels hacky: "Knowing everything I know now, implement the elegant solution"

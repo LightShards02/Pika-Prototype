@@ -40,7 +40,7 @@ export interface PikaPreferences {
   availableModuleTags: string[];
 }
 
-export type PhaseStatus = 'pending' | 'running' | 'done' | 'failed' | 'blocked';
+export type PhaseStatus = 'pending' | 'running' | 'done' | 'failed' | 'blocked' | 'interrupted';
 
 export type PikaCommand = 'refine' | 'implement' | 'batch';
 
@@ -162,6 +162,18 @@ export interface RawCompoundItem {
 
 export type RawAgentItem = RawAmbiguityItem | RawTestabilityItem | RawCompoundItem;
 
+// --- Raw implement gate item (from unified_planner.json etc.) ---
+
+export interface RawImplementItem {
+  item_id: string;
+  title: string;
+  question: string;
+  options: RawAgentOption[];
+  blocking_reason: string;
+  recommended_option_id?: string;
+  evidence_refs?: string[];
+}
+
 // --- Electron API ---
 
 export interface DialogFilter {
@@ -189,7 +201,13 @@ export interface ElectronAPI {
   getPikaRoot: () => Promise<string>;
 
   // PIKA CLI process lifecycle
-  startRefine: (args: { projectRoot: string; configPath?: string; designSpecPath?: string }) => Promise<void>;
+  startRefine: (args: {
+    projectRoot: string;
+    configPath?: string;
+    designSpecPath?: string;
+    phaseOnly?: 'load_validate_only' | 'decomposition_only' | 'agents_only';
+  }) => Promise<void>;
+  startImplement: (args: { projectRoot: string; configPath?: string; designSpecPath?: string }) => Promise<void>;
   cancelPika: () => Promise<void>;
 
   // Gate I/O
@@ -199,6 +217,7 @@ export interface ElectronAPI {
   // Resolve + Resume
   applyResolutions: (args: { projectRoot: string; runId: string; configPath?: string }) => Promise<void>;
   resumeRefine: (args: { projectRoot: string; runId: string; configPath?: string }) => Promise<void>;
+  resumeImplement: (args: { projectRoot: string; runId: string; configPath?: string }) => Promise<void>;
 
   // Spec editor invocation (single-item agent edit for desktop gate)
   invokeSpecEditor: (args: {

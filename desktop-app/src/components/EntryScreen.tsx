@@ -127,6 +127,8 @@ export const EntryScreen = () => {
         command: 'refine',
         specPath: designSpecPath,
         projectRoot: projectRootPath,
+        runId: undefined,
+        runDir: undefined,
       });
     } catch (err) {
       setError(`Failed to load design spec: ${err instanceof Error ? err.message : String(err)}`);

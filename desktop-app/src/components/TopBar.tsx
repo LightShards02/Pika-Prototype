@@ -5,7 +5,7 @@ import { useStore } from '../store';
 import { clsx } from 'clsx';
 
 export const TopBar = () => {
-  const { run, setRun, resetForNewRun, view, setView } = useStore();
+  const { run, setRun, resetForNewRun, view, setView, phases, updatePhase } = useStore();
   const [showErrorDetails, setShowErrorDetails] = useState(false);
   const [showRunInfo, setShowRunInfo] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -45,6 +45,9 @@ export const TopBar = () => {
 
   const handleCancel = async () => {
     await window.electronAPI.cancelPika();
+    for (const phase of phases) {
+      if (phase.status === 'running') updatePhase(phase.id, { status: 'interrupted' });
+    }
     setRun({ status: 'failed' });
   };
 

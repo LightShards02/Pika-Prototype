@@ -81,8 +81,7 @@ export const initialPhases: Phase[] = [
 
   // Implement Group
   { id: 'I1', name: 'Normalize Config', group: 'Implement', status: 'pending', description: 'Parse roles, policies, and budgets.', isBlocking: false },
-  { id: 'I5', name: 'Run Unified Planner', group: 'Implement', status: 'pending', description: 'AI agent produces the full implementation plan.', isBlocking: false },
-  { id: 'I7', name: 'Gate: Planner Blockers', group: 'Implement', status: 'pending', description: 'Human judgment needed for planner flags.', isBlocking: true },
+  { id: 'I5', name: 'Run Unified Planner', group: 'Implement', status: 'pending', description: 'AI agent produces the full implementation plan and validates it.', isBlocking: true },
   { id: 'I14', name: 'Construct Batch Plan', group: 'Implement', status: 'pending', description: 'Group specs into execution batches.', isBlocking: false },
 
   // Batch Execution (Placeholder for B1-B9)

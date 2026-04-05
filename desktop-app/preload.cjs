@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // PIKA CLI process lifecycle
   startRefine: (args) => ipcRenderer.invoke('pika:start-refine', args),
+  startImplement: (args) => ipcRenderer.invoke('pika:start-implement', args),
   cancelPika: () => ipcRenderer.invoke('pika:cancel'),
 
   // Gate I/O
@@ -25,6 +26,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Resolve + Resume
   applyResolutions: (args) => ipcRenderer.invoke('pika:apply-resolutions', args),
   resumeRefine: (args) => ipcRenderer.invoke('pika:resume-refine', args),
+  resumeImplement: (args) => ipcRenderer.invoke('pika:resume-implement', args),
 
   // Spec editor invocation (single-item agent edit for desktop gate)
   invokeSpecEditor: (args) => ipcRenderer.invoke('pika:invoke-spec-editor', args),

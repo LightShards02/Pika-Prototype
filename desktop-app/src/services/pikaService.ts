@@ -112,31 +112,34 @@ export function mapStderrToPhaseUpdates(
 
     case 'Planner':
       if (status === 'running') return [{ phaseId: 'I5', status: 'running' }];
-      if (status === 'ok' || status === 'skipped') return [{ phaseId: 'I5', status: 'done' }];
+      // 'ok' means the planner agent finished but validation checks still follow — stay running.
+      if (status === 'ok') return [{ phaseId: 'I5', status: 'running' }];
+      // 'skipped' means no validation follows — mark done immediately.
+      if (status === 'skipped') return [{ phaseId: 'I5', status: 'done' }];
       if (status === 'failed') return [{ phaseId: 'I5', status: 'failed' }];
-      if (status === 'blocked') return [{ phaseId: 'I7', status: 'blocked' }];
+      if (status === 'blocked') return [{ phaseId: 'I5', status: 'blocked' }];
       return [];
 
-    // ── Implement steps: I7 (Gate: Planner Blockers) ──
+    // ── Implement steps: planner validation checks (merged into I5) ──
 
     case 'Plan validation':
-      if (status === 'ok') return [{ phaseId: 'I7', status: 'running' }];
-      if (status === 'failed') return [{ phaseId: 'I7', status: 'failed' }];
-      if (status === 'blocked') return [{ phaseId: 'I7', status: 'blocked' }];
+      if (status === 'ok') return [{ phaseId: 'I5', status: 'running' }];
+      if (status === 'failed') return [{ phaseId: 'I5', status: 'failed' }];
+      if (status === 'blocked') return [{ phaseId: 'I5', status: 'blocked' }];
       return [];
 
     case 'Contract field check':
-      if (status === 'ok') return [{ phaseId: 'I7', status: 'running' }];
-      if (status === 'blocked') return [{ phaseId: 'I7', status: 'blocked' }];
+      if (status === 'ok') return [{ phaseId: 'I5', status: 'running' }];
+      if (status === 'blocked') return [{ phaseId: 'I5', status: 'blocked' }];
       return [];
 
     case 'Required field coverage check':
-      if (status === 'ok') return [{ phaseId: 'I7', status: 'done' }];
-      if (status === 'blocked') return [{ phaseId: 'I7', status: 'blocked' }];
+      if (status === 'ok') return [{ phaseId: 'I5', status: 'done' }];
+      if (status === 'blocked') return [{ phaseId: 'I5', status: 'blocked' }];
       return [];
 
     case 'Spec issue escalation':
-      if (status === 'blocked') return [{ phaseId: 'I7', status: 'blocked' }];
+      if (status === 'blocked') return [{ phaseId: 'I5', status: 'blocked' }];
       return [];
 
     // ── Implement steps: I14 (Construct Batch Plan) ──
@@ -176,31 +179,41 @@ export function mapStderrToPhaseUpdates(
 
 // --- Progress calculation ---
 
-const PHASE_IDS_BY_COMMAND: Record<PikaCommand, string[]> = {
-  refine: ['R1', 'R2', 'R3', 'R4'],
-  implement: ['I1', 'I5', 'I7', 'I14', 'B-EXEC'],
-  batch: ['B-EXEC'],
-};
+/**
+ * Return the ordered list of phase IDs that will be active for this run,
+ * based on the options the user selected on the home page.
+ */
+export function getEnabledPhaseIds(
+  refineEnabled: boolean,
+  implementEnabled: boolean,
+  decompositionEnabled: boolean,
+): string[] {
+  const ids: string[] = [];
+  if (refineEnabled) {
+    ids.push('R1');
+    if (decompositionEnabled) ids.push('R2');
+    ids.push('R3', 'R4');
+  }
+  if (implementEnabled) {
+    ids.push('I1', 'I5', 'I14', 'B-EXEC');
+  }
+  return ids;
+}
 
 /**
- * Compute progress percentage scoped to the active command.
+ * Compute progress percentage across all enabled phases in the pipeline.
  *
- * Phase weights are equal within the command's scope:
- *   refine    → 4 phases, 25% each
- *   implement → 5 phases, 20% each
- *   batch     → 1 phase, 100%
- *
- * Status weights per phase:
- *   done / blocked → 100% (blocked = work done, waiting for user)
+ * Each phase in `enabledPhaseIds` carries equal weight.
+ * Status weights:
+ *   done / blocked → 100%  (blocked = work done, waiting for user)
  *   running / failed → 50% (work in progress or attempted)
  *   pending → 0%
  */
 export function computeProgress(
   phases: Phase[],
-  command?: PikaCommand,
+  enabledPhaseIds: string[],
 ): number {
-  const targetIds = PHASE_IDS_BY_COMMAND[command ?? 'refine'];
-  const targetPhases = phases.filter((p) => targetIds.includes(p.id));
+  const targetPhases = phases.filter((p) => enabledPhaseIds.includes(p.id));
   if (targetPhases.length === 0) return 0;
 
   const phaseWeight = 100 / targetPhases.length;
@@ -371,4 +384,28 @@ export function transformAgentItems(
       })),
     };
   });
+}
+
+/**
+ * Transform raw implement gate items (from unified_planner.json etc.) into ResolutionItem[].
+ * Implement items have a different schema from refine items: no spec_id/field,
+ * but have title, question, blocking_reason, and options.
+ */
+export function transformImplementItems(
+  rawItems: RawImplementItem[],
+): ResolutionItem[] {
+  return rawItems.map((raw, index) => ({
+    id: raw.item_id,
+    spec_ids: [],
+    type: raw.title,
+    reason: raw.blocking_reason,
+    currentText: raw.question,
+    suggestedText: undefined,
+    itemIndex: index,
+    options: raw.options.map((o) => ({
+      id: o.option_id,
+      label: o.label,
+      description: o.effect,
+    })),
+  }));
 }

@@ -258,7 +258,7 @@ ipcMain.handle('dialog:openDir', async () => {
 // IPC Handlers: PIKA Refine Process Lifecycle
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('pika:start-refine', async (_event, { projectRoot, configPath, designSpecPath }) => {
+ipcMain.handle('pika:start-refine', async (_event, { projectRoot, configPath, designSpecPath, phaseOnly }) => {
   if (pikaProcess) {
     throw new Error('A PIKA process is already running. Cancel it first.');
   }
@@ -266,6 +266,15 @@ ipcMain.handle('pika:start-refine', async (_event, { projectRoot, configPath, de
   const args = ['agent', 'refine', '--project-root', projectRoot];
   if (configPath) args.push('--config', configPath);
   if (designSpecPath) args.push('--design-spec', designSpecPath);
+
+  const phaseOnlyFlagMap = {
+    load_validate_only: '--load-validate-only',
+    decomposition_only: '--decomposition-only',
+    agents_only: '--agents-only',
+  };
+  if (phaseOnly && phaseOnlyFlagMap[phaseOnly]) {
+    args.push(phaseOnlyFlagMap[phaseOnly]);
+  }
 
   pikaProcess = spawnPikaCommand(args);
 });
@@ -277,19 +286,49 @@ ipcMain.handle('pika:cancel', async () => {
   }
 });
 
+ipcMain.handle('pika:start-implement', async (_event, { projectRoot, configPath, designSpecPath }) => {
+  if (pikaProcess) {
+    throw new Error('A PIKA process is already running. Cancel it first.');
+  }
+
+  const args = ['agent', 'implement', '--project-root', projectRoot];
+  if (configPath) args.push('--config', configPath);
+  if (designSpecPath) args.push('--design-spec', designSpecPath);
+
+  pikaProcess = spawnPikaCommand(args);
+});
+
 // ---------------------------------------------------------------------------
 // IPC Handlers: Gate I/O
 // ---------------------------------------------------------------------------
 
 ipcMain.handle('pika:read-gate', async (_event, { runDir }) => {
-  const agentReviewPath = path.join(runDir, 'manual_resolution', 'agent_review.json');
+  // Discover which stage file to read.
+  // Implement writes manual_resolution/{stage}.json and records the stage in run_meta.json.
+  // Refine writes manual_resolution/agent_review.json (no run_meta.json entry needed).
+  let stageName = null;
   try {
-    const content = fs.readFileSync(agentReviewPath, 'utf-8');
-    return JSON.parse(content);
-  } catch (error) {
-    console.error('Error reading gate output:', error);
-    throw error;
+    const runMetaPath = path.join(runDir, 'run_meta.json');
+    const meta = JSON.parse(fs.readFileSync(runMetaPath, 'utf-8'));
+    if (meta.blocked_at_stage) stageName = meta.blocked_at_stage;
+  } catch {
+    // run_meta.json absent or unreadable — fall through to agent_review.json
   }
+
+  const candidates = [];
+  if (stageName) candidates.push(path.join(runDir, 'manual_resolution', `${stageName}.json`));
+  candidates.push(path.join(runDir, 'manual_resolution', 'agent_review.json'));
+
+  let lastError;
+  for (const filePath of candidates) {
+    try {
+      return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  console.error('Error reading gate output:', lastError);
+  throw lastError;
 });
 
 ipcMain.handle('pika:write-resolution', async (_event, { runDir, resolutions }) => {
@@ -335,6 +374,17 @@ ipcMain.handle('pika:resume-refine', async (_event, { projectRoot, runId, config
   }
 
   const args = ['agent', 'refine', '--resume', '--run', runId, '--project-root', projectRoot];
+  if (configPath) args.push('--config', configPath);
+
+  pikaProcess = spawnPikaCommand(args);
+});
+
+ipcMain.handle('pika:resume-implement', async (_event, { projectRoot, runId, configPath }) => {
+  if (pikaProcess) {
+    throw new Error('A PIKA process is already running.');
+  }
+
+  const args = ['agent', 'implement', '--resume', '--run', runId, '--project-root', projectRoot];
   if (configPath) args.push('--config', configPath);
 
   pikaProcess = spawnPikaCommand(args);
