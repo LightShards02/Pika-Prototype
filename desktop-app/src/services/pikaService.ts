@@ -102,31 +102,34 @@ export function mapStderrToPhaseUpdates(
 
     case 'Planner':
       if (status === 'running') return [{ phaseId: 'I5', status: 'running' }];
-      if (status === 'ok' || status === 'skipped') return [{ phaseId: 'I5', status: 'done' }];
+      // 'ok' means the planner agent finished but validation checks still follow — stay running.
+      if (status === 'ok') return [{ phaseId: 'I5', status: 'running' }];
+      // 'skipped' means no validation follows — mark done immediately.
+      if (status === 'skipped') return [{ phaseId: 'I5', status: 'done' }];
       if (status === 'failed') return [{ phaseId: 'I5', status: 'failed' }];
-      if (status === 'blocked') return [{ phaseId: 'I7', status: 'blocked' }];
+      if (status === 'blocked') return [{ phaseId: 'I5', status: 'blocked' }];
       return [];
 
-    // ── Implement steps: I7 (Gate: Planner Blockers) ──
+    // ── Implement steps: planner validation checks (merged into I5) ──
 
     case 'Plan validation':
-      if (status === 'ok') return [{ phaseId: 'I7', status: 'running' }];
-      if (status === 'failed') return [{ phaseId: 'I7', status: 'failed' }];
-      if (status === 'blocked') return [{ phaseId: 'I7', status: 'blocked' }];
+      if (status === 'ok') return [{ phaseId: 'I5', status: 'running' }];
+      if (status === 'failed') return [{ phaseId: 'I5', status: 'failed' }];
+      if (status === 'blocked') return [{ phaseId: 'I5', status: 'blocked' }];
       return [];
 
     case 'Contract field check':
-      if (status === 'ok') return [{ phaseId: 'I7', status: 'running' }];
-      if (status === 'blocked') return [{ phaseId: 'I7', status: 'blocked' }];
+      if (status === 'ok') return [{ phaseId: 'I5', status: 'running' }];
+      if (status === 'blocked') return [{ phaseId: 'I5', status: 'blocked' }];
       return [];
 
     case 'Required field coverage check':
-      if (status === 'ok') return [{ phaseId: 'I7', status: 'done' }];
-      if (status === 'blocked') return [{ phaseId: 'I7', status: 'blocked' }];
+      if (status === 'ok') return [{ phaseId: 'I5', status: 'done' }];
+      if (status === 'blocked') return [{ phaseId: 'I5', status: 'blocked' }];
       return [];
 
     case 'Spec issue escalation':
-      if (status === 'blocked') return [{ phaseId: 'I7', status: 'blocked' }];
+      if (status === 'blocked') return [{ phaseId: 'I5', status: 'blocked' }];
       return [];
 
     // ── Implement steps: I14 (Construct Batch Plan) ──
@@ -182,7 +185,7 @@ export function getEnabledPhaseIds(
     ids.push('R3', 'R4');
   }
   if (implementEnabled) {
-    ids.push('I1', 'I5', 'I7', 'I14', 'B-EXEC');
+    ids.push('I1', 'I5', 'I14', 'B-EXEC');
   }
   return ids;
 }

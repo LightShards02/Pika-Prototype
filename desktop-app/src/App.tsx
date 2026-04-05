@@ -107,6 +107,27 @@ function App() {
       // Accumulate ALL stderr lines for error diagnostics
       const stderrLines: string[] = [];
 
+      // Track which refine unit is currently running so the exit handler
+      // knows whether to advance to the next unit or enter a terminal state.
+      // For the implement command this is always 'agents' (monolithic, one exit).
+      let currentUnit: 'load' | 'decomp' | 'agents' = 'load';
+
+      // Snapshot decompositionEnabled once so the closure is stable across units.
+      const decompositionEnabledSnapshot = useStore.getState().decompositionEnabled;
+
+      // Helper: spawn one refine phase unit with the given phaseOnly flag.
+      const spawnUnit = async (
+        phaseOnly: 'load_validate_only' | 'decomposition_only' | 'agents_only',
+      ) => {
+        const { projectRootPath: root, designSpecPath: spec, configPath: cfg } = useStore.getState();
+        await window.electronAPI.startRefine({
+          projectRoot: root!,
+          designSpecPath: spec ?? undefined,
+          configPath: cfg ?? undefined,
+          phaseOnly,
+        });
+      };
+
       // Register listeners BEFORE spawning the process to avoid race conditions
       // where a fast-exiting process sends events before listeners are ready.
       const unsubStderr = window.electronAPI.onPikaStderr((line: string) => {
@@ -131,11 +152,71 @@ function App() {
         const { code, summary } = data;
         const status = summary?.status as string | undefined;
 
+        // --- Intermediate exit: load unit ---
+        if (currentUnit === 'load') {
+          if (status === 'load_validate_only') {
+            // R1 is already marked done by the stderr "Load: ok" event.
+            // Advance to the next unit.
+            if (decompositionEnabledSnapshot) {
+              currentUnit = 'decomp';
+              updatePhase('R2', { status: 'running' });
+              try {
+                await spawnUnit('decomposition_only');
+              } catch (err) {
+                cleanup();
+                setRun({ status: 'failed', errorDetails: { exitCode: null, stderr: [`Failed to start decomposition unit: ${err instanceof Error ? err.message : String(err)}`], summary: null } });
+              }
+            } else {
+              currentUnit = 'agents';
+              updatePhase('R3', { status: 'running' });
+              updatePhase('R4', { status: 'running' });
+              try {
+                await spawnUnit('agents_only');
+              } catch (err) {
+                cleanup();
+                setRun({ status: 'failed', errorDetails: { exitCode: null, stderr: [`Failed to start agents unit: ${err instanceof Error ? err.message : String(err)}`], summary: null } });
+              }
+            }
+            return; // Do NOT call cleanup() — more units remain
+          }
+          // Unexpected status from load unit (crash, config error, etc.) → terminal
+          cleanup();
+          const fp = useStore.getState().phases;
+          const { refineEnabled: re, implementEnabled: ie, decompositionEnabled: de } = useStore.getState();
+          setRun({ status: 'failed', progress: computeProgress(fp, getEnabledPhaseIds(re, ie, de)), errorDetails: { exitCode: code, stderr: stderrLines, summary } });
+          return;
+        }
+
+        // --- Intermediate exit: decomp unit ---
+        if (currentUnit === 'decomp') {
+          if (status === 'decomposition_only') {
+            // R2 is already marked done by the stderr "Decomposition: ok" event.
+            currentUnit = 'agents';
+            updatePhase('R3', { status: 'running' });
+            updatePhase('R4', { status: 'running' });
+            try {
+              await spawnUnit('agents_only');
+            } catch (err) {
+              cleanup();
+              setRun({ status: 'failed', errorDetails: { exitCode: null, stderr: [`Failed to start agents unit: ${err instanceof Error ? err.message : String(err)}`], summary: null } });
+            }
+            return; // Do NOT call cleanup() — agents unit remains
+          }
+          // Unexpected status from decomp unit → terminal
+          cleanup();
+          const fp = useStore.getState().phases;
+          const { refineEnabled: re, implementEnabled: ie, decompositionEnabled: de } = useStore.getState();
+          setRun({ status: 'failed', progress: computeProgress(fp, getEnabledPhaseIds(re, ie, de)), errorDetails: { exitCode: code, stderr: stderrLines, summary } });
+          return;
+        }
+
+        // --- Terminal exit: agents unit (refine) or implement (monolithic) ---
+
         if (status === 'completed') {
           // Safety net: mark phases done only if still pending/running
           const cmd = useStore.getState().run.command;
           const phaseIds = cmd === 'implement'
-            ? ['I1', 'I5', 'I7', 'I14', 'B-EXEC']
+            ? ['I1', 'I5', 'I14', 'B-EXEC']
             : ['R1', 'R2', 'R3', 'R4'];
           const currentPhases = useStore.getState().phases;
           for (const id of phaseIds) {
@@ -159,7 +240,7 @@ function App() {
             // Mark the blocked phase(s) immediately — before the async read so it always happens
             const blockingStage = summary?.blocking_stage as string | undefined;
             if (activeCmd === 'implement') {
-              updatePhase('I7', { status: 'blocked' });
+              updatePhase('I5', { status: 'blocked' });
             } else if (blockingStage === 'decomposition') {
               updatePhase('R2', { status: 'blocked' });
             } else {
@@ -201,7 +282,7 @@ function App() {
           });
         }
 
-        // Clean up listeners after exit
+        // Clean up listeners after any terminal exit
         cleanup();
       });
 
@@ -213,24 +294,23 @@ function App() {
 
       cleanupRef.current = cleanup;
 
-      // Now spawn the process — listeners are already registered
+      // Now spawn the first unit — listeners are already registered
       try {
         const cmd = useStore.getState().run.command;
 
-        // Mark the first phase of the command as running so the UI shows activity immediately
-        updatePhase(cmd === 'implement' ? 'I1' : 'R1', { status: 'running' });
         if (cmd === 'implement') {
+          // Implement is monolithic — treat the single exit as terminal.
+          currentUnit = 'agents';
+          updatePhase('I1', { status: 'running' });
           await window.electronAPI.startImplement({
             projectRoot: projectRootPath,
             designSpecPath: designSpecPath ?? undefined,
             configPath: configPath ?? undefined,
           });
         } else {
-          await window.electronAPI.startRefine({
-            projectRoot: projectRootPath,
-            designSpecPath: designSpecPath ?? undefined,
-            configPath: configPath ?? undefined,
-          });
+          // Refine: start with the load+validate unit.
+          updatePhase('R1', { status: 'running' });
+          await spawnUnit('load_validate_only');
         }
       } catch (err) {
         cleanup();

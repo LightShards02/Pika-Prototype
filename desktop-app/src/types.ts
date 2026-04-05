@@ -40,7 +40,7 @@ export interface PikaPreferences {
   availableModuleTags: string[];
 }
 
-export type PhaseStatus = 'pending' | 'running' | 'done' | 'failed' | 'blocked';
+export type PhaseStatus = 'pending' | 'running' | 'done' | 'failed' | 'blocked' | 'interrupted';
 
 export type PikaCommand = 'refine' | 'implement' | 'batch';
 
@@ -163,7 +163,12 @@ export interface ElectronAPI {
   getPikaRoot: () => Promise<string>;
 
   // PIKA CLI process lifecycle
-  startRefine: (args: { projectRoot: string; configPath?: string; designSpecPath?: string }) => Promise<void>;
+  startRefine: (args: {
+    projectRoot: string;
+    configPath?: string;
+    designSpecPath?: string;
+    phaseOnly?: 'load_validate_only' | 'decomposition_only' | 'agents_only';
+  }) => Promise<void>;
   startImplement: (args: { projectRoot: string; configPath?: string; designSpecPath?: string }) => Promise<void>;
   cancelPika: () => Promise<void>;
 

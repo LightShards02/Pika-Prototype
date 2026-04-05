@@ -258,7 +258,7 @@ ipcMain.handle('dialog:openDir', async () => {
 // IPC Handlers: PIKA Refine Process Lifecycle
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('pika:start-refine', async (_event, { projectRoot, configPath, designSpecPath }) => {
+ipcMain.handle('pika:start-refine', async (_event, { projectRoot, configPath, designSpecPath, phaseOnly }) => {
   if (pikaProcess) {
     throw new Error('A PIKA process is already running. Cancel it first.');
   }
@@ -266,6 +266,15 @@ ipcMain.handle('pika:start-refine', async (_event, { projectRoot, configPath, de
   const args = ['agent', 'refine', '--project-root', projectRoot];
   if (configPath) args.push('--config', configPath);
   if (designSpecPath) args.push('--design-spec', designSpecPath);
+
+  const phaseOnlyFlagMap = {
+    load_validate_only: '--load-validate-only',
+    decomposition_only: '--decomposition-only',
+    agents_only: '--agents-only',
+  };
+  if (phaseOnly && phaseOnlyFlagMap[phaseOnly]) {
+    args.push(phaseOnlyFlagMap[phaseOnly]);
+  }
 
   pikaProcess = spawnPikaCommand(args);
 });

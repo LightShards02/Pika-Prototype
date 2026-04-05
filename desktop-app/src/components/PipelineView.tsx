@@ -1,4 +1,4 @@
-import { CheckCircle2, AlertTriangle, XCircle, Loader2, Clock } from 'lucide-react';
+import { CheckCircle2, AlertTriangle, XCircle, Loader2, Clock, Ban } from 'lucide-react';
 import { useStore } from '../store';
 import { clsx } from 'clsx';
 import type { PhaseStatus } from '../types';
@@ -8,6 +8,7 @@ const StatusIcon = ({ status }: { status: PhaseStatus }) => {
     case 'done': return <CheckCircle2 size={18} className="text-success" />;
     case 'failed': return <XCircle size={18} className="text-error" />;
     case 'blocked': return <AlertTriangle size={18} className="text-warning" />;
+    case 'interrupted': return <Ban size={18} className="text-text-tertiary" />;
     case 'running': return <Loader2 size={18} className="text-accent-primary animate-spin" />;
     case 'pending': return <Clock size={18} className="text-border-medium" />;
     default: return <Clock size={18} className="text-border-medium" />;
@@ -20,6 +21,7 @@ const statusLabel = (status: PhaseStatus): string => {
     case 'running': return '[RUNNING]';
     case 'blocked': return '[BLOCKED]';
     case 'failed': return '[FAILED]';
+    case 'interrupted': return '[CANCELLED]';
     default: return '[PENDING]';
   }
 };
@@ -57,11 +59,11 @@ export const PipelineView = () => {
                 <div className="w-8 flex justify-center">
                   <StatusIcon status={phase.status} />
                 </div>
-                <div className="flex-1 ml-3">
-                  <div className="text-[14px] font-medium text-text-primary">{phase.name}</div>
+                <div className="flex-1 min-w-0 ml-3">
+                  <div className="text-[14px] font-medium text-text-primary break-words">{phase.name}</div>
                   <div className="text-[12px] text-text-secondary truncate">{phase.description}</div>
                 </div>
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-text-tertiary ml-4">
+                <div className="shrink-0 text-[11px] font-semibold uppercase tracking-wider text-text-tertiary ml-4 text-right">
                   {statusLabel(phase.status)}
                 </div>
               </div>
@@ -92,11 +94,11 @@ export const PipelineView = () => {
                 <div className="w-8 flex justify-center">
                   <StatusIcon status={phase.status} />
                 </div>
-                <div className="flex-1 ml-3">
-                  <div className="text-[14px] font-medium text-text-primary">{phase.name}</div>
+                <div className="flex-1 min-w-0 ml-3">
+                  <div className="text-[14px] font-medium text-text-primary break-words">{phase.name}</div>
                   <div className="text-[12px] text-text-secondary truncate">{phase.description}</div>
                 </div>
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-text-tertiary ml-4">
+                <div className="shrink-0 text-[11px] font-semibold uppercase tracking-wider text-text-tertiary ml-4 text-right">
                   {statusLabel(phase.status)}
                 </div>
               </div>

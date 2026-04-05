@@ -80,6 +80,12 @@ export const GatePanel = () => {
       });
       await waitForExit();
 
+      // Mark gate-blocked phases done immediately — resolutions have been applied
+      const phasesToClear = useStore.getState().phases.filter(p => p.status === 'blocked');
+      for (const p of phasesToClear) {
+        useStore.getState().updatePhase(p.id, { status: 'done' });
+      }
+
       // 3. Resume the active command
       setCurrentGateItems([]);
       const resumePhases = useStore.getState().phases;
@@ -100,7 +106,7 @@ export const GatePanel = () => {
           const phases = useStore.getState().phases;
           const cmd = useStore.getState().run.command;
           const phaseIds = cmd === 'implement'
-            ? ['I1', 'I5', 'I7', 'I14', 'B-EXEC']
+            ? ['I1', 'I5', 'I14', 'B-EXEC']
             : ['R1', 'R2', 'R3', 'R4'];
           for (const id of phaseIds) {
             const phase = phases.find((p) => p.id === id);
