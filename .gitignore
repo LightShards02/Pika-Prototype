@@ -213,6 +213,9 @@ __marimo__/
 
 # --- PIKA-specific ---
 
+# API keys / secrets (never commit)
+secrets/
+
 
 # Dataset output dirs (agent runs, backups, intermediate artifacts)
 dataset/CORE

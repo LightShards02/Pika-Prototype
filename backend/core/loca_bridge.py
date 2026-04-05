@@ -98,39 +98,31 @@ def _get_local_provider_sub(config: dict[str, Any]) -> str:
     return "openai-codex"
 
 
-def _get_local_temperature(config: dict[str, Any]) -> float | None:
-    """Return temperature for local provider, or None for provider default.
+def _get_local_temperature(config: dict[str, Any], prompt_name: str) -> float | None:
+    """Return temperature for the effective local agent profile.
 
-    Resolution: workspace config agent.local_temperature -> pika local.temperature -> None.
+    Resolution is delegated to lifecycle's merged agent-profile helper.
+    Returns ``None`` when the provider default should be used.
     """
-    agent = config.get("agent")
-    if isinstance(agent, dict):
-        val = agent.get("local_temperature")
-        if isinstance(val, (int, float)):
-            return float(val)
+    from core.lifecycle import _get_effective_local_agent_profile
 
-    pika_local = get_pika_config().get("local", {})
-    val = pika_local.get("temperature")
-    if isinstance(val, (int, float)):
-        return float(val)
+    value = _get_effective_local_agent_profile(config, prompt_name).get("temperature")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
     return None
 
 
-def _get_local_top_p(config: dict[str, Any]) -> float | None:
-    """Return top_p for local provider, or None for provider default.
+def _get_local_top_p(config: dict[str, Any], prompt_name: str) -> float | None:
+    """Return top_p for the effective local agent profile.
 
-    Resolution: workspace config agent.local_top_p -> pika local.top_p -> None.
+    Resolution is delegated to lifecycle's merged agent-profile helper.
+    Returns ``None`` when the provider default should be used.
     """
-    agent = config.get("agent")
-    if isinstance(agent, dict):
-        val = agent.get("local_top_p")
-        if isinstance(val, (int, float)):
-            return float(val)
+    from core.lifecycle import _get_effective_local_agent_profile
 
-    pika_local = get_pika_config().get("local", {})
-    val = pika_local.get("top_p")
-    if isinstance(val, (int, float)):
-        return float(val)
+    value = _get_effective_local_agent_profile(config, prompt_name).get("top_p")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
     return None
 
 
@@ -156,7 +148,7 @@ def build_loca_config(
 
     Args:
         pika_config: Merged workspace + pika config dict.
-        prompt_name: Current prompt name (for per-prompt model/effort resolution).
+        prompt_name: Current prompt name (resolved through the normalized agent profile).
         workspace_dir: Absolute path to the isolated agent workspace.
 
     Returns:
@@ -168,9 +160,11 @@ def build_loca_config(
     provider_sub = _get_local_provider_sub(pika_config)
     model_name = get_local_model(pika_config, prompt_name)
     raw_effort = get_reasoning_effort(pika_config, prompt_name)
-    reasoning_effort = _map_reasoning_effort(raw_effort)
-    temperature = _get_local_temperature(pika_config)
-    top_p = _get_local_top_p(pika_config)
+    reasoning_effort = (
+        None if raw_effort is None else _map_reasoning_effort(raw_effort)
+    )
+    temperature = _get_local_temperature(pika_config, prompt_name)
+    top_p = _get_local_top_p(pika_config, prompt_name)
     timeout = get_local_exec_timeout_sec(pika_config)
 
     # Resolve API key for openai provider (Codex uses OAuth internally)

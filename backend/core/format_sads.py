@@ -180,14 +180,80 @@ def _load_xlsx(path: Path) -> tuple[list[str], list[dict[str, str]]]:
     return headers, rows
 
 
+def _normalize_col_key(s: str) -> str:
+    """Normalize a column name for synonym matching.
+
+    Strips ``-``, ``_``, and whitespace, then lowercases. Allows headers like
+    ``"SADS-ID"``, ``"sads_id"``, and ``"Sads Id"`` to match the same synonym
+    entry without enumerating every variant explicitly.
+
+    Args:
+        s: Raw column name string.
+
+    Returns:
+        Normalized string (no separators, all lowercase).
+    """
+    return re.sub(r"[-_\s]", "", s).lower()
+
+
 def _find_column(headers: list[str], candidates: list[str]) -> str | None:
-    """Find first column name that matches any candidate (case-insensitive)."""
-    header_set = {h.strip(): h for h in headers if h}
+    """Find first column name that matches any candidate via normalized comparison.
+
+    Normalization strips ``-``, ``_``, and whitespace then lowercases, so
+    ``"SADS-ID"``, ``"sads_id"``, and ``"Sads Id"`` all match the candidate
+    ``"SADS ID"``.  The original (un-normalized) header string is returned so
+    callers can use it as a dict key.
+
+    Args:
+        headers: Column names from the source file.
+        candidates: Logical column names to look for (in priority order).
+
+    Returns:
+        The original header string on match, or ``None`` if no candidate matches.
+    """
+    norm_map: dict[str, str] = {_normalize_col_key(h): h for h in headers if h}
     for c in candidates:
-        for k, v in header_set.items():
-            if k.lower() == c.lower():
-                return v
+        match = norm_map.get(_normalize_col_key(c))
+        if match is not None:
+            return match
     return None
+
+
+def get_column_synonyms(
+    logical_name: str,
+    config: dict[str, Any] | None = None,
+) -> list[str]:
+    """Return the synonym list for a logical column name.
+
+    Reads ``commands.format.column_synonyms.<logical_name>`` from ``pika.yaml``
+    as the project-independent default.  When *config* is provided any entries
+    under ``commands.format.column_synonyms.<logical_name>`` in the workspace
+    config are appended (de-duped).
+    Falls back to ``[logical_name]`` when no synonyms are configured.
+
+    Args:
+        logical_name: Canonical column name (e.g. ``"sads_id"``, ``"subunit"``).
+        config: Workspace config dict (optional).  Used to merge project-level
+                synonym extensions from ``commands.format.column_synonyms``.
+
+    Returns:
+        Non-empty list of synonym strings.
+    """
+    pika_cfg = get_pika_config()
+    base: list[str] = list(
+        (pika_cfg.get("commands", {}).get("format", {}).get("column_synonyms") or {}).get(logical_name) or [logical_name]
+    )
+    if config:
+        ws_syns = (
+            (config.get("commands") or {})
+            .get("format", {})
+            .get("column_synonyms", {})
+            .get(logical_name)
+        ) or []
+        for s in ws_syns:
+            if isinstance(s, str) and s not in base:
+                base.append(s)
+    return base or [logical_name]
 
 
 def flatten_sads_rows(
@@ -210,10 +276,10 @@ def flatten_sads_rows(
     Returns:
         Tuple of (headers, flattened rows). All original columns preserved.
     """
-    srs_id_col = _find_column(headers, ["SRS ID", "srs_id", "SRS_ID"])
-    srs_col = _find_column(headers, ["SRS", "srs"])
-    sads_id_col = _find_column(headers, ["SADS ID", "sads_id", "SADS_ID"])
-    sads_col = _find_column(headers, ["SADS", "sads"])
+    srs_id_col = _find_column(headers, get_column_synonyms("srs_id"))
+    srs_col = _find_column(headers, get_column_synonyms("srs"))
+    sads_id_col = _find_column(headers, get_column_synonyms("sads_id"))
+    sads_col = _find_column(headers, get_column_synonyms("sads"))
 
     current_srs_id = ""
     current_srs = ""
@@ -255,8 +321,8 @@ def derive_contract_columns(
     Returns:
         Tuple of (headers with possibly new columns, rows with values filled).
     """
-    sads_id_col = _find_column(headers, ["SADS ID", "sads_id", "SADS_ID"])
-    sads_col = _find_column(headers, ["SADS", "sads"])
+    sads_id_col = _find_column(headers, get_column_synonyms("sads_id"))
+    sads_col = _find_column(headers, get_column_synonyms("sads"))
     title_col = _find_column(headers, ["title", "Title"])
     req_col = _find_column(headers, ["requirement", "Requirement"])
 
@@ -278,6 +344,53 @@ def derive_contract_columns(
             r["title"] = row.get(sads_id_col, "")
         if "requirement" in to_add and sads_col:
             r["requirement"] = row.get(sads_col, "")
+        new_rows.append(r)
+
+    return new_headers, new_rows
+
+
+def derive_subunit_module_tag(
+    headers: list[str],
+    rows: list[dict[str, str]],
+    config: dict[str, Any] | None = None,
+) -> tuple[list[str], list[dict[str, str]]]:
+    """Derive module_tag from the subunit column when module_tag is absent or all empty.
+
+    When the source provides a subunit column (resolved via configurable synonyms)
+    and ``module_tag`` is not yet populated, each row's ``module_tag`` is set to
+    that row's subunit value.  If ``module_tag`` already has at least one non-empty
+    value it is left untouched so user-supplied groupings are never overwritten.
+
+    Args:
+        headers: Column names from the source file.
+        rows: Row dicts keyed by column name.
+        config: Workspace config (optional).  Passed to :func:`get_column_synonyms`
+                so project-level synonym extensions are honoured.
+
+    Returns:
+        Tuple of (updated headers, updated rows).  No-op when the subunit column
+        cannot be found or module_tag is already populated.
+    """
+    subunit_col = _find_column(headers, get_column_synonyms("subunit", config))
+    if not subunit_col:
+        return headers, rows
+
+    module_tag_col = _find_column(headers, ["module_tag"])
+    # Preserve existing module_tag when at least one row has a value
+    if module_tag_col and any(r.get(module_tag_col, "").strip() for r in rows):
+        return headers, rows
+
+    new_headers = list(headers)
+    if not module_tag_col:
+        # Insert module_tag immediately after subunit for logical column proximity
+        subunit_idx = new_headers.index(subunit_col)
+        new_headers.insert(subunit_idx + 1, "module_tag")
+        module_tag_col = "module_tag"
+
+    new_rows: list[dict[str, str]] = []
+    for row in rows:
+        r = dict(row)
+        r[module_tag_col] = r.get(subunit_col, "")
         new_rows.append(r)
 
     return new_headers, new_rows
@@ -451,10 +564,10 @@ def _spec_fingerprint(row: dict[str, str], headers: list[str]) -> str:
 
 def _sads_spec_fingerprint(row: dict[str, str], headers: list[str]) -> str:
     """Fingerprint for SADS format: srs_id|sads_id|requirement."""
-    srs_id_col = _find_column(headers, ["SRS ID", "srs_id", "SRS_ID"])
-    sads_id_col = _find_column(headers, ["SADS ID", "sads_id", "SADS_ID"])
+    srs_id_col = _find_column(headers, get_column_synonyms("srs_id"))
+    sads_id_col = _find_column(headers, get_column_synonyms("sads_id"))
     req_col = _find_column(headers, ["requirement", "Requirement"])
-    sads_col = _find_column(headers, ["SADS", "sads"])
+    sads_col = _find_column(headers, get_column_synonyms("sads"))
     srs_id = row.get(srs_id_col or "", "") if srs_id_col else ""
     sads_id = row.get(sads_id_col or "", "") if sads_id_col else ""
     req = row.get(req_col or "", "") if req_col else (row.get(sads_col or "", "") if sads_col else "")
@@ -463,7 +576,7 @@ def _sads_spec_fingerprint(row: dict[str, str], headers: list[str]) -> str:
 
 def _is_sads_format(headers: list[str], rows: list[dict[str, str]]) -> bool:
     """True if source has SADS ID column and at least one matching row."""
-    sads_id_col = _find_column(headers, ["SADS ID", "sads_id", "SADS_ID"])
+    sads_id_col = _find_column(headers, get_column_synonyms("sads_id"))
     if not sads_id_col:
         return False
     for row in rows:
@@ -608,8 +721,8 @@ def assign_sads_deterministic_ids(
             spec_max = n
     registry["spec_max"] = spec_max
 
-    srs_id_col = _find_column(headers, ["SRS ID", "srs_id", "SRS_ID"])
-    sads_id_col = _find_column(headers, ["SADS ID", "sads_id", "SADS_ID"])
+    srs_id_col = _find_column(headers, get_column_synonyms("srs_id"))
+    sads_id_col = _find_column(headers, get_column_synonyms("sads_id"))
     spec_id_col = "spec_id"
 
     by_sads_id: dict[str, dict[str, str]] = {}
@@ -873,6 +986,9 @@ def normalize_raw_sads(
         headers, rows = flatten_sads_rows(headers, rows)
         headers, rows = derive_contract_columns(headers, rows)
         log["rows_after_flatten"] = len(rows)
+
+    # 1b. Derive module_tag from subunit (deterministic; runs regardless of SADS format)
+    headers, rows = derive_subunit_module_tag(headers, rows, config)
 
     # 2. Keyword replacement (before fingerprinting)
     mappings: list[_KeywordMapping] = []

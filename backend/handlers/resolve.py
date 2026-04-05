@@ -254,6 +254,43 @@ def _store_editor_output(
         yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
 
+def _build_single_issue_description(item: dict[str, Any]) -> list[str]:
+    """Build issue description parts for a single (non-compound) item."""
+    parts: list[str] = []
+    if item.get("untestable_reason"):
+        parts.append(str(item["untestable_reason"]))
+    vague = item.get("vague_phrases")
+    if isinstance(vague, list) and vague:
+        parts.append("Vague phrases: " + ", ".join(str(v) for v in vague))
+    if not parts and item.get("question"):
+        parts.append(str(item["question"]))
+    if not parts:
+        parts.append(item.get("title", ""))
+    return parts
+
+
+def _build_compound_issue_description(item: dict[str, Any]) -> list[str]:
+    """Build issue description parts for a compound (multi-concern) item.
+
+    Collects descriptions from all concerns so the spec_editor sees the
+    full picture of both ambiguity and testability findings.
+    """
+    parts: list[str] = []
+    for concern in item.get("concerns") or []:
+        agent_type = concern.get("agent_type", "")
+        field = concern.get("field", "")
+        label = f"[{agent_type}/{field}]"
+
+        if concern.get("untestable_reason"):
+            parts.append(f"{label} {concern['untestable_reason']}")
+        vague = concern.get("vague_phrases")
+        if isinstance(vague, list) and vague:
+            parts.append(f"{label} Vague phrases: " + ", ".join(str(v) for v in vague))
+        if not any(concern.get(k) for k in ("untestable_reason", "vague_phrases")):
+            parts.append(f"{label} {concern.get('title', '')}")
+    return parts
+
+
 def _invoke_spec_editor(
     item: dict[str, Any],
     config: dict[str, Any],
@@ -305,29 +342,41 @@ def _invoke_spec_editor(
                 full_spec_csv = rows_to_csv(h, r)
                 if issue_kind == "field":
                     spec_id = item.get("spec_id", "")
-                    field = item.get("field", "")
-                    for row in r:
-                        if row.get("spec_id", "").strip() == spec_id.strip():
-                            for k, v in row.items():
-                                if k.strip().lower() == field.strip().lower():
-                                    current_text = str(v)
-                                    break
-                            break
+                    if item.get("is_compound"):
+                        # Gather current text for all concern fields
+                        concern_fields = [
+                            c.get("field", "") for c in (item.get("concerns") or [])
+                        ]
+                        text_parts = []
+                        for row in r:
+                            if row.get("spec_id", "").strip() == spec_id.strip():
+                                for cf in concern_fields:
+                                    for k, v in row.items():
+                                        if k.strip().lower() == cf.strip().lower():
+                                            text_parts.append(f"[{cf}]: {v}")
+                                            break
+                                break
+                        current_text = "\n".join(text_parts)
+                    else:
+                        field = item.get("field", "")
+                        for row in r:
+                            if row.get("spec_id", "").strip() == spec_id.strip():
+                                for k, v in row.items():
+                                    if k.strip().lower() == field.strip().lower():
+                                        current_text = str(v)
+                                        break
+                                break
             except Exception:
                 pass
 
     # Build issue_description
-    issue_parts: list[str] = []
-    if item.get("untestable_reason"):
-        issue_parts.append(str(item["untestable_reason"]))
-    vague = item.get("vague_phrases")
-    if isinstance(vague, list) and vague:
-        issue_parts.append("Vague phrases: " + ", ".join(str(v) for v in vague))
-    if not issue_parts and item.get("question"):
-        issue_parts.append(str(item["question"]))
-    if not issue_parts:
-        issue_parts.append(item.get("title", ""))
-    issue_description = " | ".join(issue_parts)
+    if item.get("is_compound"):
+        # Compound item: collect issue descriptions from all concerns
+        issue_parts = _build_compound_issue_description(item)
+        issue_kind = "field"
+    else:
+        issue_parts = _build_single_issue_description(item)
+    issue_description = " | ".join(issue_parts) if issue_parts else item.get("title", "")
     if user_guide:
         capped_guide = user_guide.strip()[:200]
         issue_description = f"{issue_description}\n\nUser editing guide: {capped_guide}"
@@ -335,6 +384,20 @@ def _invoke_spec_editor(
     spec_id = item.get("spec_id", "")
     field = item.get("field", "") if issue_kind == "field" else ""
     affected_spec_ids = spec_id if issue_kind == "structural" else ""
+
+    # For compound items, include all target fields and suggestions
+    suggested_improvement = item.get("suggested_improvement", "")
+    if item.get("is_compound"):
+        concerns = item.get("concerns") or []
+        field_parts = [c.get("field", "") for c in concerns if c.get("field")]
+        field = ", ".join(field_parts)
+        suggestion_parts = []
+        for c in concerns:
+            f = c.get("field", "")
+            s = c.get("suggested_improvement", "")
+            if f and s:
+                suggestion_parts.append(f"[{f}]: {s}")
+        suggested_improvement = "\n".join(suggestion_parts)
 
     from core.pika_config import get_prompt_name as _get_pn
     prompt_name = _get_pn("refine", "spec_editor")
@@ -348,7 +411,7 @@ def _invoke_spec_editor(
         "affected_spec_ids": affected_spec_ids,
         "current_text": current_text,
         "issue_description": issue_description,
-        "suggested_improvement": item.get("suggested_improvement", ""),
+        "suggested_improvement": suggested_improvement,
         "full_spec_csv": full_spec_csv,
     }
 
@@ -415,6 +478,108 @@ def _apply_structural_edits(
     return result
 
 
+def _apply_compound_resolution(
+    item: dict[str, Any],
+    rows: list[dict[str, Any]],
+    headers: list[str],
+    changes: int,
+    report_entries: list[dict[str, Any]],
+) -> tuple[int, list[dict[str, Any]]]:
+    """Apply resolution for a compound (multi-concern) item.
+
+    Compound items have item-level chosen_option_id:
+      - accept_ambiguity: apply ambiguity concern's suggestion only
+      - accept_testability: apply testability concern's suggestion only
+      - accept_both: apply both concerns' suggestions
+      - let_agent_edit: apply single editor_output covering both fields
+      - skip: no changes
+
+    Returns (updated_changes_count, updated_rows).
+    """
+    chosen_id = item.get("chosen_option_id", "")
+    spec_id = item.get("spec_id", "")
+    concerns = item.get("concerns") or []
+    editor_output = item.get("editor_output")
+
+    if chosen_id == "skip":
+        concern_ids = [c.get("item_id", "") for c in concerns]
+        report_entries.append({"spec_id": spec_id, "concern_ids": concern_ids, "action": "skip"})
+        return changes, rows
+
+    # Build lookup by agent_type for accept_* options
+    by_type: dict[str, dict[str, Any]] = {}
+    for concern in concerns:
+        by_type[concern.get("agent_type", "")] = concern
+
+    apply_ambiguity = chosen_id in ("accept_ambiguity", "accept_both")
+    apply_testability = chosen_id in ("accept_testability", "accept_both")
+
+    if apply_ambiguity and "ambiguity" in by_type:
+        c = by_type["ambiguity"]
+        new_text = c.get("suggested_improvement", "")
+        if _apply_field_edit(rows, headers, spec_id, c.get("field", "requirement"), new_text):
+            changes += 1
+            report_entries.append({
+                "spec_id": spec_id,
+                "field": c.get("field", "requirement"),
+                "concern_id": c.get("item_id", ""),
+                "action": "accept_suggestion",
+            })
+
+    if apply_testability and "testability" in by_type:
+        c = by_type["testability"]
+        new_text = c.get("suggested_improvement", "")
+        if _apply_field_edit(rows, headers, spec_id, c.get("field", "acceptance_criteria"), new_text):
+            changes += 1
+            report_entries.append({
+                "spec_id": spec_id,
+                "field": c.get("field", "acceptance_criteria"),
+                "concern_id": c.get("item_id", ""),
+                "action": "accept_suggestion",
+            })
+
+    if chosen_id == "let_agent_edit" and isinstance(editor_output, dict):
+        edit_type = editor_output.get("edit_type", "")
+        if edit_type == "field":
+            new_text = editor_output.get("new_text", "")
+            target_field = editor_output.get("field", "")
+            if _apply_field_edit(rows, headers, spec_id, target_field, new_text):
+                changes += 1
+                report_entries.append({
+                    "spec_id": spec_id,
+                    "field": target_field,
+                    "action": "let_agent_edit_field",
+                    "compound": True,
+                })
+        elif edit_type == "structural":
+            edits = editor_output.get("edits") or []
+            rows = _apply_structural_edits(rows, headers, edits)
+            changes += len(edits)
+            report_entries.append({
+                "spec_id": spec_id,
+                "action": "let_agent_edit_structural",
+                "edits": len(edits),
+                "compound": True,
+            })
+        elif edit_type == "multi_field":
+            # Spec editor returned per-field edits for compound item
+            field_edits = editor_output.get("field_edits") or []
+            for fe in field_edits:
+                target_field = fe.get("field", "")
+                new_text = fe.get("new_text", "")
+                if target_field and new_text:
+                    if _apply_field_edit(rows, headers, spec_id, target_field, new_text):
+                        changes += 1
+                        report_entries.append({
+                            "spec_id": spec_id,
+                            "field": target_field,
+                            "action": "let_agent_edit_field",
+                            "compound": True,
+                        })
+
+    return changes, rows
+
+
 def _apply_refine_resolutions(
     run_dir: Path,
     config: dict[str, Any],
@@ -454,6 +619,13 @@ def _apply_refine_resolutions(
     for item in items:
         if not isinstance(item, dict):
             continue
+
+        if item.get("is_compound"):
+            changes, rows = _apply_compound_resolution(
+                item, rows, headers, changes, report_entries,
+            )
+            continue
+
         chosen_id = item.get("chosen_option_id", "")
         editor_output = item.get("editor_output")
         spec_id = item.get("spec_id", "")

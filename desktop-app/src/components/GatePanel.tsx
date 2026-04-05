@@ -11,6 +11,7 @@ export const GatePanel = () => {
     activeItemIndex,
     setActiveItemIndex,
     resolveItem,
+    toggleAcceptConcern,
     setHighlightedSpecIds,
     setCurrentGateItems,
     run,
@@ -245,12 +246,17 @@ export const GatePanel = () => {
 
   const getOptionIcon = (optionId: string) => {
     switch (optionId) {
-      case 'accept_suggestion': return <CheckCircle2 size={20} />;
-      case 'let_agent_edit': return <Wand2 size={20} />;
-      case 'skip': return <SkipForward size={20} />;
-      case 'accept': return <CheckCircle2 size={20} />;
-      case 'agent': return <Wand2 size={20} />;
-      default: return <SkipForward size={20} />;
+      case 'accept_suggestion':
+      case 'accept_ambiguity':
+      case 'accept_testability':
+      case 'accept':
+        return <CheckCircle2 size={20} />;
+      case 'let_agent_edit':
+      case 'agent':
+        return <Wand2 size={20} />;
+      case 'skip':
+      default:
+        return <SkipForward size={20} />;
     }
   };
 
@@ -645,24 +651,132 @@ export const GatePanel = () => {
           </div>
 
           <div className="bg-white rounded-xl border border-border-subtle shadow-sm p-6 space-y-6">
+            {/* Spec badge + compound indicator */}
             <div>
-              <div className="mb-3">
+              <div className="mb-3 flex items-center gap-2">
                 <span className="px-2 py-0.5 bg-indigo-light text-indigo-dark text-[12px] font-mono font-semibold rounded">
                   {currentItem.spec_ids.join(', ')}
                 </span>
+                {currentItem.isCompound && (
+                  <span className="px-2 py-0.5 bg-amber-100 text-amber-700 text-[11px] font-bold rounded">
+                    {currentItem.concerns.length} issues
+                  </span>
+                )}
               </div>
-              <div className="inline-block px-2 py-0.5 bg-error/10 text-error text-[11px] font-bold rounded uppercase mb-3">
-                {currentItem.type}
-              </div>
-              <h3 className="text-[18px] font-mono text-indigo-dark mb-4 leading-relaxed">
-                "{currentItem.currentText}"
-              </h3>
-              <p className="text-[14px] text-text-secondary leading-relaxed">
-                <span className="font-semibold text-text-primary">Vague Phrases:</span> {currentItem.reason}
-              </p>
+
+              {/* --- Compound item: stacked concerns + shared actions --- */}
+              {currentItem.isCompound ? (
+                <div className="space-y-5">
+                  {currentItem.concerns.map((concern) => {
+                    const isAccepted = (currentItem.acceptedConcernIds ?? []).includes(concern.concernId);
+                    const acceptOptionId = concern.agentType === 'ambiguity' ? 'accept_ambiguity' : 'accept_testability';
+                    return (
+                      <div key={concern.concernId} className="border border-border-subtle rounded-lg p-4 space-y-3">
+                        <div className="flex items-center gap-2">
+                          <span className={clsx(
+                            "px-2 py-0.5 text-[11px] font-bold rounded uppercase",
+                            concern.agentType === 'ambiguity'
+                              ? "bg-purple-100 text-purple-700"
+                              : "bg-orange-100 text-orange-700"
+                          )}>
+                            {concern.agentType}
+                          </span>
+                          <span className="text-[11px] font-mono text-text-tertiary">{concern.field}</span>
+                        </div>
+                        <h3 className="text-[16px] font-mono text-indigo-dark leading-relaxed">
+                          &ldquo;{concern.currentText}&rdquo;
+                        </h3>
+                        <p className="text-[14px] text-text-secondary leading-relaxed">
+                          <span className="font-semibold text-text-primary">
+                            {concern.agentType === 'ambiguity' ? 'Vague Phrases:' : 'Untestable Reason:'}
+                          </span>{' '}
+                          {concern.reason}
+                        </p>
+                        {concern.suggestedText && (
+                          <div className="space-y-2">
+                            <div className="text-[12px] font-semibold text-text-tertiary uppercase">Suggested Rewrite</div>
+                            <div className="p-3 bg-bg-highlighted-row rounded-lg font-mono text-[13px] text-indigo-mid border border-accent-light/30 leading-relaxed">
+                              {concern.suggestedText}
+                            </div>
+                          </div>
+                        )}
+                        {/* Per-concern accept toggle */}
+                        <button
+                          onClick={() => toggleAcceptConcern(currentItem.id, concern.concernId)}
+                          className={clsx(
+                            "w-full flex items-center gap-3 p-3 rounded-lg border-2 text-left transition-all cursor-pointer",
+                            isAccepted
+                              ? "bg-green-600 border-transparent text-white shadow-md"
+                              : "bg-white border-border-medium text-text-primary hover:border-green-500 hover:bg-green-50"
+                          )}
+                        >
+                          <div className={clsx("p-1.5 rounded-md", isAccepted ? "bg-white/20" : "bg-bg-elevated")}>
+                            <CheckCircle2 size={18} />
+                          </div>
+                          <div>
+                            <div className="text-[13px] font-semibold">
+                              {currentItem.options.find(o => o.id === acceptOptionId)?.label ?? 'Accept this fix'}
+                            </div>
+                          </div>
+                        </button>
+                      </div>
+                    );
+                  })}
+
+                  {/* Shared actions: let_agent_edit and skip */}
+                  <div className="grid grid-cols-1 gap-3 pt-2 border-t border-border-subtle">
+                    {currentItem.options
+                      .filter(o => o.id === 'let_agent_edit' || o.id === 'skip')
+                      .map((option) => (
+                        <button
+                          key={option.id}
+                          onClick={() => resolveItem(currentItem.id, option.id)}
+                          className={clsx(
+                            "w-full flex items-center gap-4 p-4 rounded-lg border-2 text-left transition-all cursor-pointer",
+                            currentItem.selectedOption === option.id
+                              ? "bg-accent-primary border-transparent text-white shadow-md"
+                              : "bg-white border-border-medium text-text-primary hover:border-accent-primary hover:bg-bg-panel"
+                          )}
+                        >
+                          <div className={clsx(
+                            "p-2 rounded-md",
+                            currentItem.selectedOption === option.id ? "bg-white/20" : "bg-bg-elevated"
+                          )}>
+                            {getOptionIcon(option.id)}
+                          </div>
+                          <div>
+                            <div className="text-[14px] font-semibold">{option.label}</div>
+                            {option.description && (
+                              <div className={clsx(
+                                "text-[12px]",
+                                currentItem.selectedOption === option.id ? "text-white/80" : "text-text-secondary"
+                              )}>
+                                {option.description}
+                              </div>
+                            )}
+                          </div>
+                        </button>
+                      ))}
+                  </div>
+                </div>
+              ) : (
+                /* --- Single item: original layout --- */
+                <>
+                  <div className="inline-block px-2 py-0.5 bg-error/10 text-error text-[11px] font-bold rounded uppercase mb-3">
+                    {currentItem.type}
+                  </div>
+                  <h3 className="text-[18px] font-mono text-indigo-dark mb-4 leading-relaxed">
+                    &ldquo;{currentItem.currentText}&rdquo;
+                  </h3>
+                  <p className="text-[14px] text-text-secondary leading-relaxed">
+                    <span className="font-semibold text-text-primary">Vague Phrases:</span> {currentItem.reason}
+                  </p>
+                </>
+              )}
             </div>
 
-            {currentItem.suggestedText && (
+            {/* Suggested rewrite (single items only) */}
+            {!currentItem.isCompound && currentItem.suggestedText && (
               <div className="space-y-3">
                 <div className="text-[12px] font-semibold text-text-tertiary uppercase">Suggested Rewrite</div>
                 <div className="p-4 bg-bg-highlighted-row rounded-lg font-mono text-[13px] text-indigo-mid border border-accent-light/30 leading-relaxed">
@@ -671,39 +785,41 @@ export const GatePanel = () => {
               </div>
             )}
 
-            <div className="grid grid-cols-1 gap-3">
-              {currentItem.options.map((option) => (
-                <button
-                  key={option.id}
-                  onClick={() => resolveItem(currentItem.id, option.id)}
-                  className={clsx(
-                    "w-full flex items-center gap-4 p-4 rounded-lg border-2 text-left transition-all cursor-pointer",
-                    currentItem.selectedOption === option.id
-                      ? "bg-accent-primary border-transparent text-white shadow-md"
-                      : "bg-white border-border-medium text-text-primary hover:border-accent-primary hover:bg-bg-panel"
-                  )}
-                >
-                  <div className={clsx(
-                    "p-2 rounded-md",
-                    currentItem.selectedOption === option.id ? "bg-white/20" : "bg-bg-elevated"
-                  )}>
-                    {getOptionIcon(option.id)}
-                  </div>
-                  <div>
-                    <div className="text-[14px] font-semibold">{option.label}</div>
-                    {option.description && (
-                      <div className={clsx(
-                        "text-[12px]",
-                        currentItem.selectedOption === option.id ? "text-white/80" : "text-text-secondary"
-                      )}>
-                        {option.description}
-                      </div>
+            {/* Option buttons (single items only — compound uses inline buttons above) */}
+            {!currentItem.isCompound && (
+              <div className="grid grid-cols-1 gap-3">
+                {currentItem.options.map((option) => (
+                  <button
+                    key={option.id}
+                    onClick={() => resolveItem(currentItem.id, option.id)}
+                    className={clsx(
+                      "w-full flex items-center gap-4 p-4 rounded-lg border-2 text-left transition-all cursor-pointer",
+                      currentItem.selectedOption === option.id
+                        ? "bg-accent-primary border-transparent text-white shadow-md"
+                        : "bg-white border-border-medium text-text-primary hover:border-accent-primary hover:bg-bg-panel"
                     )}
-                  </div>
-                </button>
-              ))}
-            </div>
-
+                  >
+                    <div className={clsx(
+                      "p-2 rounded-md",
+                      currentItem.selectedOption === option.id ? "bg-white/20" : "bg-bg-elevated"
+                    )}>
+                      {getOptionIcon(option.id)}
+                    </div>
+                    <div>
+                      <div className="text-[14px] font-semibold">{option.label}</div>
+                      {option.description && (
+                        <div className={clsx(
+                          "text-[12px]",
+                          currentItem.selectedOption === option.id ? "text-white/80" : "text-text-secondary"
+                        )}>
+                          {option.description}
+                        </div>
+                      )}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="flex justify-between items-center pt-4">

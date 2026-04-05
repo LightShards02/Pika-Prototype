@@ -153,13 +153,17 @@ def _load_csv_appendix(
         quotechar='"',
         skipinitialspace=True,
     )
-    headers = [h.strip().lower() for h in (reader.fieldnames or [])]
+    headers = [
+        h.strip().lower()
+        for h in (reader.fieldnames or [])
+        if isinstance(h, str) and h.strip()
+    ]
     if "title" not in headers or "content" not in headers:
         return []
 
     entries: list[AppendixEntry] = []
     for row in reader:
-        norm = {k.strip().lower(): (v or "").strip() for k, v in row.items()}
+        norm = _normalize_csv_row(row, headers)
         title = norm.get("title", "")
         content = norm.get("content", "")
         if not title and not content:
@@ -177,6 +181,38 @@ def _load_csv_appendix(
         )
 
     return entries
+
+
+def _normalize_csv_row(
+    row: dict[str | None, Any],
+    headers: list[str],
+) -> dict[str, str]:
+    """Normalize a CSV DictReader row and merge overflow cells safely.
+
+    ``csv.DictReader`` stores surplus cells under the ``None`` key when a data
+    row has more comma-separated values than the header declares. This happens
+    when the last field contains an unquoted comma. For appendix CSVs, preserve
+    that content by appending the overflow cells to the final declared header
+    instead of crashing during key normalization.
+    """
+    normalized: dict[str, str] = {}
+    for key, value in row.items():
+        if key is None:
+            continue
+        key_text = str(key).strip().lower()
+        if not key_text:
+            continue
+        normalized[key_text] = (value or "").strip()
+
+    overflow = row.get(None)
+    if isinstance(overflow, list) and headers:
+        extras = [str(value).strip() for value in overflow if value is not None and str(value).strip()]
+        if extras:
+            last_header = headers[-1]
+            existing = normalized.get(last_header, "")
+            normalized[last_header] = ", ".join(([existing] if existing else []) + extras)
+
+    return normalized
 
 
 # ---------------------------------------------------------------------------

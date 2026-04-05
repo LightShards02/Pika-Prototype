@@ -69,13 +69,23 @@ def generate_resolution_template(
     for item in items:
         if not isinstance(item, dict):
             continue
-        enriched = _enrich_item_with_hints(
-            item,
-            source=source,
-            spec_rows=spec_rows or [],
-            headers=headers or [],
-            shared_contracts=shared_contracts or [],
-        )
+
+        if item.get("is_compound"):
+            enriched = _enrich_compound_item(
+                item,
+                source=source,
+                spec_rows=spec_rows or [],
+                headers=headers or [],
+                shared_contracts=shared_contracts or [],
+            )
+        else:
+            enriched = _enrich_item_with_hints(
+                item,
+                source=source,
+                spec_rows=spec_rows or [],
+                headers=headers or [],
+                shared_contracts=shared_contracts or [],
+            )
         enriched["source"] = source
         enriched["chosen_option_id"] = None
         if _is_manual_edit_item(enriched):
@@ -85,6 +95,8 @@ def generate_resolution_template(
             enriched["manual_edit_field"] = None
         if source == RESOLUTION_SOURCE_AGENT:
             enriched["free_text"] = None
+            if item.get("is_compound"):
+                enriched["editor_output"] = None
         # Inject manual_edit option for items that already have let_agent_edit
         option_ids = {
             str(o.get("option_id", ""))
@@ -113,6 +125,34 @@ def generate_resolution_template(
         yaml.dump(payload, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
     return out_path
+
+
+def _enrich_compound_item(
+    item: dict[str, Any],
+    *,
+    source: str,
+    spec_rows: list[dict[str, Any]],
+    headers: list[str],
+    shared_contracts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Enrich a compound item by collecting hints from each concern.
+
+    Returns a copy with per-concern hints aggregated into the item-level
+    spec_amendment_hints list.
+    """
+    result = dict(item)
+    all_hints: list[dict[str, Any]] = []
+    for concern in item.get("concerns") or []:
+        hints = _build_spec_amendment_hints(
+            concern,
+            source=source,
+            spec_rows=spec_rows,
+            headers=headers,
+            shared_contracts=shared_contracts,
+        )
+        all_hints.extend(hints)
+    result["spec_amendment_hints"] = all_hints if all_hints else []
+    return result
 
 
 def _enrich_item_with_hints(

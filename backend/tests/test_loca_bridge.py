@@ -69,23 +69,26 @@ class GetLocalTemperatureTests(unittest.TestCase):
     @patch("core.loca_bridge.get_pika_config")
     def test_returns_none_when_not_set(self, mock_pika: MagicMock) -> None:
         mock_pika.return_value = {"local": {}}
-        self.assertIsNone(_get_local_temperature({}))
+        self.assertIsNone(_get_local_temperature({}, "map_spec_to_code"))
 
     @patch("core.loca_bridge.get_pika_config")
     def test_workspace_override(self, mock_pika: MagicMock) -> None:
-        mock_pika.return_value = {"local": {"temperature": 0.5}}
-        config = {"agent": {"local_temperature": 0.8}}
-        self.assertAlmostEqual(_get_local_temperature(config), 0.8)
+        mock_pika.return_value = {"local": {"model": {"default": {"name": "gpt-5.3-codex", "temperature": 0.5}}}}
+        config = {"agent": {"map_spec_to_code": {"temperature": 0.8}}}
+        self.assertAlmostEqual(_get_local_temperature(config, "map_spec_to_code"), 0.8)
 
+    @patch("core.lifecycle.get_pika_config")
     @patch("core.loca_bridge.get_pika_config")
-    def test_pika_default(self, mock_pika: MagicMock) -> None:
-        mock_pika.return_value = {"local": {"temperature": 0.3}}
-        self.assertAlmostEqual(_get_local_temperature({}), 0.3)
+    def test_pika_default(self, mock_bridge_pika: MagicMock, mock_lifecycle_pika: MagicMock) -> None:
+        pika_cfg = {"local": {"model": {"default": {"name": "gpt-5.3-codex", "temperature": 0.3}}}}
+        mock_bridge_pika.return_value = pika_cfg
+        mock_lifecycle_pika.return_value = pika_cfg
+        self.assertAlmostEqual(_get_local_temperature({}, "map_spec_to_code"), 0.3)
 
     @patch("core.loca_bridge.get_pika_config")
     def test_null_pika_value_returns_none(self, mock_pika: MagicMock) -> None:
-        mock_pika.return_value = {"local": {"temperature": None}}
-        self.assertIsNone(_get_local_temperature({}))
+        mock_pika.return_value = {"local": {"model": {"default": {"name": "gpt-5.3-codex", "temperature": None}}}}
+        self.assertIsNone(_get_local_temperature({}, "map_spec_to_code"))
 
 
 class GetLocalTopPTests(unittest.TestCase):
@@ -94,18 +97,21 @@ class GetLocalTopPTests(unittest.TestCase):
     @patch("core.loca_bridge.get_pika_config")
     def test_returns_none_when_not_set(self, mock_pika: MagicMock) -> None:
         mock_pika.return_value = {"local": {}}
-        self.assertIsNone(_get_local_top_p({}))
+        self.assertIsNone(_get_local_top_p({}, "map_spec_to_code"))
 
     @patch("core.loca_bridge.get_pika_config")
     def test_workspace_override(self, mock_pika: MagicMock) -> None:
-        mock_pika.return_value = {"local": {}}
-        config = {"agent": {"local_top_p": 0.9}}
-        self.assertAlmostEqual(_get_local_top_p(config), 0.9)
+        mock_pika.return_value = {"local": {"model": {"default": {"name": "gpt-5.3-codex"}}}}
+        config = {"agent": {"map_spec_to_code": {"top_p": 0.9}}}
+        self.assertAlmostEqual(_get_local_top_p(config, "map_spec_to_code"), 0.9)
 
+    @patch("core.lifecycle.get_pika_config")
     @patch("core.loca_bridge.get_pika_config")
-    def test_pika_default(self, mock_pika: MagicMock) -> None:
-        mock_pika.return_value = {"local": {"top_p": 0.7}}
-        self.assertAlmostEqual(_get_local_top_p({}), 0.7)
+    def test_pika_default(self, mock_bridge_pika: MagicMock, mock_lifecycle_pika: MagicMock) -> None:
+        pika_cfg = {"local": {"model": {"default": {"name": "gpt-5.3-codex", "top_p": 0.7}}}}
+        mock_bridge_pika.return_value = pika_cfg
+        mock_lifecycle_pika.return_value = pika_cfg
+        self.assertAlmostEqual(_get_local_top_p({}, "map_spec_to_code"), 0.7)
 
 
 class BuildLocaConfigTests(unittest.TestCase):
@@ -117,8 +123,7 @@ class BuildLocaConfigTests(unittest.TestCase):
         pika_cfg = {
             "local": {
                 "provider_sub": "openai-codex",
-                "model": {"default": "gpt-5.3-codex"},
-                "reasoning_effort": {"default": "medium"},
+                "model": {"default": {"name": "gpt-5.3-codex", "reasoning_effort": "medium"}},
                 "exec_timeout_sec": 600,
             },
         }
@@ -144,8 +149,7 @@ class BuildLocaConfigTests(unittest.TestCase):
         pika_cfg = {
             "local": {
                 "provider_sub": "openai",
-                "model": {"default": "gpt-4o"},
-                "reasoning_effort": {"default": "medium"},
+                "model": {"default": {"name": "gpt-4o", "reasoning_effort": "medium"}},
                 "exec_timeout_sec": 300,
             },
         }
@@ -155,8 +159,10 @@ class BuildLocaConfigTests(unittest.TestCase):
         config = {
             "agent": {
                 "local_provider": "openai",
-                "local_temperature": 0.5,
-                "local_top_p": 0.9,
+                "map_spec_to_code": {
+                    "temperature": 0.5,
+                    "top_p": 0.9,
+                },
             },
         }
         workspace = Path("/tmp/test-workspace")
@@ -170,11 +176,38 @@ class BuildLocaConfigTests(unittest.TestCase):
 
     @patch("core.loca_bridge.get_pika_config")
     @patch("core.lifecycle.get_pika_config")
+    def test_null_reasoning_effort_passes_through_temperature_top_p(
+        self, mock_lifecycle_pika: MagicMock, mock_bridge_pika: MagicMock
+    ) -> None:
+        """Explicit null reasoning_effort yields None for Loca so sampling params apply."""
+        pika_cfg = {
+            "local": {
+                "provider_sub": "openai-codex",
+                "model": {
+                    "default": {"name": "gpt-5.3-codex", "reasoning_effort": "medium"},
+                    "map_spec_to_code": {
+                        "reasoning_effort": None,
+                        "temperature": 0.4,
+                        "top_p": 0.88,
+                    },
+                },
+                "exec_timeout_sec": 600,
+            },
+        }
+        mock_lifecycle_pika.return_value = pika_cfg
+        mock_bridge_pika.return_value = pika_cfg
+
+        loca_cfg = build_loca_config({}, "map_spec_to_code", Path("/tmp/ws"))
+        self.assertIsNone(loca_cfg.model.reasoning_effort)
+        self.assertAlmostEqual(loca_cfg.model.temperature, 0.4)
+        self.assertAlmostEqual(loca_cfg.model.top_p, 0.88)
+
+    @patch("core.loca_bridge.get_pika_config")
+    @patch("core.lifecycle.get_pika_config")
     def test_xhigh_reasoning_maps_to_high(self, mock_lifecycle_pika: MagicMock, mock_bridge_pika: MagicMock) -> None:
         pika_cfg = {
             "local": {
-                "model": {"default": "gpt-5.3-codex"},
-                "reasoning_effort": {"default": "xhigh"},
+                "model": {"default": {"name": "gpt-5.3-codex", "reasoning_effort": "xhigh"}},
                 "exec_timeout_sec": 600,
             },
         }

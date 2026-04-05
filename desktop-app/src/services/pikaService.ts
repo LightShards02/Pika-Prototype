@@ -3,7 +3,17 @@
  * No React imports — these are standalone utility functions.
  */
 
-import type { Phase, PhaseStatus, PikaCommand, RawAgentItem, RawAmbiguityItem, ResolutionItem, Spec } from '../types';
+import type {
+  Concern,
+  Phase,
+  PhaseStatus,
+  PikaCommand,
+  RawAgentItem,
+  RawAmbiguityItem,
+  RawCompoundItem,
+  ResolutionItem,
+  Spec,
+} from '../types';
 
 // --- Stderr parsing ---
 
@@ -213,40 +223,148 @@ function isAmbiguityItem(item: RawAgentItem): item is RawAmbiguityItem {
   return 'vague_phrases' in item;
 }
 
+function isCompoundItem(item: RawAgentItem): item is RawCompoundItem {
+  return 'is_compound' in item && (item as RawCompoundItem).is_compound === true;
+}
+
+/**
+ * Transform a v2 compound raw item into a ResolutionItem with concerns.
+ */
+function transformCompoundItem(
+  raw: RawCompoundItem,
+  specMap: Map<string, Spec>,
+  index: number,
+): ResolutionItem {
+  const spec = specMap.get(raw.spec_id);
+  const specRecord = spec as unknown as Record<string, string> | undefined;
+
+  const concerns: Concern[] = raw.concerns.map((c) => {
+    const currentText = specRecord ? specRecord[c.field] ?? '' : '';
+    const reason = c.agent_type === 'ambiguity'
+      ? (c.vague_phrases ?? []).join('; ')
+      : c.untestable_reason ?? '';
+
+    return {
+      concernId: c.item_id,
+      agentType: c.agent_type,
+      field: c.field,
+      title: c.title,
+      reason,
+      currentText,
+      suggestedText: c.suggested_improvement,
+      suggestedTestType: c.suggested_test_type,
+    };
+  });
+
+  // Build combined reason and type for the item header
+  const reasonParts = concerns.map((c) => `[${c.agentType}] ${c.reason}`);
+
+  return {
+    id: raw.item_id,
+    spec_ids: [raw.spec_id],
+    type: raw.title,
+    reason: reasonParts.join(' | '),
+    itemIndex: index,
+    isCompound: true,
+    concerns,
+    acceptedConcernIds: [],
+    options: raw.options.map((o) => ({
+      id: o.option_id,
+      label: o.label,
+      description: o.effect,
+    })),
+  };
+}
+
 /**
  * Transform raw agent items (from agent_review.json) into ResolutionItem[] for the UI.
+ * Supports both v1 (flat) and v2 (compound) formats.
  */
 export function transformAgentItems(
   rawItems: RawAgentItem[],
   specs: Spec[],
+  formatVersion?: number,
 ): ResolutionItem[] {
   const specMap = new Map(specs.map((s) => [s.spec_id, s]));
 
   return rawItems.map((raw, index) => {
-    const spec = specMap.get(raw.spec_id);
-    const fieldValue = spec ? (spec as unknown as Record<string, string>)[raw.field] ?? '' : '';
+    // V2 compound items
+    if (formatVersion === 2 && isCompoundItem(raw)) {
+      return transformCompoundItem(raw, specMap, index);
+    }
+
+    // V2 single-concern items (is_compound: false) — unwrap the concern
+    if (formatVersion === 2 && 'concerns' in raw) {
+      const v2 = raw as RawCompoundItem;
+      const concern = v2.concerns[0];
+      const spec = specMap.get(v2.spec_id);
+      const fieldValue = spec ? (spec as unknown as Record<string, string>)[concern.field] ?? '' : '';
+      const isAmb = concern.agent_type === 'ambiguity';
+
+      return {
+        id: v2.item_id,
+        spec_ids: [v2.spec_id],
+        type: isAmb ? `Ambiguity: ${concern.title}` : `Testability: ${concern.title}`,
+        reason: isAmb ? (concern.vague_phrases ?? []).join('; ') : concern.untestable_reason ?? '',
+        currentText: fieldValue,
+        suggestedText: concern.suggested_improvement,
+        field: concern.field,
+        itemIndex: index,
+        isCompound: false,
+        concerns: [{
+          concernId: concern.item_id,
+          agentType: concern.agent_type,
+          field: concern.field,
+          title: concern.title,
+          reason: isAmb ? (concern.vague_phrases ?? []).join('; ') : concern.untestable_reason ?? '',
+          currentText: fieldValue,
+          suggestedText: concern.suggested_improvement,
+          suggestedTestType: concern.suggested_test_type,
+        }],
+        options: v2.options.map((o) => ({
+          id: o.option_id,
+          label: o.label,
+          description: o.effect,
+        })),
+      };
+    }
+
+    // V1 flat items (backward compat)
+    const v1 = raw as RawAmbiguityItem | import('../types').RawTestabilityItem;
+    const spec = specMap.get(v1.spec_id);
+    const fieldValue = spec ? (spec as unknown as Record<string, string>)[v1.field] ?? '' : '';
 
     let type: string;
     let reason: string;
 
-    if (isAmbiguityItem(raw)) {
-      type = `Ambiguity: ${raw.title}`;
-      reason = raw.vague_phrases.join('; ');
+    if (isAmbiguityItem(v1)) {
+      type = `Ambiguity: ${v1.title}`;
+      reason = v1.vague_phrases.join('; ');
     } else {
-      type = `Testability: ${raw.title}`;
-      reason = raw.untestable_reason;
+      type = `Testability: ${v1.title}`;
+      reason = (v1 as import('../types').RawTestabilityItem).untestable_reason;
     }
 
     return {
-      id: raw.item_id,
-      spec_ids: [raw.spec_id],
+      id: v1.item_id,
+      spec_ids: [v1.spec_id],
       type,
       reason,
       currentText: fieldValue,
-      suggestedText: raw.suggested_improvement,
-      field: raw.field,
+      suggestedText: v1.suggested_improvement,
+      field: v1.field,
       itemIndex: index,
-      options: raw.options.map((o) => ({
+      isCompound: false,
+      concerns: [{
+        concernId: v1.item_id,
+        agentType: isAmbiguityItem(v1) ? 'ambiguity' : 'testability',
+        field: v1.field,
+        title: v1.title,
+        reason,
+        currentText: fieldValue,
+        suggestedText: v1.suggested_improvement,
+      }],
+      options: v1.options.map((o) => ({
         id: o.option_id,
         label: o.label,
         description: o.effect,

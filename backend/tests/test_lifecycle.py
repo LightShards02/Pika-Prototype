@@ -361,22 +361,20 @@ class GetLocalExecTimeoutTests(unittest.TestCase):
 class GetReasoningEffortTests(unittest.TestCase):
     """Tests for get_reasoning_effort."""
 
-    def test_project_override_prompt_specific(self) -> None:
-        """Project config prompt-specific overrides pika."""
+    def test_workspace_agent_override(self) -> None:
+        """Workspace agent-specific override wins over pika defaults."""
         config = {
             "agent": {
-                "reasoning_effort": {
-                    "implement_from_specs": "xhigh",
-                    "map_spec_to_code": "low",
-                }
+                "implement_from_specs": {"reasoning_effort": "xhigh"},
+                "map_spec_to_code": {"reasoning_effort": "low"},
             }
         }
         self.assertEqual(get_reasoning_effort(config, "implement_from_specs"), "xhigh")
         self.assertEqual(get_reasoning_effort(config, "map_spec_to_code"), "low")
 
-    def test_project_override_default(self) -> None:
-        """Project config default applies to unknown prompts."""
-        config = {"agent": {"reasoning_effort": {"default": "high"}}}
+    def test_workspace_default_applies_to_unknown_prompt(self) -> None:
+        """Workspace agent.default applies to unknown prompts."""
+        config = {"agent": {"default": {"reasoning_effort": "high"}}}
         self.assertEqual(get_reasoning_effort(config, "unknown_prompt"), "high")
 
     def test_pika_defaults(self) -> None:
@@ -385,15 +383,13 @@ class GetReasoningEffortTests(unittest.TestCase):
         with patch("core.lifecycle.get_pika_config") as m:
             m.return_value = {
                 "local": {
-                    "reasoning_effort": {
-                        "implement_from_specs": "high",
-                        "map_spec_to_code": "medium",
+                    "model": {
+                        "default": {"name": "gpt-5-codex", "reasoning_effort": "medium"},
+                        "implement_from_specs": {"reasoning_effort": "high"},
                     }
                 }
             }
-            # implement_from_specs defaults to high in pika
             self.assertEqual(get_reasoning_effort(config, "implement_from_specs"), "high")
-            # map_spec_to_code defaults to medium in pika
             self.assertEqual(get_reasoning_effort(config, "map_spec_to_code"), "medium")
 
     def test_fallback_medium(self) -> None:
@@ -402,24 +398,49 @@ class GetReasoningEffortTests(unittest.TestCase):
         with patch("core.lifecycle.get_pika_config", return_value={"local": {}}):
             self.assertEqual(get_reasoning_effort(config, "nonexistent_prompt"), "medium")
 
+    def test_explicit_null_clears_inherited_effort(self) -> None:
+        """Workspace profile reasoning_effort null overrides default so Loca omits effort."""
+        config = {"agent": {"map_spec_to_code": {"reasoning_effort": None}}}
+        with patch("core.lifecycle.get_pika_config") as m:
+            m.return_value = {
+                "local": {
+                    "model": {
+                        "default": {"name": "gpt-5-codex", "reasoning_effort": "high"},
+                    }
+                }
+            }
+            self.assertIsNone(get_reasoning_effort(config, "map_spec_to_code"))
+
+    def test_pika_profile_string_none_omits_effort(self) -> None:
+        """pika.yaml (unvalidated) may use string none/off for omit semantics."""
+        config = {}
+        with patch("core.lifecycle.get_pika_config") as m:
+            m.return_value = {
+                "local": {
+                    "model": {
+                        "default": {"name": "gpt-5.3-codex", "reasoning_effort": "medium"},
+                        "spec_editor": {"reasoning_effort": "none"},
+                    }
+                }
+            }
+            self.assertIsNone(get_reasoning_effort(config, "spec_editor"))
+
 
 class GetModelVerbosityTests(unittest.TestCase):
     """Tests for get_model_verbosity."""
 
-    def test_project_override_string(self) -> None:
-        """Project config local_model_verbosity (string) overrides pika."""
-        config = {"agent": {"local_model_verbosity": "high"}}
+    def test_workspace_default_override(self) -> None:
+        """Workspace agent.default model_verbosity overrides pika."""
+        config = {"agent": {"default": {"model_verbosity": "high"}}}
         with patch("core.lifecycle.get_pika_config", return_value={"local": {}}):
             self.assertEqual(get_model_verbosity(config, "implement_from_specs"), "high")
 
-    def test_project_override_per_prompt(self) -> None:
-        """Project config local_model_verbosity (object) overrides pika per prompt."""
+    def test_workspace_agent_override(self) -> None:
+        """Workspace agent-specific model_verbosity overrides workspace default."""
         config = {
             "agent": {
-                "local_model_verbosity": {
-                    "implement_from_specs": "low",
-                    "default": "medium",
-                }
+                "default": {"model_verbosity": "medium"},
+                "implement_from_specs": {"model_verbosity": "low"},
             }
         }
         with patch("core.lifecycle.get_pika_config", return_value={"local": {}}):
@@ -427,10 +448,10 @@ class GetModelVerbosityTests(unittest.TestCase):
             self.assertEqual(get_model_verbosity(config, "map_spec_to_code"), "medium")
 
     def test_pika_fallback(self) -> None:
-        """Pika local.model_verbosity used when project has no override."""
+        """Pika local.model.default/model_verbosity is used when unset in workspace."""
         config = {}
         with patch("core.lifecycle.get_pika_config") as m:
-            m.return_value = {"local": {"model_verbosity": "high"}}
+            m.return_value = {"local": {"model": {"default": {"name": "gpt-5-codex", "model_verbosity": "high"}}}}
             self.assertEqual(get_model_verbosity(config, "implement_from_specs"), "high")
 
     def test_returns_none_when_not_configured(self) -> None:
@@ -443,20 +464,18 @@ class GetModelVerbosityTests(unittest.TestCase):
 class GetWebSearchTests(unittest.TestCase):
     """Tests for get_web_search."""
 
-    def test_project_override_boolean(self) -> None:
-        """Project config local_web_search (boolean) overrides pika."""
-        config = {"agent": {"local_web_search": True}}
+    def test_workspace_default_override(self) -> None:
+        """Workspace agent.default web_search overrides pika."""
+        config = {"agent": {"default": {"web_search": True}}}
         with patch("core.lifecycle.get_pika_config", return_value={"local": {}}):
             self.assertTrue(get_web_search(config, "implement_from_specs"))
 
-    def test_project_override_per_prompt(self) -> None:
-        """Project config local_web_search (object) overrides pika per prompt."""
+    def test_workspace_agent_override(self) -> None:
+        """Workspace agent-specific web_search overrides workspace default."""
         config = {
             "agent": {
-                "local_web_search": {
-                    "implement_from_specs": True,
-                    "default": False,
-                }
+                "default": {"web_search": False},
+                "implement_from_specs": {"web_search": True},
             }
         }
         with patch("core.lifecycle.get_pika_config", return_value={"local": {}}):
@@ -464,10 +483,10 @@ class GetWebSearchTests(unittest.TestCase):
             self.assertFalse(get_web_search(config, "map_spec_to_code"))
 
     def test_pika_fallback(self) -> None:
-        """Pika local.web_search used when project has no override."""
+        """Pika local.model.default.web_search is used when unset in workspace."""
         config = {}
         with patch("core.lifecycle.get_pika_config") as m:
-            m.return_value = {"local": {"web_search": True}}
+            m.return_value = {"local": {"model": {"default": {"name": "gpt-5-codex", "web_search": True}}}}
             self.assertTrue(get_web_search(config, "implement_from_specs"))
 
     def test_fallback_false(self) -> None:
@@ -480,57 +499,62 @@ class GetWebSearchTests(unittest.TestCase):
 class GetLocalModelTests(unittest.TestCase):
     """Tests for get_local_model."""
 
-    def test_project_override_string(self) -> None:
-        """Project config local_model (string) overrides pika for all prompts."""
-        config = {"agent": {"local_model": "gpt-5-codex"}}
+    def test_workspace_default_override(self) -> None:
+        """Workspace agent.default name overrides pika for all prompts."""
+        config = {"agent": {"default": {"name": "gpt-5-codex"}}}
         with patch("core.lifecycle.get_pika_config") as m:
-            m.return_value = {"local": {"model": {"default": "gpt-4-codex"}}}
+            m.return_value = {"local": {"model": {"default": {"name": "gpt-4-codex"}}}}
             self.assertEqual(get_local_model(config, "implement_from_specs"), "gpt-5-codex")
             self.assertEqual(get_local_model(config, "map_spec_to_code"), "gpt-5-codex")
 
-    def test_project_override_per_prompt(self) -> None:
-        """Project config local_model (object) overrides pika per prompt."""
+    def test_workspace_agent_override(self) -> None:
+        """Workspace agent-specific name overrides workspace default."""
         config = {
             "agent": {
-                "local_model": {
-                    "implement_from_specs": "gpt-4-codex",
-                    "default": "gpt-5-codex",
-                }
+                "default": {"name": "gpt-5-codex"},
+                "implement_from_specs": {"name": "gpt-4-codex"},
             }
         }
         with patch("core.lifecycle.get_pika_config") as m:
-            m.return_value = {"local": {"model": {"default": "gpt-5-codex"}}}
+            m.return_value = {"local": {"model": {"default": {"name": "gpt-5-codex"}}}}
             self.assertEqual(get_local_model(config, "implement_from_specs"), "gpt-4-codex")
             self.assertEqual(get_local_model(config, "map_spec_to_code"), "gpt-5-codex")
 
-    def test_pika_fallback_string(self) -> None:
-        """Pika local.model (string) used when project has no override."""
+    def test_pika_default_profile_fallback(self) -> None:
+        """Pika local.model.default.name is used when workspace has no override."""
         config = {}
         with patch("core.lifecycle.get_pika_config") as m:
-            m.return_value = {"local": {"model": "gpt-5-codex"}}
+            m.return_value = {"local": {"model": {"default": {"name": "gpt-5-codex"}}}}
             self.assertEqual(get_local_model(config, "implement_from_specs"), "gpt-5-codex")
 
-    def test_pika_fallback_per_prompt(self) -> None:
-        """Pika local.model (object) used per prompt when project has no override."""
+    def test_pika_agent_profile_fallback(self) -> None:
+        """Pika local.model.{agent}.name overrides pika local.model.default.name."""
         config = {}
         with patch("core.lifecycle.get_pika_config") as m:
             m.return_value = {
                 "local": {
                     "model": {
-                        "default": "gpt-5-codex",
-                        "implement_from_specs": "gpt-4-codex",
+                        "default": {"name": "gpt-5-codex"},
+                        "implement_from_specs": {"name": "gpt-4-codex"},
                     }
                 }
             }
             self.assertEqual(get_local_model(config, "implement_from_specs"), "gpt-4-codex")
             self.assertEqual(get_local_model(config, "map_spec_to_code"), "gpt-5-codex")
 
-    def test_ignores_empty_string_falls_back_to_pika(self) -> None:
-        """Project local_model empty string falls back to pika."""
-        config = {"agent": {"local_model": "   "}}
+    def test_local_prompt_variant_uses_base_agent_key(self) -> None:
+        """Prompt names ending in _local resolve through the base agent profile."""
+        config = {}
         with patch("core.lifecycle.get_pika_config") as m:
-            m.return_value = {"local": {"model": "gpt-5-codex"}}
-            self.assertEqual(get_local_model(config, "implement_from_specs"), "gpt-5-codex")
+            m.return_value = {
+                "local": {
+                    "model": {
+                        "default": {"name": "gpt-5-codex"},
+                        "implement_from_specs": {"name": "gpt-5.3-codex-spark"},
+                    }
+                }
+            }
+            self.assertEqual(get_local_model(config, "implement_from_specs_local"), "gpt-5.3-codex-spark")
 
 
 class InvokeAgentStubTests(unittest.TestCase):
@@ -805,6 +829,129 @@ class CodebaseContentWriteTests(unittest.TestCase):
                 run_subdir.exists(),
                 "Should not create run subdir when codebase_content is empty",
             )
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+class PostSchemaValidateTests(unittest.TestCase):
+    """Tests for invoke_agent_with_schema_retry post_schema_validate hook."""
+
+    def test_post_schema_validate_runs_when_schema_path_skipped(self) -> None:
+        """When schema_path is None, post_schema_validate still runs on stub output."""
+        tmp = _test_tmpdir()
+        try:
+            root = tmp
+            config = {
+                "agent": {"provider": "stub"},
+                "commands": {},
+                "inputs": {"project_context_filename": "PROJECT_CONTEXT.md"},
+                "id_generation": {},
+                "logging": {},
+            }
+            ctx = RuntimeContext(
+                command="map",
+                dry_run=False,
+                verbose=False,
+                command_only_validation=False,
+                run_id="run-post-1",
+                project_root=str(root),
+                config_path=str(root / "config.yaml"),
+            )
+            seen: list[bool] = []
+
+            def _post(out: dict) -> None:
+                seen.append(True)
+                self.assertIn("run_summary", out)
+
+            invoke_agent_with_schema_retry(
+                prompt_name="map_spec_to_code",
+                template_vars={
+                    "design_spec_rows_csv": "spec_id,subunit\nA1,S1\n",
+                    "run_summary_file": "-",
+                },
+                schema_path=None,
+                config=config,
+                ctx=ctx,
+                post_schema_validate=_post,
+            )
+            self.assertEqual(seen, [True])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_post_schema_validate_retries_then_succeeds(self) -> None:
+        """ValueError from post_schema_validate triggers same retry loop as schema errors."""
+        schema_path = (
+            Path(__file__).resolve().parent.parent
+            / "schemas"
+            / "agent_outputs"
+            / "design_doc_enrich_output.schema.json"
+        )
+        self.assertTrue(schema_path.is_file(), f"missing schema {schema_path}")
+        tmp = _test_tmpdir()
+        try:
+            root = tmp
+            config = {
+                "agent": {"provider": "stub", "schema_validation_retries": 1},
+                "commands": {"implement": {}},
+                "inputs": {"project_context_filename": "PROJECT_CONTEXT.md"},
+                "id_generation": {},
+                "logging": {},
+            }
+            ctx = RuntimeContext(
+                command="format",
+                dry_run=False,
+                verbose=False,
+                command_only_validation=False,
+                run_id="run-post-2",
+                project_root=str(root),
+                config_path=str(root / "config.yaml"),
+            )
+            from handlers.format import validate_design_enrich_module_roles
+
+            allowed = {"domain", "api", "frontend", "infra", "shared", "cli", "worker"}
+            stub_calls: list[int] = []
+
+            def fake_stub(
+                prompt_name: str,
+                template_vars,
+                *,
+                ctx: RuntimeContext,
+            ) -> dict:
+                stub_calls.append(1)
+                if len(stub_calls) == 1:
+                    return {
+                        "modules": [{"module_tag": "auth", "module_role": "banana"}],
+                        "specs": [
+                            {
+                                "spec_id": "A1",
+                                "acceptance_criteria": "Given x, when y, then z.",
+                            }
+                        ],
+                    }
+                return {
+                    "modules": [{"module_tag": "auth", "module_role": "domain"}],
+                    "specs": [
+                        {
+                            "spec_id": "A1",
+                            "acceptance_criteria": "Given x, when y, then z.",
+                        }
+                    ],
+                }
+
+            def _post(out: dict) -> None:
+                validate_design_enrich_module_roles(out, allowed)
+
+            with patch("core.lifecycle.invoke_agent_stub", side_effect=fake_stub):
+                result = invoke_agent_with_schema_retry(
+                    prompt_name="design_doc_enricher",
+                    template_vars={"specs_csv": "spec_id,module_tag,requirement\nA1,auth,r\n"},
+                    schema_path=schema_path,
+                    config=config,
+                    ctx=ctx,
+                    post_schema_validate=_post,
+                )
+            self.assertEqual(len(stub_calls), 2)
+            self.assertEqual(result["modules"][0]["module_role"], "domain")
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

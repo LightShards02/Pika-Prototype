@@ -60,6 +60,18 @@ export interface ResolutionOption {
   description?: string;
 }
 
+/** Read-only finding from one agent within a compound item. */
+export interface Concern {
+  concernId: string;
+  agentType: 'ambiguity' | 'testability';
+  field: string;
+  title: string;
+  reason: string;
+  currentText?: string;
+  suggestedText?: string;
+  suggestedTestType?: string;
+}
+
 export interface ResolutionItem {
   id: string;
   spec_ids: string[];
@@ -73,6 +85,10 @@ export interface ResolutionItem {
   itemIndex?: number;
   editorOutput?: Record<string, unknown>;
   userGuide?: string;
+  isCompound: boolean;
+  concerns: Concern[];
+  /** For compound items: which accept_* toggles are active (concern IDs). */
+  acceptedConcernIds?: string[];
 }
 
 export interface RunErrorDetails {
@@ -122,7 +138,29 @@ export interface RawTestabilityItem {
   options: RawAgentOption[];
 }
 
-export type RawAgentItem = RawAmbiguityItem | RawTestabilityItem;
+/** V2 concern within a compound raw item. */
+export interface RawConcern {
+  item_id: string;
+  agent_type: 'ambiguity' | 'testability';
+  title: string;
+  field: string;
+  suggested_improvement: string;
+  vague_phrases?: string[];
+  untestable_reason?: string;
+  suggested_test_type?: string;
+}
+
+/** V2 compound raw item (format_version 2). */
+export interface RawCompoundItem {
+  item_id: string;
+  spec_id: string;
+  is_compound: boolean;
+  title: string;
+  concerns: RawConcern[];
+  options: RawAgentOption[];
+}
+
+export type RawAgentItem = RawAmbiguityItem | RawTestabilityItem | RawCompoundItem;
 
 // --- Electron API ---
 
@@ -155,7 +193,7 @@ export interface ElectronAPI {
   cancelPika: () => Promise<void>;
 
   // Gate I/O
-  readGateOutput: (args: { runDir: string }) => Promise<{ stage: string; items: RawAgentItem[] }>;
+  readGateOutput: (args: { runDir: string }) => Promise<{ stage: string; format_version?: number; items: RawAgentItem[] }>;
   writeResolution: (args: { runDir: string; resolutions: { itemIndex: number; chosenOptionId: string; editorOutput?: Record<string, unknown> }[] }) => Promise<void>;
 
   // Resolve + Resume

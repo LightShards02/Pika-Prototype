@@ -154,6 +154,7 @@ function App() {
               const items = transformAgentItems(
                 gateData.items as RawAgentItem[],
                 useStore.getState().specs,
+                gateData.format_version,
               );
               setCurrentGateItems(items);
               setActiveItemIndex(0);

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -71,8 +71,87 @@ def _merge_all_items(
     ambiguity_items: list[dict[str, Any]],
     testability_items: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Combine manual_resolution_items from all three sources in order."""
-    return list(decomp_items) + list(ambiguity_items) + list(testability_items)
+    """Merge ambiguity + testability items by spec_id into compound items.
+
+    When both agents flag the same spec_id, they are grouped into a single
+    compound item with multiple concerns and item-level resolution options.
+    Decomposition items are prepended unchanged (separate blocking stage).
+
+    Returns:
+        Merged item list: decomp items first, then spec-grouped agent items
+        sorted by spec_id.
+    """
+    by_spec: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for item in ambiguity_items:
+        by_spec[item.get("spec_id", "")].append({**item, "_agent_type": "ambiguity"})
+    for item in testability_items:
+        by_spec[item.get("spec_id", "")].append({**item, "_agent_type": "testability"})
+
+    merged: list[dict[str, Any]] = []
+    for spec_id in sorted(by_spec):
+        if not spec_id:
+            continue
+        group = by_spec[spec_id]
+        concerns: list[dict[str, Any]] = []
+        for original in group:
+            concern: dict[str, Any] = {
+                "item_id": original["item_id"],
+                "agent_type": original.pop("_agent_type"),
+                "title": original.get("title", ""),
+                "field": original.get("field", ""),
+                "suggested_improvement": original.get("suggested_improvement", ""),
+            }
+            if concern["agent_type"] == "ambiguity":
+                concern["vague_phrases"] = original.get("vague_phrases")
+            else:
+                concern["untestable_reason"] = original.get("untestable_reason")
+                concern["suggested_test_type"] = original.get("suggested_test_type")
+            concerns.append(concern)
+
+        is_compound = len(concerns) > 1
+        if is_compound:
+            options = [
+                {
+                    "option_id": "accept_ambiguity",
+                    "label": "Accept ambiguity fix",
+                    "effect": "Apply suggestion to requirement field",
+                },
+                {
+                    "option_id": "accept_testability",
+                    "label": "Accept testability fix",
+                    "effect": "Apply suggestion to acceptance_criteria field",
+                },
+                {
+                    "option_id": "let_agent_edit",
+                    "label": "Let agent edit",
+                    "effect": "Agent edits both fields in one pass",
+                },
+                {
+                    "option_id": "skip",
+                    "label": "Skip",
+                    "effect": "Leave spec unchanged",
+                },
+            ]
+            merged.append({
+                "item_id": f"merged_{spec_id}",
+                "spec_id": spec_id,
+                "is_compound": True,
+                "title": f"Multiple issues: {spec_id}",
+                "concerns": concerns,
+                "options": options,
+            })
+        else:
+            single = concerns[0]
+            merged.append({
+                "item_id": single["item_id"],
+                "spec_id": spec_id,
+                "is_compound": False,
+                "title": single["title"],
+                "concerns": concerns,
+                "options": group[0].get("options", []),
+            })
+
+    return list(decomp_items) + merged
 
 
 def _filter_by_consensus(
@@ -139,7 +218,11 @@ def _write_resolution_block(
     source: str,
 ) -> None:
     """Write manual resolution block: stage JSON + resolutions.yaml + run_meta update."""
-    _write_json(manual_dir / f"{stage}.json", {"stage": stage, "items": items})
+    _write_json(manual_dir / f"{stage}.json", {
+        "stage": stage,
+        "format_version": 2,
+        "items": items,
+    })
     generate_resolution_template(
         run_dir=run_dir,
         stage=stage,

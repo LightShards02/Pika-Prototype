@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:ispe.org)",
+      "WebFetch(domain:softwarevalidation.eu)",
+      "WebFetch(domain:validationvault.com)",
+      "WebFetch(domain:www.researchgate.net)",
+      "WebFetch(domain:fda.gov)",
+      "Read(~/.claude/plugins/marketplaces/claude-plugins-official/plugins/skill-creator/skills/skill-creator/**)",
+      "WebSearch"
+    ]
+  }
+}

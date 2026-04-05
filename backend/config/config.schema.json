@@ -65,64 +65,54 @@
           "minimum": 1,
           "description": "Timeout (seconds) for Loca agent calls when provider is local. Overrides pika local.exec_timeout_sec for this workspace."
         },
-        "local_model": {
-          "oneOf": [
-            { "type": "string", "minLength": 1 },
-            {
-              "type": "object",
-              "additionalProperties": { "type": "string", "minLength": 1 },
-              "description": "Per-prompt model ID. Keys: prompt_name (map_spec_to_code, implement_unified_planner, implement_from_specs) or default."
-            }
-          ],
-          "description": "Model ID for Loca when provider is local (e.g. gpt-5-codex). String = same for all prompts. Object = per-prompt overrides. Overrides pika local.model."
+        "default": {
+          "$ref": "#/$defs/local_agent_profile",
+          "description": "Workspace default local-model settings applied to all local agents unless a more specific agent override is present."
         },
-        "reasoning_effort": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string",
-            "enum": ["low", "medium", "high", "xhigh"],
-            "description": "Loca model_reasoning_effort: low, medium, high, or xhigh."
-          },
-          "description": "Per-prompt reasoning effort for Loca (provider=local). Keys: prompt_name (e.g. map_spec_to_code, implement_unified_planner, implement_from_specs) or 'default'. Values: low, medium, high, xhigh. Map and planner default to medium; implementer to high."
+        "project_designer": {
+          "$ref": "#/$defs/local_agent_profile",
+          "description": "Workspace override for the project_designer agent."
         },
-        "local_model_verbosity": {
-          "oneOf": [
-            { "type": "string", "minLength": 1 },
-            {
-              "type": "object",
-              "additionalProperties": { "type": "string", "minLength": 1 },
-              "description": "Per-prompt model_verbosity. Keys: prompt_name or default."
-            }
-          ],
-          "description": "Loca model_verbosity (e.g. low, medium, high). Overrides pika local.model_verbosity."
+        "design_reviewer": {
+          "$ref": "#/$defs/local_agent_profile",
+          "description": "Workspace override for the design_reviewer agent."
         },
-        "local_web_search": {
-          "oneOf": [
-            { "type": "boolean" },
-            {
-              "type": "object",
-              "additionalProperties": { "type": "boolean" },
-              "description": "Per-prompt web_search. Keys: prompt_name or default."
-            }
-          ],
-          "description": "Enable web search for Loca when provider is local. Overrides pika local.web_search."
+        "map_spec_to_code": {
+          "$ref": "#/$defs/local_agent_profile",
+          "description": "Workspace override for the map_spec_to_code agent. The local prompt variant map_spec_to_code_local resolves through this key."
+        },
+        "implement_unified_planner": {
+          "$ref": "#/$defs/local_agent_profile",
+          "description": "Workspace override for the implement_unified_planner agent."
+        },
+        "implement_from_specs": {
+          "$ref": "#/$defs/local_agent_profile",
+          "description": "Workspace override for the implement_from_specs agent. The local prompt variant implement_from_specs_local resolves through this key."
+        },
+        "map_issues_to_specs": {
+          "$ref": "#/$defs/local_agent_profile",
+          "description": "Workspace override for the map_issues_to_specs agent."
+        },
+        "resolve_issues_with_diffs": {
+          "$ref": "#/$defs/local_agent_profile",
+          "description": "Workspace override for the resolve_issues_with_diffs agent."
+        },
+        "spec_ambiguity_detector": {
+          "$ref": "#/$defs/local_agent_profile",
+          "description": "Workspace override for the spec_ambiguity_detector agent."
+        },
+        "spec_testability_auditor": {
+          "$ref": "#/$defs/local_agent_profile",
+          "description": "Workspace override for the spec_testability_auditor agent."
+        },
+        "spec_editor": {
+          "$ref": "#/$defs/local_agent_profile",
+          "description": "Workspace override for the spec_editor agent."
         },
         "local_provider": {
           "type": "string",
           "enum": ["openai", "openai-codex"],
           "description": "Loca LLM sub-provider for local agent: openai (API key) or openai-codex (ChatGPT OAuth subscription). Default: openai-codex."
-        },
-        "local_temperature": {
-          "type": ["number", "null"],
-          "minimum": 0,
-          "maximum": 2,
-          "description": "Sampling temperature for local provider (null = provider default). Ignored when reasoning_effort is set."
-        },
-        "local_top_p": {
-          "type": ["number", "null"],
-          "minimum": 0,
-          "maximum": 1,
-          "description": "Nucleus sampling probability for local provider (null = provider default). Ignored when reasoning_effort is set."
         }
       }
     },
@@ -193,6 +183,23 @@
                 }
               },
               "description": "Replacement -> {keywords: [...], case_sensitive?: bool}. keywords required; case_sensitive optional (default false). Whole-word match."
+            },
+            "column_synonyms": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "description": "Per-logical-name synonym lists that extend the pika.yaml defaults. Keys match logical column names (e.g. sads_id, sads, unit, subunit). Matching strips -, _, whitespace and is case-insensitive."
+            },
+            "enrichment": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Optional agent phase that auto-fills module_role (per module_tag) and acceptance_criteria (per spec) after deterministic normalization.",
+              "properties": {
+                "enabled": { "type": "boolean", "default": false, "description": "Set true to run the design_doc_enricher agent after format normalization." },
+                "skip_filled": { "type": "boolean", "default": true, "description": "Skip rows that already have non-empty module_role and acceptance_criteria." }
+              }
             }
           }
         },
@@ -678,6 +685,54 @@
       "additionalProperties": false,
       "properties": {
         "enabled": { "type": "boolean" }
+      }
+    },
+    "local_agent_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model ID for this local agent profile (for example gpt-5.3-codex)."
+        },
+        "reasoning_effort": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": ["low", "medium", "high", "xhigh"],
+              "description": "Loca model_reasoning_effort for reasoning models."
+            },
+            {
+              "type": "null",
+              "description": "Omit reasoning effort so Loca can apply temperature/top_p (see Loca ModelConfig)."
+            }
+          ],
+          "description": "Loca model_reasoning_effort, or null to disable for sampling params."
+        },
+        "model_verbosity": {
+          "oneOf": [
+            { "type": "string", "minLength": 1 },
+            { "type": "null" }
+          ],
+          "description": "Optional model_verbosity override for this agent profile. Null clears any inherited value."
+        },
+        "web_search": {
+          "type": "boolean",
+          "description": "Whether web search is enabled for this agent profile."
+        },
+        "temperature": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Sampling temperature for this agent profile. Null means provider default."
+        },
+        "top_p": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Nucleus sampling probability for this agent profile. Null means provider default."
+        }
       }
     },
     "output_target": {

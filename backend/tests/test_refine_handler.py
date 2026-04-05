@@ -115,7 +115,7 @@ def _write_project_context(root: Path) -> None:
 
 
 def _empty_agent_output() -> dict[str, Any]:
-    return {"manual_resolution_items": []}
+    return {"manual_resolution_items": [], "evidence_assessments": []}
 
 
 def _ambiguity_items_output() -> dict[str, Any]:
@@ -155,7 +155,8 @@ def _testability_items_output() -> dict[str, Any]:
                     {"option_id": "skip", "label": "Skip", "effect": "Keep original"},
                 ],
             }
-        ]
+        ],
+        "evidence_assessments": [],
     }
 
 
@@ -315,30 +316,100 @@ class RequiredColumnValidationTests(unittest.TestCase):
 class MergeAllItemsTests(unittest.TestCase):
     """Tests for _merge_all_items()."""
 
-    def test_combines_all_sources(self) -> None:
-        d = [{"item_id": "D1"}]
-        a = [{"item_id": "A1"}]
-        t = [{"item_id": "T1"}]
-        result = _merge_all_items(d, a, t)
-        self.assertEqual(len(result), 3)
-        self.assertEqual([r["item_id"] for r in result], ["D1", "A1", "T1"])
+    def _make_amb(self, spec_id: str, item_id: str = "AMB-001") -> dict:
+        return {
+            "item_id": item_id,
+            "spec_id": spec_id,
+            "title": "Vague requirement",
+            "field": "requirement",
+            "vague_phrases": ["should be fast"],
+            "suggested_improvement": "rewrite",
+            "options": [
+                {"option_id": "accept_suggestion", "label": "Accept", "effect": "Apply"},
+                {"option_id": "let_agent_edit", "label": "Agent", "effect": "Agent edits"},
+                {"option_id": "skip", "label": "Skip", "effect": "No change"},
+            ],
+        }
+
+    def _make_test(self, spec_id: str, item_id: str = "TEST-001") -> dict:
+        return {
+            "item_id": item_id,
+            "spec_id": spec_id,
+            "title": "Untestable criteria",
+            "field": "acceptance_criteria",
+            "untestable_reason": "No threshold",
+            "suggested_improvement": "rewrite ac",
+            "suggested_test_type": "integration",
+            "options": [
+                {"option_id": "accept_suggestion", "label": "Accept", "effect": "Apply"},
+                {"option_id": "let_agent_edit", "label": "Agent", "effect": "Agent edits"},
+                {"option_id": "skip", "label": "Skip", "effect": "No change"},
+            ],
+        }
 
     def test_all_empty_returns_empty(self) -> None:
         self.assertEqual(_merge_all_items([], [], []), [])
 
-    def test_preserves_order_decomp_ambiguity_testability(self) -> None:
-        decomp = [{"item_id": "decomp"}]
-        ambiguity = [{"item_id": "amb"}]
-        testability = [{"item_id": "test"}]
-        result = _merge_all_items(decomp, ambiguity, testability)
-        self.assertEqual(result[0]["item_id"], "decomp")
-        self.assertEqual(result[1]["item_id"], "amb")
-        self.assertEqual(result[2]["item_id"], "test")
-
-    def test_partial_sources_combined(self) -> None:
-        result = _merge_all_items([], [{"item_id": "A"}], [])
+    def test_single_ambiguity_item_wraps_in_envelope(self) -> None:
+        result = _merge_all_items([], [self._make_amb("A1001")], [])
         self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["item_id"], "A")
+        item = result[0]
+        self.assertFalse(item["is_compound"])
+        self.assertEqual(item["spec_id"], "A1001")
+        self.assertEqual(len(item["concerns"]), 1)
+        self.assertEqual(item["concerns"][0]["agent_type"], "ambiguity")
+
+    def test_same_spec_id_creates_compound(self) -> None:
+        amb = [self._make_amb("A1001")]
+        test = [self._make_test("A1001")]
+        result = _merge_all_items([], amb, test)
+        self.assertEqual(len(result), 1)
+        item = result[0]
+        self.assertTrue(item["is_compound"])
+        self.assertEqual(item["item_id"], "merged_A1001")
+        self.assertEqual(len(item["concerns"]), 2)
+        types = {c["agent_type"] for c in item["concerns"]}
+        self.assertEqual(types, {"ambiguity", "testability"})
+        # Compound options should be item-level
+        option_ids = {o["option_id"] for o in item["options"]}
+        self.assertIn("accept_ambiguity", option_ids)
+        self.assertIn("accept_testability", option_ids)
+        self.assertIn("let_agent_edit", option_ids)
+        self.assertIn("skip", option_ids)
+
+    def test_different_spec_ids_stay_separate(self) -> None:
+        amb = [self._make_amb("A1001")]
+        test = [self._make_test("A1002")]
+        result = _merge_all_items([], amb, test)
+        self.assertEqual(len(result), 2)
+        self.assertFalse(result[0]["is_compound"])
+        self.assertFalse(result[1]["is_compound"])
+
+    def test_decomp_items_prepended_unchanged(self) -> None:
+        decomp = [{"item_id": "DECOMP-001", "spec_id": "A1001"}]
+        amb = [self._make_amb("A1002")]
+        result = _merge_all_items(decomp, amb, [])
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]["item_id"], "DECOMP-001")
+        # Decomp item is not wrapped in concerns envelope
+        self.assertNotIn("concerns", result[0])
+
+    def test_sorted_by_spec_id(self) -> None:
+        amb = [self._make_amb("B2000"), self._make_amb("A1001", "AMB-002")]
+        result = _merge_all_items([], amb, [])
+        spec_ids = [r["spec_id"] for r in result]
+        self.assertEqual(spec_ids, ["A1001", "B2000"])
+
+    def test_concerns_preserve_fields(self) -> None:
+        amb = [self._make_amb("A1001")]
+        test = [self._make_test("A1001")]
+        result = _merge_all_items([], amb, test)
+        item = result[0]
+        amb_concern = next(c for c in item["concerns"] if c["agent_type"] == "ambiguity")
+        test_concern = next(c for c in item["concerns"] if c["agent_type"] == "testability")
+        self.assertEqual(amb_concern["vague_phrases"], ["should be fast"])
+        self.assertEqual(test_concern["untestable_reason"], "No threshold")
+        self.assertEqual(test_concern["suggested_test_type"], "integration")
 
 
 # ---------------------------------------------------------------------------
@@ -574,7 +645,7 @@ class SchemaValidationTests(unittest.TestCase):
 
     def test_testability_schema_accepts_empty_items(self) -> None:
         schema = self._load_schema("spec_testability_auditor_output")
-        self._validate(schema, {"manual_resolution_items": []})
+        self._validate(schema, {"manual_resolution_items": [], "evidence_assessments": []})
 
     def test_testability_schema_accepts_valid_item(self) -> None:
         schema = self._load_schema("spec_testability_auditor_output")
@@ -592,7 +663,36 @@ class SchemaValidationTests(unittest.TestCase):
                         {"option_id": "accept_suggestion", "label": "Accept", "effect": "Apply"},
                     ],
                 }
-            ]
+            ],
+            "evidence_assessments": [
+                {
+                    "spec_id": "S1",
+                    "evidence_category": "test_execution_record",
+                    "rationale": "Test runner emits pass/fail record against threshold.",
+                }
+            ],
+        })
+
+    def test_testability_schema_accepts_evidence_category_blocking_item(self) -> None:
+        schema = self._load_schema("spec_testability_auditor_output")
+        self._validate(schema, {
+            "manual_resolution_items": [
+                {
+                    "item_id": "TEST-002",
+                    "title": "Evidence category unclear",
+                    "spec_id": "S3",
+                    "field": "evidence_category",
+                    "untestable_reason": "Cannot determine if verification requires a human-captured screenshot or an automated log.",
+                    "suggested_improvement": "Clarify whether the criterion can be verified by an automated test runner or requires manual observation.",
+                    "suggested_test_type": "manual",
+                    "options": [
+                        {"option_id": "accept_suggestion", "label": "Accept", "effect": "Apply"},
+                        {"option_id": "let_agent_edit", "label": "Let agent edit", "effect": "Call spec_editor"},
+                        {"option_id": "skip", "label": "Skip", "effect": "Keep original"},
+                    ],
+                }
+            ],
+            "evidence_assessments": [],
         })
 
     def test_editor_schema_field_mode_validates(self) -> None:

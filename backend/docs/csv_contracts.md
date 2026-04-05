@@ -15,7 +15,7 @@
 
 ## CLI Command Surface
 - `agent plan` — Project Designer (Phase 0.a)
-- `agent format` — SADS Formatter (Phase 0.b; deterministic only)
+- `agent format` — SADS Formatter (Phase 0.b; deterministic normalization + optional design_doc_enricher agent)
 - `agent review` — Design Reviewer
 - `agent map` — SADS Mapper (Phase 2)
 - `agent implement` — Implementer (Phase 1)
@@ -26,11 +26,13 @@
 | Column | Required | Added if Missing | Meaning |
 |---|---|---|---|
 | spec_id | Yes | Yes | Stable deterministic spec identifier (one letter + number, for example `A1001`). |
-| module_tag | Yes | Yes | Partition key for implement command; groups specs by module. Manually added. Implement does not use subunit. |
-| subunit | No | Yes | User-provided grouping key for map command. Specs with the same subunit are sent to the LLM together. Required for map; each row must have a non-empty value. |
+| module_tag | Yes | Yes | Partition key for implement command; groups specs by module. When source has a subunit column, module_tag is derived from it automatically during format. |
+| module_role | No | Yes | Concise description of what the module is responsible for. Shared by all specs with the same module_tag. Required by refine command. Auto-filled by design_doc_enricher agent when enrichment is enabled. |
+| subunit | No | Yes | User-provided grouping key for map command. Specs with the same subunit are sent to the LLM together. Required for map; each row must have a non-empty value. Used as the source for module_tag derivation during format. |
 | title | Yes | No | Human-readable requirement title. |
 | requirement | Yes | No | Core requirement statement to be implemented/indexed. |
-| acceptance_criteria | No | No | Concrete acceptance criteria for verification. |
+| evidence_type | No | No | Evidence type for verifying this requirement. One of: test_execution_record, audit_trail, system_log, defect_report, build_version_record, ui_screenshot, screen_recording, serial_debug_log, network_packet_capture, database_export, api_response_log, performance_profiler_output, or NA. Auto-filled by design_doc_enricher agent when enrichment is enabled. |
+| acceptance_criteria | No | No | Concrete acceptance criteria for verification. Set to NA when evidence_type is NA. |
 | implementation_status | No | No | User workflow status for the spec row. For implement workset selection: boolean (done or not done). |
 | mapped_code_symbols | No | Yes | Comma-delimited mapped symbols in `path::symbol_name` format (path relative to codebase root). Legacy entries may contain symbol_name only. |
 | mapped_confidence | No | Yes | Comma-delimited confidence scores (0-1) per symbol, same order as mapped_code_symbols. |

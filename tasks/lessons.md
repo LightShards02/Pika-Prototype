@@ -49,3 +49,5 @@
   Rule: For skills derived from a specific repository workflow, default to project-level installation first and mirror them into Claude/Cursor project surfaces when the repo already has those integrations.
 - Pattern: New workspace config keys were added to `config.schema.json` without updating `backend/config/config.example.yaml`, leaving discoverability and copy-paste defaults out of sync.
   Rule: Whenever new project (workspace) config is added to `backend/config/config.schema.json`, update `backend/config/config.example.yaml` in the same change so the canonical example stays valid and documents the new fields.
+- Pattern: Newly authored SADS datasets used code-style function or class identifiers inside architectural requirements.
+  Rule: In SADS rows, keep ownership at the module or workflow-subunit level only. Never include function names, class names, method names, or code-like dotted identifiers in `title`, `requirement`, or `acceptance_criteria`.

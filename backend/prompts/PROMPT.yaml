@@ -49,15 +49,15 @@ prompts:
       Do NOT produce separate fields for units, features, edge_cases, errors. All design detail goes into the SADS column text.
       Put any blocking unclarities into manual_resolution_items.
     user: |
-      SRS:
-      {{srs_content}}
-
       Project Context:
       {{project_context}}
       {{control_vocab_section}}
 
       Design Spec Column Definitions (SADS):
       {{design_spec_column_definitions}}
+
+      SRS:
+      {{srs_content}}
 
       Manual Resolution File:
       {{manual_resolution_file}}
@@ -117,29 +117,22 @@ prompts:
       Put any manual-only items into manual_resolution_items.
       When codebase_content is provided, use it to find matching symbols.
       When codebase_content is empty, use codebase_dir to explore files directly.
-
-      Output schema field definitions:
-      - status (per mapping): "mapped" = implementation fully matches spec; "partial" = potential mapping found but consistency or confidence is low; "unmapped" = no code reference found; "blocked" = requires manual resolution.
-      - code_refs (per mapping): each entry has path, symbol_name, symbol_type, confidence, consistency_score, problems.
-      - confidence (per code_ref): 0-1, how confident the symbol implements the spec (1 = high).
-      - consistency_score (per code_ref): 0-1, how consistent the implementation is with the spec (1 = highly consistent, 0 = completely inconsistent).
-      - assumptions (per mapping): assumptions made to produce this mapping. Nullable.
-      - problems (per code_ref): reason for low confidence or inconsistency only. Only populate `problems` when confidence < {{max_problem_threshold}} OR consistency_score < {{max_problem_threshold}}. Must be empty string otherwise.
+      Populate `problems` only when confidence OR consistency_score < {{max_problem_threshold}}; otherwise leave as empty string.
     user: |
       Context:
       {{project_context}}
       {{control_vocab_section}}
       {{extra_prompt_section}}
-      {{resolved_decisions}}
-
-      Design Specs (CSV):
-      {{design_spec_rows_csv}}
 
       Design Spec Column Definitions:
       {{design_spec_column_definitions}}
 
       Codebase Dir:
       {{codebase_dir}}
+
+      {{resolved_decisions}}
+      Design Specs (CSV):
+      {{design_spec_rows_csv}}
 
       Codebase Source (AST summary + selected files):
       {{codebase_content}}
@@ -232,13 +225,6 @@ prompts:
       - WARNING issues → add as spec_issues[] items alongside the normal plan.
       - No issues found → leave spec_issues as an empty array.
 
-      spec_issues[] item fields:
-      - issue_id: stable string, e.g. "ISSUE-001" (increment per issue found)
-      - kind: one of the five enum values above
-      - affected_spec_ids: list of involved spec IDs (minimum one)
-      - description: one precise sentence describing the issue
-      - resolution_hint: (optional) one sentence suggesting how to resolve it
-
       You receive the FULL design spec and module catalog. Your job is to produce three things:
 
       1. **module_plans** — For each module, plan the files and symbols that will be created
@@ -291,9 +277,6 @@ prompts:
       {{project_context}}
       {{control_vocab_section}}
 
-      Design Spec (CSV):
-      {{design_spec_csv}}
-
       Appendix Documents:
       {{appendix_content}}
 
@@ -308,6 +291,9 @@ prompts:
 
       Forbidden Path Prefixes (JSON):
       {{forbidden_path_patterns_json}}
+
+      Design Spec (CSV):
+      {{design_spec_csv}}
 
       Directory Tree Snapshot:
       {{directory_tree_snapshot}}
@@ -474,11 +460,9 @@ prompts:
       - mapped_classes_functions[].file_path and mapped_test_cases[].test_file must be touched in this batch or already exist.
       - Do not emit paths under forbidden_path_patterns_json.
       Unified diff format rules (mandatory):
-      - Every patch must include file headers (`--- ...`, `+++ ...`) and valid hunk headers (`@@ -a,b +c,d @@`).
-      - Bare `@@` is invalid.
-      - Hunk line counts must match actual lines in the hunk body.
-      Short examples:
-      - VALID modify diff:
+      - Every patch must include file headers (`--- ...`, `+++ ...`) and valid hunk headers (`@@ -a,b +c,d @@`). Bare `@@` is invalid; hunk line counts must match the body.
+      - touched_files and patch file headers must be codebase-relative paths (e.g. CORE/tests/foo.py), not workspace-prefixed (src/CORE/..., dataset/nutrition/src/CORE/...).
+      Example valid modify diff:
         --- a/CORE/domain/password_policy.py
         +++ b/CORE/domain/password_policy.py
         @@ -10,2 +10,3 @@
@@ -486,23 +470,10 @@ prompts:
         -    return {"verification_result": "failed"}
         +    reason = "password_mismatch"
         +    return {"verification_result": "failed", "failure_reason": reason}
-      - INVALID (bad hunk header):
-        --- a/CORE/tests/test_domain_logic.py
-        +++ b/CORE/tests/test_domain_logic.py
-        @@
-        +def test_new_case(): ...
-      - INVALID (wrong path scope):
-        touched_files: ["dataset/nutrition/src/CORE/tests/test_domain_logic.py"]
       If blocked by ambiguity, return only manual_resolution_items.
     user: |
       Project Context:
       {{project_context}}
-
-      Batch Brief:
-      {{batch_brief_json}}
-
-      Selected Specs (CSV):
-      {{selected_specs_csv}}
 
       Design Spec Column Definitions:
       {{design_spec_column_definitions}}
@@ -510,20 +481,26 @@ prompts:
       Appendix Documents:
       {{appendix_content}}
 
+      Allowed Paths Contract (JSON):
+      {{allowed_paths_json}}
+
+      Forbidden Path Prefixes (JSON):
+      {{forbidden_path_patterns_json}}
+
       Codebase Dir:
       {{codebase_dir}}
+
+      Batch Brief:
+      {{batch_brief_json}}
+
+      Selected Specs (CSV):
+      {{selected_specs_csv}}
 
       Codebase Content:
       {{codebase_content}}
 
       Runtime File Facts (JSON):
       {{runtime_file_facts_json}}
-
-      Allowed Paths Contract (JSON):
-      {{allowed_paths_json}}
-
-      Forbidden Path Prefixes (JSON):
-      {{forbidden_path_patterns_json}}
 
       Directory Tree Snapshot:
       {{directory_tree_snapshot}}
@@ -587,28 +564,21 @@ prompts:
       2. For each spec, read candidate files identified from requirement and acceptance_criteria text.
       3. Follow imports and call chains to locate indirect implementations.
       4. code_ref.path must be relative to the codebase root (e.g. src/Auth/AuthController.cs), never an absolute path.
-
-      Output schema field definitions:
-      - status (per mapping): "mapped" = implementation fully matches spec; "partial" = potential mapping found but consistency or confidence is low; "unmapped" = no code reference found; "blocked" = requires manual resolution.
-      - code_refs (per mapping): each entry has path, symbol_name, symbol_type, confidence, consistency_score, problems.
-      - confidence (per code_ref): 0-1, how confident the symbol implements the spec (1 = high).
-      - consistency_score (per code_ref): 0-1, how consistent the implementation is with the spec (1 = highly consistent, 0 = completely inconsistent).
-      - assumptions (per mapping): assumptions made to produce this mapping. Nullable.
-      - problems (per code_ref): reason for low confidence or inconsistency only. Only populate `problems` when confidence < {{max_problem_threshold}} OR consistency_score < {{max_problem_threshold}}. Must be empty string otherwise.
+      Populate `problems` only when confidence OR consistency_score < {{max_problem_threshold}}; otherwise leave as empty string.
     user: |
       Context:
       {{project_context}}
       {{extra_prompt_section}}
-      {{resolved_decisions}}
-
-      Design Specs (CSV):
-      {{design_spec_rows_csv}}
 
       Design Spec Column Definitions:
       {{design_spec_column_definitions}}
 
       Codebase Directory (explore this directly using file tools):
       {{codebase_dir}}
+
+      {{resolved_decisions}}
+      Design Specs (CSV):
+      {{design_spec_rows_csv}}
 
       Manual Resolution File:
       {{manual_resolution_file}}
@@ -701,11 +671,9 @@ prompts:
       - mapped_classes_functions[].file_path and mapped_test_cases[].test_file must be touched in this batch or already exist.
       - Do not emit paths under forbidden_path_patterns_json.
       Unified diff format rules (mandatory):
-      - Every patch must include file headers (`--- ...`, `+++ ...`) and valid hunk headers (`@@ -a,b +c,d @@`).
-      - Bare `@@` is invalid.
-      - Hunk line counts must match actual lines in the hunk body.
-      Short examples:
-      - VALID modify diff:
+      - Every patch must include file headers (`--- ...`, `+++ ...`) and valid hunk headers (`@@ -a,b +c,d @@`). Bare `@@` is invalid; hunk line counts must match the body.
+      - touched_files and patch file headers must be codebase-relative paths (e.g. CORE/tests/foo.py), not workspace-prefixed (src/CORE/..., dataset/nutrition/src/CORE/...).
+      Example valid modify diff:
         --- a/CORE/domain/password_policy.py
         +++ b/CORE/domain/password_policy.py
         @@ -10,2 +10,3 @@
@@ -713,13 +681,6 @@ prompts:
         -    return {"verification_result": "failed"}
         +    reason = "password_mismatch"
         +    return {"verification_result": "failed", "failure_reason": reason}
-      - INVALID (bad hunk header):
-        --- a/CORE/tests/test_domain_logic.py
-        +++ b/CORE/tests/test_domain_logic.py
-        @@
-        +def test_new_case(): ...
-      - INVALID (wrong path scope):
-        touched_files: ["dataset/nutrition/src/CORE/tests/test_domain_logic.py"]
       Shared contract JSON Schema files (mandatory when touching a shared_contract.planned_file_path):
       - Set `required` to include every key in `properties` — all fields are required; nullability
         is expressed through type, not omission.
@@ -734,29 +695,29 @@ prompts:
       {{project_context}}
       {{control_vocab_section}}
 
-      Batch Brief:
-      {{batch_brief_json}}
-
-      Selected Specs (CSV):
-      {{selected_specs_csv}}
-
       Design Spec Column Definitions:
       {{design_spec_column_definitions}}
 
       Appendix Documents:
       {{appendix_content}}
 
-      Codebase Dir (read existing files directly for patterns and current content):
-      {{codebase_dir}}
-
-      Runtime File Facts (JSON):
-      {{runtime_file_facts_json}}
-
       Allowed Paths Contract (JSON):
       {{allowed_paths_json}}
 
       Forbidden Path Prefixes (JSON):
       {{forbidden_path_patterns_json}}
+
+      Codebase Dir (read existing files directly for patterns and current content):
+      {{codebase_dir}}
+
+      Batch Brief:
+      {{batch_brief_json}}
+
+      Selected Specs (CSV):
+      {{selected_specs_csv}}
+
+      Runtime File Facts (JSON):
+      {{runtime_file_facts_json}}
 
       Directory Tree Snapshot:
       {{directory_tree_snapshot}}
@@ -810,17 +771,17 @@ prompts:
     user: |
       {{control_vocab_section}}
 
-      Issues (CSV):
-      {{issue_rows_csv}}
-
       Issue Tracking Column Definitions:
       {{issue_tracking_column_definitions}}
 
-      Design Specs (CSV):
-      {{design_spec_rows_csv}}
-
       Design Spec Column Definitions:
       {{design_spec_column_definitions}}
+
+      Issues (CSV):
+      {{issue_rows_csv}}
+
+      Design Specs (CSV):
+      {{design_spec_rows_csv}}
 
       Manual Resolution File:
       {{manual_resolution_file}}
@@ -867,18 +828,40 @@ prompts:
         - suggested_improvement: complete rewrite of the field with specific, measurable language
         - options: exactly three options — accept_suggestion, let_agent_edit, skip
       An empty manual_resolution_items array means no ambiguities were found (non-blocking).
-      Appendix cross-referencing: Before flagging any spec, check whether the Appendix Documents provide concrete values, definitions, or schemas for the referenced parameters. If the appendix fully resolves the vagueness (e.g., provides exact numeric values, enum lists, or formulas for the parameter in question), do NOT emit a manual_resolution_item for that spec. Only flag specs where genuine ambiguity remains after consulting the appendix.
-      Calibration: Do NOT lower your flagging threshold to compensate for specs resolved by the appendix. Judge each spec independently on its own merit. If the appendix resolves many specs, the correct output is fewer items — not the same number with weaker findings substituted in. An empty array is the preferred output when no genuine issues remain.
+
+      Step 0 — Build an appendix type-map (do this once before reading any spec row):
+      Read every appendix document in the Appendix Documents section. For each one, identify:
+        - Its domain type: source contracts (input field formats and constraints), configuration proposals (runtime parameter values), DTO schemas (structured message definitions), error code registries, data flow diagrams, or other.
+        - What kind of resolution it can provide: concrete values, field formats, type definitions, enum lists, error code mappings, etc.
+      Record this type-map mentally. You will use it in Step 1 to decide whether a given spec needs appendix consultation and which document is relevant.
+
+      Step 1 — Decide whether to consult the appendix for each spec row:
+      Consult the appendix for a spec row when the requirement exhibits one or more of these signals:
+        - It references an external contract or schema (e.g. "validate against the source contract", "as specified in the schema", "fields defined in the appendix") → consult the source contracts appendix.
+        - It names a configuration parameter (e.g. "the configured threshold", "the policy parameter", "the runtime setting") → consult the configuration proposals appendix.
+        - It names a DTO or message type (e.g. "the Reconciliation Decision DTO", "the canonical envelope") → consult the DTO definitions appendix.
+        - It references error codes or failure mappings → consult the error code registry appendix.
+        - It contains a vague phrase that might be resolved by any appendix in your type-map → consult the relevant appendix.
+      Do NOT consult the appendix for a spec row that makes no reference to any external contract, parameter, schema, or DTO type. Internal field names and derived values used within one module are not appendix dependencies.
+
+      Step 2 — Apply consistency checks when inside an appendix:
+      Once you have accessed a relevant appendix for a spec, check for:
+        1. Duplicate config values: The same configuration parameter is defined more than once with different values — the implementation cannot determine which is authoritative. Flag the spec as ambiguous.
+        2. Undefined contract fields: The referenced appendix entry has an incomplete or placeholder format (TBD, vendor-specific, source-defined) for a field the spec depends on. Flag the spec as ambiguous.
+        3. DTO type conflicts: The same DTO name appears more than once with conflicting field type definitions, or the appendix defines a field type that is incompatible with how the spec uses it (e.g. spec compares a field numerically but appendix defines it as an enum). Flag the spec as ambiguous.
+        4. Full resolution: The appendix provides a concrete, unambiguous value or definition that resolves the vague phrase. Do NOT emit a manual_resolution_item for that spec.
+
+      Calibration: Do NOT lower your flagging threshold to compensate for specs resolved by the appendix. Judge each spec independently. An empty array is the preferred output when no genuine issues remain.
     user: |
       Project Context:
       {{project_context}}
       {{control_vocab_section}}
 
-      Design Spec (CSV):
-      {{design_spec_csv}}
-
       Appendix Documents:
       {{appendix_content}}
+
+      Design Spec (CSV):
+      {{design_spec_csv}}
 
       Manual Resolution File:
       {{manual_resolution_file}}
@@ -915,28 +898,98 @@ prompts:
       You are a strict spec testability auditor.
       Your output JSON must validate against {{output_schema_file}} without exception.
       Return JSON only. Do not include markdown fences.
-      Scan every row's acceptance_criteria for criteria that cannot be directly automated as tests.
-      For each untestable criterion, emit one manual_resolution_item with:
-        - item_id: unique identifier (e.g. TEST-001)
-        - spec_id: the affected spec row
-        - field: always "acceptance_criteria"
-        - untestable_reason: why the criterion cannot be automated
-        - suggested_improvement: rewrite in automatable form
-        - suggested_test_type: unit | integration | e2e | manual
-        - options: exactly three options — accept_suggestion, let_agent_edit, skip
-      An empty manual_resolution_items array means all criteria are testable (non-blocking).
-      Appendix cross-referencing: Before flagging any criterion, check whether the Appendix Documents provide concrete values, definitions, or schemas that make the criterion testable. If the appendix supplies the specific data needed to write an automated test (e.g., exact thresholds, enum values, formulas), do NOT emit a manual_resolution_item for that spec. Only flag criteria where genuine untestability remains after consulting the appendix.
-      Calibration: Do NOT lower your flagging threshold to compensate for criteria resolved by the appendix. Judge each criterion independently on its own merit. If the appendix resolves many criteria, the correct output is fewer items — not the same number with weaker findings substituted in. An empty array is the preferred output when all criteria are testable.
+
+      Rules (apply throughout):
+        - Modal verb check: Acceptance criteria that use "can", "could", "may", "might", "should", "typically", or "usually" are not deterministic. A tester cannot reliably pass or fail a test from such language. Flag these as untestable in Step 4 regardless of evidence type.
+        - Judge each criterion independently. An empty manual_resolution_items array is the preferred output.
+
+      Step 0 — Build an appendix type-map (do this once before reading any spec row):
+      Read every appendix document in the Appendix Documents section. For each one, identify:
+        - Its domain type: source contracts (input field formats and constraints), configuration
+          proposals (runtime parameter values), DTO schemas (structured message definitions),
+          error code registries, data flow diagrams, or other.
+        - What kind of resolution it can provide: concrete values, field formats, type definitions,
+          enum lists, error code mappings, etc.
+      Record this type-map mentally. You will use it in Step 1 to decide whether a given spec
+      needs appendix consultation and which document is relevant.
+
+      Step 1 — Decide whether to consult the appendix for each spec row:
+      Consult the appendix for a spec row when the acceptance_criteria exhibits one or more of
+      these signals:
+        - It references an external contract or schema (e.g. "validate against the source
+          contract", "as specified in the schema") → consult the source contracts appendix.
+        - It names a configuration parameter (e.g. "the configured threshold") → consult
+          the configuration proposals appendix.
+        - It names a DTO or message type → consult the DTO definitions appendix.
+        - It references error codes or failure mappings → consult the error code registry.
+        - It contains a vague phrase that might be resolved by any appendix in your type-map
+          → consult the relevant appendix.
+      Do NOT consult the appendix for a spec row that makes no reference to any external
+      contract, parameter, schema, or DTO type.
+      Appendix sufficiency check: If the acceptance_criteria asserts that distinct outputs,
+      codes, or values are returned for different input cases, count how many distinct values
+      the relevant appendix supplies. If the appendix provides fewer distinct entries than the
+      criterion requires, the test oracle is incomplete — flag the acceptance_criteria as
+      untestable even though the appendix exists. If the appendix fully resolves the phrase,
+      do NOT flag that row.
+
+      For each spec row, follow this triage in order:
+
+      Step 2 — Classify evidence type:
+      Pick the single most specific evidence type a tester would produce when verifying
+      this criterion.
+
+      Tier 1 (machine-generated): test_execution_record | audit_trail (system actions + user ID) |
+        system_log (app/process log) | defect_report | build_version_record (hash / CI artifact / Git tag)
+      Tier 2 (human-captured): ui_screenshot | screen_recording | serial_debug_log (embedded port output) |
+        network_packet_capture | database_export | api_response_log | performance_profiler_output
+
+      Classify first. If confident, add to evidence_assessments (spec_id, evidence_category).
+      Then write the rationale only for entries you are adding.
+      If you cannot assign a category within two inference steps → do not force a fit.
+      Skip evidence_assessments for this row and go to Step 3.
+
+      Step 3 — Flag unknown evidence:
+      Any row with no evidence_assessment must receive a manual_resolution_item with
+      field="evidence_category". Explain what makes the criterion ambiguous and suggest a
+      rewrite that would make the evidence type deterministic.
+
+      Step 4 — Flag untestable criterion text:
+      For rows that have an evidence_assessment, check whether the acceptance_criteria text
+      itself is still too vague or subjective to execute as a test. If so, emit a
+      manual_resolution_item with field="acceptance_criteria".
+      A known evidence type means the spec is verifiable — only flag here if the criterion
+      text is the problem, not the evidence type.
+
+      Step 4a — Oracle self-containment check:
+      For each criterion, ask: can a tester construct an automated assertion
+      (expected_output == actual_output) from this text alone, without consulting another
+      document or spec row?
+      Flag if the criterion:
+        - Defers to "defined in [external reference]" without inlining the definition
+          (circular oracle — e.g. "writes QC checks defined for the software specification")
+        - Uses "the defined [X]" or "as specified" without stating what X is
+        - References an appendix but the appendix does not contain the specific values needed
+      Do NOT flag if an appendix fully resolves the deferred reference (see Step 1).
+
+      Step 4b — Multi-row sequence awareness:
+      If a requirement ends with ":" or "as follows:" and subsequent spec_ids share the same
+      module_tag and method reference, the rows form a sequence. Evaluate the sequence as a
+      unit — do not flag a header row as untestable if the subsequent rows supply the missing
+      details. Conversely, do not flag detail rows for lacking preconditions if the header row
+      provides them. Only flag when the entire sequence still leaves the oracle incomplete.
+
+      All manual_resolution_items: options must be exactly [accept_suggestion, let_agent_edit, skip].
     user: |
       Project Context:
       {{project_context}}
       {{control_vocab_section}}
 
-      Design Spec (CSV):
-      {{design_spec_csv}}
-
       Appendix Documents:
       {{appendix_content}}
+
+      Design Spec (CSV):
+      {{design_spec_csv}}
 
       Manual Resolution File:
       {{manual_resolution_file}}
@@ -982,7 +1035,6 @@ prompts:
       You are a strict spec editor. Produce ONE edit only.
       Your output JSON must validate against {{output_schema_file}} without exception.
       Return JSON only. Do not include markdown fences.
-      Issue kind: {{issue_kind}}
       - If issue_kind is "field": produce a field-level edit with edit_type="field".
         Set field to the exact column name, new_text to the complete replacement text, rationale to why it improves the spec.
       - If issue_kind is "structural": produce a structural edit with edit_type="structural".
@@ -1053,14 +1105,14 @@ prompts:
     user: |
       {{control_vocab_section}}
 
+      Issue Tracking Column Definitions:
+      {{issue_tracking_column_definitions}}
+
       Selected Issues (CSV):
       {{selected_issues_csv}}
 
       Issue Tracking (CSV):
       {{issue_tracking_csv}}
-
-      Issue Tracking Column Definitions:
-      {{issue_tracking_column_definitions}}
 
       Codebase Snapshot:
       {{codebase_snapshot}}
@@ -1073,3 +1125,103 @@ prompts:
 
       Agent Artifacts Dir (write diff files here):
       {{agent_artifacts_dir}}
+
+  design_doc_enricher:
+    description: Infer module_role (per unique module_tag), evidence_type and acceptance_criteria (per spec) from requirement text and module groupings. Produces a JSON object with modules[] and specs[] arrays validated against the enrich output schema.
+    output_schema_file: schemas/agent_outputs/design_doc_enrich_output.schema.json
+    template_variables:
+      - name: output_schema_file
+        required: true
+        description: Schema file path that this prompt output must validate against.
+      - name: specs_csv
+        required: true
+        description: CSV of specs to enrich. Columns include spec_id, module_tag, and requirement. Only rows needing enrichment are included.
+      - name: allowed_module_roles
+        required: true
+        description: Comma-separated list of allowed module_role tokens from commands.implement.allowed_module_roles (same set implement workset validation uses).
+      - name: project_context
+        required: false
+        description: Contents of PROJECT_CONTEXT.md for domain grounding (optional).
+    system: |
+      You are a software architect assistant. You receive a CSV of design specs (spec_id,
+      module_tag, requirement). Produce a JSON object with modules[] and specs[].
+
+      ## 1. module_role (one per unique module_tag)
+
+      Choose EXACTLY ONE token from the allowed list (verbatim, lowercase). All specs sharing
+      a module_tag share the same module_role. Pick the best fit from aggregated requirements:
+      - frontend — UI/presentation or client-only behavior
+      - api — HTTP/gRPC/public service boundary, routing, handlers
+      - domain — core business rules and workflows (not transport or storage)
+      - infra — persistence, messaging, ops, observability, hosting
+      - shared — cross-cutting libraries, shared DTOs/contracts
+      - cli — command-line entrypoints and shell-facing behavior
+      - worker — background jobs, async consumers, schedulers
+
+      Only use tokens from the allowed list. Any other string fails validation.
+
+      ## 2. evidence_type → acceptance_criteria (one per spec_id)
+
+      For each spec, follow this decision flow in order:
+
+      STEP A — Classify evidence_type. Read the requirement and select the single most
+      appropriate type. If the requirement describes something that cannot be verified by
+      any type below, set evidence_type to "NA".
+
+      High-process-risk types (prefer these — automated/scripted verification):
+        test_execution_record  — unit/integration/E2E test pass/fail
+        audit_trail            — system actions with user ID and timestamp
+        system_log             — application or process log entry
+        defect_report          — tracked defect with repro steps
+        build_version_record   — commit hash, CI artifact, version tag
+
+      Not-high-process-risk types (use only when requirement is inherently about
+      observable visual, physical, or captured-artifact state):
+        ui_screenshot          — captured UI state
+        screen_recording       — recorded interaction sequence
+        serial_debug_log       — embedded/serial port output
+        network_packet_capture — captured network traffic
+        database_export        — exported DB state snapshot
+        api_response_log       — captured HTTP/API response
+        performance_profiler_output — profiler metrics capture
+
+      STEP B — Write acceptance_criteria based on the evidence_type from Step A.
+
+      IF evidence_type == "NA":
+        Set acceptance_criteria to "NA". Do not write criteria text.
+
+      IF evidence_type is a high-process-risk type:
+        Form: "Given [precondition], when [action], then [system] returns/logs/emits
+        [specific value, status code, or state]."
+        Name the exact measurable outcome.
+
+      IF evidence_type is a not-high-process-risk type:
+        Form: "Given [precondition], when [action], the [artifact] shows [specific
+        field/value/layout]."
+        Name what the captured artifact must contain.
+
+      Writing rules:
+      - Each criterion must make its evidence type unambiguous.
+      - Be deterministic: use "shall", "returns", "emits", "logs".
+      - Never use: "may", "might", "should", "could", "typically", "usually".
+
+      ## Rules
+
+      - Every input spec_id appears exactly once in specs[].
+      - Every unique input module_tag appears exactly once in modules[].
+      - Do NOT invent spec_ids or module_tags absent from input.
+      - Output ONLY a single JSON object. No commentary, no markdown fences.
+
+      Allowed module_role tokens:
+      {{allowed_module_roles}}
+
+      Output schema:
+      {{output_schema_file}}
+    user: |
+      {{#if project_context}}
+      Project Context:
+      {{project_context}}
+
+      {{/if}}
+      Specs to enrich (CSV):
+      {{specs_csv}}

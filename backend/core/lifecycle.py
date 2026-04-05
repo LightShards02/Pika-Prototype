@@ -971,155 +971,216 @@ def get_local_exec_timeout_sec(config: dict[str, Any]) -> int:
     return 600
 
 
-def get_reasoning_effort(config: dict[str, Any], prompt_name: str) -> str:
-    """Return Codex model_reasoning_effort for the given prompt.
+_VALID_REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
+_LOCAL_AGENT_RUNTIME_KEYS = {
+    "provider",
+    "schema_validation_retries",
+    "stream_output",
+    "local_command",
+    "local_exec_timeout_sec",
+    "local_provider",
+    "local_temp_workspace_dir",
+    "local_temp_workspace_ttl_sec",
+}
 
-    Resolves: project agent.reasoning_effort[prompt_name] or .default,
-    then pika local.reasoning_effort, then 'medium'.
+
+def _normalize_local_agent_name(prompt_name: str) -> str:
+    """Return the stable agent-config key for a prompt name.
+
+    Local prompt variants use a ``_local`` suffix in the prompt registry, but
+    they should resolve through the same agent config as the base prompt name.
+    """
+    if prompt_name.endswith("_local"):
+        return prompt_name[: -len("_local")]
+    return prompt_name
+
+
+def _is_number(value: Any) -> bool:
+    """Return True when *value* is a non-boolean numeric type."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _read_local_agent_profile(node: Any) -> dict[str, Any]:
+    """Normalize a local agent-profile mapping.
+
+    Only recognized model-related keys are copied. Invalid or unsupported
+    values are ignored so callers can continue through configured fallbacks.
+    """
+    if not isinstance(node, dict):
+        return {}
+
+    profile: dict[str, Any] = {}
+
+    name = node.get("name")
+    if isinstance(name, str) and name.strip():
+        profile["name"] = name.strip()
+
+    if "reasoning_effort" in node:
+        reasoning_effort = node.get("reasoning_effort")
+        if reasoning_effort is None:
+            profile["reasoning_effort"] = None
+        elif (
+            isinstance(reasoning_effort, str)
+            and reasoning_effort.strip().lower() in ("none", "off", "disabled")
+        ):
+            profile["reasoning_effort"] = None
+        elif reasoning_effort in _VALID_REASONING_EFFORTS:
+            profile["reasoning_effort"] = reasoning_effort
+
+    if "model_verbosity" in node:
+        model_verbosity = node.get("model_verbosity")
+        if model_verbosity is None:
+            profile["model_verbosity"] = None
+        elif isinstance(model_verbosity, str) and model_verbosity.strip():
+            profile["model_verbosity"] = model_verbosity.strip()
+
+    if "web_search" in node and isinstance(node.get("web_search"), bool):
+        profile["web_search"] = node["web_search"]
+
+    if "temperature" in node:
+        temperature = node.get("temperature")
+        if temperature is None:
+            profile["temperature"] = None
+        elif _is_number(temperature) and 0 <= float(temperature) <= 2:
+            profile["temperature"] = float(temperature)
+
+    if "top_p" in node:
+        top_p = node.get("top_p")
+        if top_p is None:
+            profile["top_p"] = None
+        elif _is_number(top_p) and 0 <= float(top_p) <= 1:
+            profile["top_p"] = float(top_p)
+
+    return profile
+
+
+def _get_workspace_local_agent_profiles(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Return normalized workspace local-agent profiles from ``config.agent``."""
+    agent = config.get("agent")
+    if not isinstance(agent, dict):
+        return {}
+
+    profiles: dict[str, dict[str, Any]] = {}
+    for key, value in agent.items():
+        if key in _LOCAL_AGENT_RUNTIME_KEYS or not isinstance(key, str):
+            continue
+        profile = _read_local_agent_profile(value)
+        if profile or key == "default":
+            profiles[key] = profile
+    return profiles
+
+
+def _get_pika_local_agent_profiles() -> dict[str, dict[str, Any]]:
+    """Return normalized PIKA local-agent profiles from ``pika.yaml``."""
+    pika_model = get_pika_config().get("local", {}).get("model")
+    if not isinstance(pika_model, dict):
+        return {}
+
+    profiles: dict[str, dict[str, Any]] = {}
+    for key, value in pika_model.items():
+        if not isinstance(key, str):
+            continue
+        profile = _read_local_agent_profile(value)
+        if profile or key == "default":
+            profiles[key] = profile
+    return profiles
+
+
+def _get_effective_local_agent_profile(
+    config: dict[str, Any],
+    prompt_name: str,
+) -> dict[str, Any]:
+    """Return the merged local agent profile for *prompt_name*.
+
+    Precedence is field-based:
+    1. pika ``local.model.default``
+    2. pika ``local.model.{agent_name}``
+    3. workspace ``agent.default``
+    4. workspace ``agent.{agent_name}``
+    """
+    agent_name = _normalize_local_agent_name(prompt_name)
+    profile: dict[str, Any] = {}
+
+    pika_profiles = _get_pika_local_agent_profiles()
+    profile.update(pika_profiles.get("default", {}))
+    profile.update(pika_profiles.get(agent_name, {}))
+
+    workspace_profiles = _get_workspace_local_agent_profiles(config)
+    profile.update(workspace_profiles.get("default", {}))
+    profile.update(workspace_profiles.get(agent_name, {}))
+    return profile
+
+
+def get_reasoning_effort(config: dict[str, Any], prompt_name: str) -> str | None:
+    """Return Loca ``model_reasoning_effort`` for the given prompt.
+
+    Resolves from the merged local agent profile for the prompt. When the
+    profile does not define ``reasoning_effort``, falls back to ``medium``.
+    When the profile sets ``reasoning_effort`` to ``null`` (or YAML ``none`` /
+    strings ``none`` / ``off`` / ``disabled`` in PIKA config), returns
+    ``None`` so Loca omits reasoning effort and may apply ``temperature`` /
+    ``top_p``.
 
     Returns:
-        One of: low, medium, high, xhigh.
+        ``low``, ``medium``, ``high``, ``xhigh``; or ``None`` to omit for Loca.
     """
-    agent = config.get("agent")
-    project_effort: dict[str, str] = {}
-    if isinstance(agent, dict):
-        re_obj = agent.get("reasoning_effort")
-        if isinstance(re_obj, dict):
-            project_effort = {k: str(v) for k, v in re_obj.items() if isinstance(v, str)}
-
-    pika_effort: dict[str, str] = {}
-    pika_local = get_pika_config().get("local", {})
-    re_pika = pika_local.get("reasoning_effort")
-    if isinstance(re_pika, dict):
-        pika_effort = {k: str(v) for k, v in re_pika.items() if isinstance(v, str)}
-
-    valid = ("low", "medium", "high", "xhigh")
-    if prompt_name in project_effort and project_effort[prompt_name] in valid:
-        return project_effort[prompt_name]
-    if "default" in project_effort and project_effort["default"] in valid:
-        return project_effort["default"]
-    if prompt_name in pika_effort and pika_effort[prompt_name] in valid:
-        return pika_effort[prompt_name]
-    if "default" in pika_effort and pika_effort["default"] in valid:
-        return pika_effort["default"]
+    profile = _get_effective_local_agent_profile(config, prompt_name)
+    if "reasoning_effort" not in profile:
+        return "medium"
+    reasoning_effort = profile["reasoning_effort"]
+    if reasoning_effort is None:
+        return None
+    if reasoning_effort in _VALID_REASONING_EFFORTS:
+        return str(reasoning_effort)
     return "medium"
 
 
 def get_model_verbosity(config: dict[str, Any], prompt_name: str) -> str | None:
     """Return Codex model_verbosity for the given prompt.
 
-    Resolves: project agent.local_model_verbosity[prompt_name] or .default,
-    then pika local.model_verbosity[prompt_name] or .default.
+    Resolves from the merged local agent profile for the prompt.
     Returns None when not configured (Codex uses its default).
 
     Returns:
         Non-empty string (e.g. low, medium, high) or None.
     """
-    def _from_obj(obj: dict[str, str], key: str) -> str | None:
-        val = obj.get(key) or obj.get("default")
-        return str(val).strip() if isinstance(val, str) and val.strip() else None
-
-    agent = config.get("agent")
-    if isinstance(agent, dict):
-        project_mv = agent.get("local_model_verbosity")
-        if isinstance(project_mv, str) and project_mv.strip():
-            return project_mv.strip()
-        if isinstance(project_mv, dict):
-            out = _from_obj(
-                {k: str(v) for k, v in project_mv.items() if isinstance(v, str)},
-                prompt_name,
-            )
-            if out:
-                return out
-
-    pika_local = get_pika_config().get("local", {})
-    pika_mv = pika_local.get("model_verbosity")
-    if isinstance(pika_mv, str) and pika_mv.strip():
-        return pika_mv.strip()
-    if isinstance(pika_mv, dict):
-        out = _from_obj(
-            {k: str(v) for k, v in pika_mv.items() if isinstance(v, str)},
-            prompt_name,
-        )
-        if out:
-            return out
+    model_verbosity = _get_effective_local_agent_profile(config, prompt_name).get("model_verbosity")
+    if isinstance(model_verbosity, str) and model_verbosity.strip():
+        return model_verbosity.strip()
     return None
 
 
 def get_web_search(config: dict[str, Any], prompt_name: str) -> bool:
     """Return whether Codex --search (web search) is enabled for the given prompt.
 
-    Resolves: project agent.local_web_search[prompt_name] or .default,
-    then pika local.web_search[prompt_name] or .default, then False.
+    Resolves from the merged local agent profile for the prompt, then falls
+    back to ``False``.
 
     Returns:
         True to pass --search to Codex exec.
     """
-    def _from_obj(obj: dict[str, Any], key: str) -> bool | None:
-        val = obj.get(key) if key in obj else obj.get("default")
-        if isinstance(val, bool):
-            return val
-        return None
-
-    agent = config.get("agent")
-    if isinstance(agent, dict):
-        project_ws = agent.get("local_web_search")
-        if isinstance(project_ws, bool):
-            return project_ws
-        if isinstance(project_ws, dict):
-            out = _from_obj(project_ws, prompt_name)
-            if out is not None:
-                return out
-
-    pika_local = get_pika_config().get("local", {})
-    pika_ws = pika_local.get("web_search")
-    if isinstance(pika_ws, bool):
-        return pika_ws
-    if isinstance(pika_ws, dict):
-        out = _from_obj(pika_ws, prompt_name)
-        if out is not None:
-            return out
+    web_search = _get_effective_local_agent_profile(config, prompt_name).get("web_search")
+    if isinstance(web_search, bool):
+        return web_search
     return False
 
 
 def get_local_model(config: dict[str, Any], prompt_name: str) -> str:
     """Return Codex model ID for local provider for the given prompt.
 
-    Resolves: project agent.local_model[prompt_name] or .default,
-    then pika local.model[prompt_name] or .default.
-    pika local.model is required, so a value is always returned.
+    Resolves from the merged local agent profile for the prompt.
+    ``pika.yaml`` requires ``local.model.default.name``, so a value is always
+    expected when configuration is valid.
 
     Returns:
         Model ID string (e.g. gpt-5-codex).
     """
-    def _from_obj(obj: dict[str, str], key: str) -> str | None:
-        val = obj.get(key) or obj.get("default")
-        return str(val).strip() if isinstance(val, str) and val.strip() else None
-
-    agent = config.get("agent")
-    if isinstance(agent, dict):
-        project_model = agent.get("local_model")
-        if isinstance(project_model, str) and project_model.strip():
-            return project_model.strip()
-        if isinstance(project_model, dict):
-            out = _from_obj(
-                {k: str(v) for k, v in project_model.items() if isinstance(v, str)},
-                prompt_name,
-            )
-            if out:
-                return out
-
-    pika_model = get_pika_config().get("local", {}).get("model")
-    if isinstance(pika_model, str) and pika_model.strip():
-        return pika_model.strip()
-    if isinstance(pika_model, dict):
-        out = _from_obj(
-            {k: str(v) for k, v in pika_model.items() if isinstance(v, str)},
-            prompt_name,
-        )
-        if out:
-            return out
-    return "gpt-5-codex"
+    name = _get_effective_local_agent_profile(config, prompt_name).get("name")
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    raise ValueError(
+        f"No local model name configured for agent '{_normalize_local_agent_name(prompt_name)}'."
+    )
 
 
 def _safe_workspace_token(value: str, fallback: str) -> str:
@@ -1541,10 +1602,15 @@ def invoke_agent_with_schema_retry(
     ctx: RuntimeContext,
     local_workspace_override: Path | None = None,
     invocation_timestamp: str | None = None,
+    post_schema_validate: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
-    """Invoke agent and validate output. Retry up to configurable times on schema failure.
+    """Invoke agent and validate output. Retry up to configurable times on validation failure.
 
-    When schema_path is None or missing, skips validation and returns immediately.
+    When schema_path is None or missing, skips JSON Schema validation and returns immediately
+    (``post_schema_validate`` still runs when provided).
+
+    After successful schema validation, ``post_schema_validate`` runs if set. It should raise
+    ``ValueError`` or ``AgentSchemaError`` to trigger the same retry loop as schema failures.
     """
     max_retries = get_schema_validation_retries(config)
     last_error: ValueError | None = None
@@ -1553,8 +1619,8 @@ def invoke_agent_with_schema_retry(
         retry_instruction: str | None = None
         if attempt > 0 and last_error is not None:
             retry_instruction = (
-                "[Retry] Your previous output failed schema validation. "
-                f"Error: {last_error}. Please fix the output to comply with the schema and try again."
+                "[Retry] Your previous output failed validation. "
+                f"Error: {last_error}. Please fix the output to comply with the schema and any stated rules, then try again."
             )
         provider = get_agent_provider(config)
         log_lifecycle_event(
@@ -1597,6 +1663,8 @@ def invoke_agent_with_schema_retry(
                 )
 
             if schema_path is None or not schema_path.exists():
+                if post_schema_validate is not None:
+                    post_schema_validate(output)
                 return output
 
             output = validate_output_against_schema(
@@ -1615,6 +1683,8 @@ def invoke_agent_with_schema_retry(
                     "validation_result": "passed",
                 },
             )
+            if post_schema_validate is not None:
+                post_schema_validate(output)
             return output
         except (ValueError, AgentSchemaError) as exc:
             last_error = exc
@@ -1633,7 +1703,7 @@ def invoke_agent_with_schema_retry(
             )
             if attempt < max_retries:
                 sys.stderr.write(
-                    f"[PIKA] {prompt_name}: schema validation failed (attempt {attempt + 1}/{max_retries + 1}), retrying...\n"
+                    f"[PIKA] {prompt_name}: output validation failed (attempt {attempt + 1}/{max_retries + 1}), retrying...\n"
                 )
                 sys.stderr.flush()
                 log_lifecycle_event(
@@ -1648,7 +1718,7 @@ def invoke_agent_with_schema_retry(
                 )
             else:
                 sys.stderr.write(
-                    f"[PIKA] {prompt_name}: schema validation failed after {max_retries + 1} attempt(s)\n"
+                    f"[PIKA] {prompt_name}: output validation failed after {max_retries + 1} attempt(s)\n"
                 )
                 sys.stderr.flush()
                 raise last_error from exc
@@ -1737,6 +1807,7 @@ def invoke_agent_stub(
         storage_file = "-"
     base = {
         "manual_resolution_items": [],
+        "evidence_assessments": [],
         "run_summary": {
             "command": cmd_label,
             "status": "success",

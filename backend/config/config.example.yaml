@@ -29,18 +29,19 @@ agent:
   stream_output: true  # Stream output + heartbeat when agent runs (local).
   # When provider is local (Loca):
   # local_exec_timeout_sec: 1200  # Optional workspace override for long-running Loca calls
-  # local_model: gpt-5-codex  # Or object: { default: "gpt-5-codex", implement_from_specs: "gpt-4-codex" }
-  # reasoning_effort: per-prompt model_reasoning_effort for Loca (low|medium|high|xhigh)
-  #   Keys: prompt_name (map_spec_to_code, implement_unified_planner, implement_from_specs) or default
-  #   Pika defaults: map + anchor agents = medium, implementer = high
-  # reasoning_effort:
-  #   default: medium
-  #   implement_from_specs: high
-  # local_model_verbosity: per-prompt model_verbosity (e.g. low, medium, high). Omit for Loca default.
-  # local_web_search: web search for Loca. Boolean or per-prompt object.
   # local_provider: openai-codex  # Loca sub-provider: openai (API key) | openai-codex (ChatGPT OAuth). Default: openai-codex.
-  # local_temperature: null  # 0.0-2.0, null for provider default. Ignored when reasoning_effort is set.
-  # local_top_p: null  # 0.0-1.0, null for provider default. Ignored when reasoning_effort is set.
+  # Agent-specific local model settings. Keys use stable agent prompt names;
+  # local prompt variants like map_spec_to_code_local resolve through the base key.
+  # default:
+  #   name: gpt-5.3-codex
+  #   reasoning_effort: medium  # or null to omit (Loca then uses temperature/top_p)
+  #   temperature: null
+  #   top_p: null
+  #   web_search: false
+  #   model_verbosity: null
+  # implement_from_specs:
+  #   name: gpt-5.3-codex-spark
+  #   reasoning_effort: xhigh
   # local_command is deprecated (unused by Loca); see config.schema.json.
 
 commands:
@@ -66,6 +67,15 @@ commands:
         path: out/state/DESIGN-SPEC.csv
         no_overwrite: false
       backups_dir: { path: out/backups, no_overwrite: false }
+    # Optional: extend pika.yaml column synonym defaults per logical column.
+    # Matching strips -, _ and whitespace then lowercases both sides.
+    # column_synonyms:
+    #   sads_id: [Req_ID, REQ-ID]
+    #   subunit: [domain, area]
+    # Optional: auto-fill module_role and acceptance_criteria via agent after normalization.
+    # enrichment:
+    #   enabled: false      # Set true to invoke design_doc_enricher agent
+    #   skip_filled: true   # Skip rows that already have both fields populated
     # Optional: replace sensitive terms. keywords required; case_sensitive optional.
     sensitive_keywords:
       "[SOFTWARE]":

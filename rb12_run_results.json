@@ -1,0 +1,12 @@
+[
+  {
+    "run_number": 1,
+    "run_id": null,
+    "exit_code": 0,
+    "status": "RATE_LIMITED",
+    "ambiguity_spec_ids": [],
+    "testability_spec_ids": [],
+    "captured": false,
+    "error": "429 or rate limit"
+  }
+]

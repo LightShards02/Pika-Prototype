@@ -12,27 +12,71 @@ paths:
   prompts_file: prompts/PROMPT.yaml
   schemas_dir: schemas/agent_outputs
 
-# Prompt names (project-independent). Handlers resolve from here; workspace config
-# no longer carries prompt_name fields.  Map and implement have local variants
-# selected automatically when agent.provider == "local".
-prompt_names:
-  plan: project_designer
-  review: design_reviewer
+# Command-level defaults (project-independent).
+# Handlers resolve prompt names from here; workspace config no longer carries prompt_name fields.
+# Map and implement have local variants selected automatically when agent.provider == "local".
+commands:
+  plan:
+    prompt_names: project_designer
+  format:
+    prompt_names:
+      enricher: design_doc_enricher
+    # CSV column synonyms (project-independent). Workspace config commands.format.column_synonyms entries are appended (de-duped).
+    column_synonyms:
+      sads_id:
+        - SADS ID
+        - SADS_ID
+        - SADSId
+        - Req ID
+        - Requirement ID
+      sads:
+        - SADS
+        - Requirement
+        - Spec
+        - Description
+      srs_id:
+        - SRS ID
+        - SRS_ID
+        - SRSId
+      srs:
+        - SRS
+      unit:
+        - unit
+        - module
+        - component
+        - system
+      subunit:
+        - subunit
+        - sub-unit
+        - sub_unit
+        - submodule
+        - sub-module
+        - feature
+  review:
+    prompt_names: design_reviewer
   map:
-    default: map_spec_to_code
-    local: map_spec_to_code_local
+    prompt_names:
+      default: map_spec_to_code
+      local: map_spec_to_code_local
   implement:
-    implementer:
-      default: implement_from_specs
-      local: implement_from_specs_local
-    unified_planner: implement_unified_planner
+    # Batch briefs confidence threshold. Project config commands.implement.min_confidence_threshold overrides.
+    # Items with confidence below this value block code gen until resolved. 0 = disabled.
+    min_confidence_threshold: 0.7
+    min_max_files: 5
+    prompt_names:
+      implementer:
+        default: implement_from_specs
+        local: implement_from_specs_local
+      unified_planner: implement_unified_planner
   resolve_plan:
-    map: map_issues_to_specs
-    resolve: resolve_issues_with_diffs
+    prompt_names:
+      map: map_issues_to_specs
+      resolve: resolve_issues_with_diffs
   refine:
-    ambiguity_detector: spec_ambiguity_detector
-    testability_auditor: spec_testability_auditor
-    spec_editor: spec_editor
+    prompt_names:
+      ambiguity_detector: spec_ambiguity_detector
+      testability_auditor: spec_testability_auditor
+      spec_editor: spec_editor
 
 # Schema key -> filename mapping under schemas_dir
 schema_map:
@@ -42,6 +86,7 @@ schema_map:
   resolve_plan_map_output: issue_map_output.schema.json
   resolve_plan_output: issue_resolve_output.schema.json
   handshake_output: handshake_output.schema.json
+  enrich_output: design_doc_enrich_output.schema.json
 
 # Config file candidates when --config not provided (relative to workspace root)
 config_candidates:
@@ -54,49 +99,43 @@ config_candidates:
 
 # --- local: Local CLI subprocess (e.g. Codex exec) ---
 # Required: command (executable name or path), model.
-# Optional: ps1_path_windows (Windows .ps1 path), heartbeat_interval_sec, exec_timeout_sec, reasoning_effort.
+# Optional: ps1_path_windows (Windows .ps1 path), heartbeat_interval_sec, exec_timeout_sec.
 local:
   command: codex
   # Loca sub-provider: openai (API key) or openai-codex (ChatGPT OAuth subscription).
   # Override in project config agent.local_provider.
   provider_sub: openai-codex
-  # Default temperature/top_p for local provider (null = provider default).
-  # Override in project config agent.local_temperature / agent.local_top_p.
-  # Ignored when reasoning_effort is set for the prompt.
-  temperature: null
-  top_p: null
-  # Per-prompt Codex model ID. Keys: prompt_name (map_spec_to_code, implement_unified_planner, implement_from_specs) or default.
-  # Override in project config agent.local_model.
+  # Per-agent local model settings. Keys use stable agent prompt names; local
+  # prompt variants such as map_spec_to_code_local resolve through the base key.
+  # Workspace overrides live under agent.default / agent.{agent_name}.
   model:
-    default: gpt-5.3-codex
-    map_spec_to_code: gpt-5.3-codex
-    implement_unified_planner: gpt-5.3-codex
-    implement_from_specs: gpt-5.3-codex-spark
+    default:
+      name: gpt-5.3-codex
+      # Use null (or none/off) to omit reasoning_effort so temperature/top_p are honored by Loca.
+      reasoning_effort: medium
+      temperature: null
+      top_p: null
+      web_search: false
+      model_verbosity: null
+    map_spec_to_code:
+      name: gpt-5.3-codex
+    implement_unified_planner:
+      name: gpt-5.3-codex
+    implement_from_specs:
+      name: gpt-5.3-codex-spark
+    spec_editor:
+      name: gpt-5.4-mini
+      # null (or YAML none / string none) omits reasoning_effort so temperature/top_p apply.
+      reasoning_effort: null
+      top_p: 0.1
+      temperature: 0.8
+
   # Windows: path to codex.ps1 when installed via npm (used when command is "codex")
   ps1_path_windows: C:\Users\night\AppData\Roaming\npm\codex.ps1
   heartbeat_interval_sec: 30
   exec_timeout_sec: 600
   temp_workspace_prefix: pika-local-agent-
   temp_workspace_ttl_sec: 86400
-  # Per-prompt model_reasoning_effort for Codex exec. Keys: prompt_name or default.
-  # Override in project config agent.reasoning_effort.
-  reasoning_effort:
-    default: medium
-    map_spec_to_code: medium
-    implement_unified_planner: medium
-    implement_from_specs: medium
-  # Per-prompt model_verbosity for Codex exec (e.g. low, medium, high). Passed as -c model_verbosity.
-  # Omit or null to use Codex default. Override in project config agent.local_model_verbosity.
-  # model_verbosity: null
-  # Per-prompt web_search for Codex exec. When true, passes --search. Override in agent.local_web_search.
-  web_search: false
-
-# --- implement: Batch briefs confidence threshold ---
-# Project config commands.implement.min_confidence_threshold overrides.
-# Items with confidence below this value block code gen until resolved. 0 = disabled.
-implement:
-  min_confidence_threshold: 0.7
-  min_max_files: 5
 
 # --- stub: Mock agent for testing (no real invocation) ---
 # Optional: plan_proposed_sads path, other artifact paths.
@@ -135,13 +174,12 @@ id_generation:
     pattern: "^[A-Za-z]{2}[0-9]+$"
   collision_scope: per_type_numeric_suffix
 
-# CSV column contracts (project-independent).
-# Defines columns added to Design Spec and Issue Tracking CSVs.
 csv_contracts:
   design_spec:
     add_if_missing:
       - spec_id
       - module_tag
+      - module_role
       - subunit
       - mapped_code_symbols
       - mapped_confidence

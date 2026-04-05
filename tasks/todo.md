@@ -1,5 +1,56 @@
 # TODO
 
+## Current Task: Debug `refine` NoneType `.strip()` Crash
+
+- [x] Reproduce `python cli.py agent refine --project-root ../dataset/specimen` in the `Local` conda env and capture the traceback/run artifacts.
+- [x] Isolate the exact pre-agent handoff field that is `None` after decomposition completes.
+- [x] Implement the minimal fix and add a regression test.
+- [x] Run targeted tests and a refine repro to verify the crash is resolved.
+
+## Current Task Review: Debug `refine` NoneType `.strip()` Crash
+
+- Root cause:
+  - `core/appendix_loader.py` assumed every `csv.DictReader` row key was a string and called `k.strip()`.
+  - In `dataset/specimen`, several appendix CSV rows contain unquoted commas in the final `notes` column, so `DictReader` emitted overflow cells under the `None` key.
+  - `refine` loads appendices immediately after decomposition, so the run crashed before `_report_refine_step("Agents", "running", ...)`.
+- Fix:
+  - Added `_normalize_csv_row()` in `core/appendix_loader.py` to ignore non-string keys and merge overflow cells into the final declared header deterministically.
+  - Added `tests/test_appendix_loader.py` covering a malformed appendix CSV row with overflow cells.
+- Verification:
+  - `C:\Users\night\miniconda3\envs\Local\python.exe -m pytest tests/test_appendix_loader.py -q` -> `1 passed`
+  - `C:\Users\night\miniconda3\envs\Local\python.exe -m py_compile core/appendix_loader.py tests/test_appendix_loader.py` -> success
+  - Specimen smoke repro with stubbed agent calls now reaches the former failure boundary and completes:
+    - decomposition runs,
+    - appendix loading succeeds,
+    - `[PIKA] Agents: running` is emitted,
+    - refine returns `status: completed` in dry-run mode.
+
+## Current Task: Refactor Agent-Specific Model Param Config
+
+- [x] Restate requirements, config schemas, edge cases, and implementation milestones before edits.
+- [x] Refactor runtime resolution so local model params resolve from agent-specific config objects instead of split per-param keys.
+- [x] Update `backend/config/pika.yaml` to store local model defaults by agent name with nested model params.
+- [x] Update workspace config schema/example and sample project configs to use `agent.{agent_name}` overrides.
+- [x] Add regression tests for agent-name normalization, project-overrides-over-pika precedence, and config validation.
+- [x] Run targeted tests in the `Local` conda environment and record results.
+
+## Current Task Review: Refactor Agent-Specific Model Param Config
+
+- Refactored local model-param config into agent-specific nested profiles:
+  - PIKA defaults now live under `backend/config/pika.yaml` at `local.model.{agent_name}`.
+  - Workspace overrides now live under `agent.default` / `agent.{agent_name}`.
+- Runtime now resolves a merged effective profile per agent using normalized agent keys, so local prompt variants like `*_local` share the same config entry as their base agent.
+- Updated workspace schema, example config, dataset configs, and provider-category docs to the new shape.
+- Added regression coverage for:
+  - workspace default vs agent-specific precedence,
+  - pika default vs pika agent-specific precedence,
+  - `_local` prompt-name normalization,
+  - nested agent-profile schema validation.
+- Verification:
+  - `conda run -n Local python -m pytest tests/test_lifecycle.py tests/test_loca_bridge.py tests/test_config_loader.py tests/test_pika_config.py -q` -> `119 passed`
+  - `conda run -n Local python -m py_compile core/lifecycle.py core/loca_bridge.py core/pika_config.py tests/test_lifecycle.py tests/test_loca_bridge.py tests/test_config_loader.py tests/test_pika_config.py` -> success
+  - `conda run -n Local python -c "from pathlib import Path; from core.config_loader import load_and_validate_config; root = Path.cwd(); schema = root / 'config' / 'config.schema.json'; qc = root.parent / 'dataset' / 'qc_run_release' / 'config.yaml'; load_and_validate_config(qc, schema); print('QC_CONFIG_OK')"` -> `QC_CONFIG_OK`
+
 ## Current Task: Annotate Implement Execution Order with Planning Insertions
 
 - [x] Read the current implement execution-order document and map each proposed harness methodology to a concrete insertion point.
@@ -1597,3 +1648,91 @@
 - Verification:
   - `C:\Users\night\miniconda3\envs\Local\python.exe C:\Users\night\.codex\skills\.system\skill-creator\scripts\quick_validate.py .\.codex\skills\validation-dataset-forecast` -> `Skill is valid!`
   - Presence check confirmed the project-level Codex, Claude, and Cursor files exist and the user-global copy is absent.
+
+## Current Task: Create `specimen_accession_reconciliation` Dataset + Refine-Blocker Scenarios
+
+- [x] Restate the dataset requirements, canonical package shape, scenario families, and static validation scope before editing.
+- [x] Scaffold `dataset/specimen_accession_reconciliation` in the established dataset package structure.
+- [x] Author the canonical `PROJECT_CONTEXT.md`, `config.yaml`, `vocab.yaml`, appendices, and nutrition-scale `raw-design-spec.csv`.
+- [x] Run deterministic `format` in the `Local` conda environment for the canonical dataset only.
+- [x] Author the self-contained `scenarios/refine-blockers` manifest and all scenario workspaces with local configs, local appendices, and `state/DESIGN-SPEC.csv`.
+- [x] Run static validation only: CSV/schema presence checks, scenario-config checks, and local-path checks. Do not run `refine`.
+- [x] Record review notes, counts, and verification commands.
+
+## Current Task Review: Create `specimen_accession_reconciliation` Dataset + Refine-Blocker Scenarios
+
+- Created the canonical dataset package at `dataset/specimen_accession_reconciliation` with:
+  - `PROJECT_CONTEXT.md`
+  - `config.yaml`
+  - `vocab.yaml`
+  - `raw-design-spec.csv`
+  - `appendix_config_proposals.csv`
+  - `appendix_error_codes.csv`
+  - `appendix_dto_definitions.csv`
+  - `appendix_data_flow.md`
+  - `appendix_source_contracts.csv`
+  - `state/DESIGN-SPEC.csv`
+  - `state/id_registry.json`
+  - `src/.gitkeep`
+- Authored 61 canonical SADS rows across `CLI`, `WORKER`, `CORE`, `DATA`, `SHARED`, and `OBS` for the non-UI, non-REST specimen accession reconciliation workflow.
+- Added a self-contained scenario pack at `dataset/specimen_accession_reconciliation/scenarios/refine-blockers` with:
+  - `manifest.csv`
+  - 12 scenario workspaces (`RB01` through `RB12`)
+  - per-scenario local `PROJECT_CONTEXT.md`, `config.yaml`, local appendices, `vocab.yaml`, and `state/DESIGN-SPEC.csv`
+  - no `raw-design-spec.csv` files inside scenario workspaces
+- Scenario coverage includes:
+  - 2 decomposition blockers,
+  - 4 ambiguity blockers,
+  - 4 testability blockers,
+  - 2 compound ambiguity-plus-testability blockers.
+- Canonical appendix counts:
+  - config proposals: `33`
+  - error codes: `16`
+  - DTO definitions: `9`
+  - source contracts: `12`
+- Verification:
+  - `conda run -n Local python .\\cli.py agent format --project-root ..\\dataset\\specimen_accession_reconciliation --config config.yaml` (run from `backend/`) -> `status: completed`
+  - PowerShell CSV checks confirmed canonical raw and formatted design-spec row counts are both `61`.
+  - PowerShell scenario checks confirmed all 12 workspaces contain required local files, all scenario `state/DESIGN-SPEC.csv` files keep required refine columns, all scenarios keep `agent_replicas: 4` and `consensus_min_votes: 3`, decomposition scenarios use `enabled: true` + `blocking: true`, non-decomposition scenarios use `enabled: false`, and no scenario contains `raw-design-spec.csv`.
+  - Spot checks confirmed intended blocker mutations:
+    - `RB01` multi-behavior split candidate row,
+    - `RB05` conflicting threshold appendix entries,
+    - `RB06` `TBD` / `vendor-specific` / `source-defined` source contracts,
+    - `RB10` catch-all-only error dictionary,
+    - `RB12` conflicting `match_score` DTO definitions.
+- Constraint respected: no `refine` command was run while authoring this dataset or its blocker scenarios.
+
+## Current Task: Generalize `qc_run_release` And `specimen_accession_reconciliation` SADS Wording
+
+- [x] Record the correction in `tasks/lessons.md` and restate the architectural-wording constraint before editing.
+- [x] Identify code-style function/class identifiers in the two dataset packages and their canonical/scenario design-spec copies.
+- [x] Revise the design-spec wording so ownership stays at module/workflow level while preserving low ambiguity and high testability.
+- [x] Regenerate canonical formatted outputs for the two baseline datasets where needed and sync canonical `state/` files.
+- [x] Run static checks to confirm the targeted identifier pattern is removed and row counts remain stable.
+- [x] Record review notes and verification results.
+
+## Current Task Review: Generalize `qc_run_release` And `specimen` SADS Wording
+
+- Recorded the correction in `tasks/lessons.md`:
+  - SADS rows must stay at module/workflow-subunit level.
+  - Function names, class names, method names, and dotted code identifiers are forbidden in design-spec prose.
+- Updated `.codex/skills/sads-drafting-standards/SKILL.md` so future SADS drafting uses `the [module] shall ...` wording and explicitly rejects code-style identifiers in titles, requirements, and acceptance criteria.
+- Revised the two dataset packages:
+  - `dataset/qc_run_release`
+  - `dataset/specimen`
+- Rewrote design-spec wording across:
+  - baseline `raw-design-spec.csv`
+  - canonical `state/DESIGN-SPEC.csv`
+  - formatted `out/state/design-spec.csv`
+  - existing `out/state/REFINED-SPEC.csv` for `qc_run_release`
+  - all `dataset/specimen/scenarios/refine-blockers/*/state/DESIGN-SPEC.csv` files
+- Kept the scenario pack behavior intact by resyncing scenario copies from the refreshed specimen baseline and preserving only the scenario-specific mutated spec IDs listed in the blocker manifest.
+- Tightened several sender/receiver rows after the bulk rewrite so the specs remain architectural but still say what downstream responsibility is being invoked (for example contract validation, reconciliation evaluation, release evaluation, report assembly, and persistence).
+- Verification:
+  - `conda run -n Local python .\\cli.py agent format --project-root ..\\dataset\\qc_run_release --config config.yaml` (run from `backend/`) -> `status: completed`
+  - `conda run -n Local python .\\cli.py agent format --project-root ..\\dataset\\specimen --config config.yaml` (run from `backend/`) -> `status: completed`
+  - Row counts remained stable:
+    - `qc_run_release`: raw `64`, canonical `64`
+    - `specimen`: raw `61`, canonical `61`
+    - specimen scenario copies: `61` rows each
+  - `rg` over all targeted design-spec CSV copies returned `NO_IDENTIFIER_MATCHES` for the former `MODULE-code.identifier` pattern.

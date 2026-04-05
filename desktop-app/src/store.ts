@@ -22,6 +22,7 @@ interface AppStore {
   activeItemIndex: number;
   setActiveItemIndex: (index: number) => void;
   resolveItem: (itemId: string, optionId: string) => void;
+  toggleAcceptConcern: (itemId: string, concernId: string) => void;
   setItemEditorOutput: (itemId: string, editorOutput: Record<string, unknown>) => void;
   setItemUserGuide: (itemId: string, userGuide: string) => void;
 
@@ -111,9 +112,40 @@ export const useStore = create<AppStore>((set) => ({
   activeItemIndex: 0,
   setActiveItemIndex: (index) => set({ activeItemIndex: index }),
   resolveItem: (itemId, optionId) => set((state) => ({
-    currentGateItems: state.currentGateItems.map((item) =>
-      item.id === itemId ? { ...item, selectedOption: optionId } : item
-    ),
+    currentGateItems: state.currentGateItems.map((item) => {
+      if (item.id !== itemId) return item;
+      if (item.isCompound) {
+        // For compound items: let_agent_edit and skip clear accept toggles
+        if (optionId === 'let_agent_edit' || optionId === 'skip') {
+          return { ...item, selectedOption: optionId, acceptedConcernIds: [] };
+        }
+        return { ...item, selectedOption: optionId };
+      }
+      return { ...item, selectedOption: optionId };
+    }),
+  })),
+  toggleAcceptConcern: (itemId, concernId) => set((state) => ({
+    currentGateItems: state.currentGateItems.map((item) => {
+      if (item.id !== itemId || !item.isCompound) return item;
+      const prev = item.acceptedConcernIds ?? [];
+      const next = prev.includes(concernId)
+        ? prev.filter((id) => id !== concernId)
+        : [...prev, concernId];
+
+      // Derive selectedOption from accepted concerns
+      const ambiguity = item.concerns.find((c) => c.agentType === 'ambiguity');
+      const testability = item.concerns.find((c) => c.agentType === 'testability');
+      const hasAmb = ambiguity ? next.includes(ambiguity.concernId) : false;
+      const hasTest = testability ? next.includes(testability.concernId) : false;
+
+      let selectedOption: string | undefined;
+      if (hasAmb && hasTest) selectedOption = 'accept_both';
+      else if (hasAmb) selectedOption = 'accept_ambiguity';
+      else if (hasTest) selectedOption = 'accept_testability';
+      else selectedOption = undefined;
+
+      return { ...item, acceptedConcernIds: next, selectedOption };
+    }),
   })),
   setItemEditorOutput: (itemId, editorOutput) => set((state) => ({
     currentGateItems: state.currentGateItems.map((item) =>

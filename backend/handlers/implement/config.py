@@ -108,7 +108,7 @@ def _resolve_min_confidence_threshold(impl: dict[str, Any]) -> float:
     """Resolve min_confidence_threshold: project config > pika config > default 0.7."""
     raw = impl.get("min_confidence_threshold")
     if raw is None:
-        raw = get_pika_config().get("implement", {}).get("min_confidence_threshold")
+        raw = get_pika_config().get("commands", {}).get("implement", {}).get("min_confidence_threshold")
     if raw is None:
         raw = _DEFAULT_MIN_CONFIDENCE_THRESHOLD
     return _parse_min_confidence_threshold(raw)
@@ -346,11 +346,11 @@ def _get_impl_cfg(config: dict[str, Any]) -> dict[str, Any]:
         value = raw_budgets.get(key, default)
         if isinstance(value, int) and value > 0:
             budgets[key] = value
-    pika_min_max_files = get_pika_config().get("implement", {}).get("min_max_files", 5)
+    pika_min_max_files = get_pika_config().get("commands", {}).get("implement", {}).get("min_max_files", 5)
     if budgets["max_files"] < pika_min_max_files:
         raise ConfigParseError(
             f"budgets.max_files ({budgets['max_files']}) is below the minimum "
-            f"allowed value ({pika_min_max_files}) from pika.yaml implement.min_max_files"
+            f"allowed value ({pika_min_max_files}) from pika.yaml commands.implement.min_max_files"
         )
     roles = impl.get("allowed_module_roles", list(_DEFAULT_ROLES))
     if not isinstance(roles, list) or not roles:

@@ -19,7 +19,13 @@ local:
   command: codex
   provider_sub: openai-codex   # openai (API key) or openai-codex (ChatGPT OAuth)
   model:
-    default: gpt-5.3-codex
+    default:
+      name: gpt-5.3-codex
+      reasoning_effort: medium
+      temperature: null
+      top_p: null
+      web_search: false
+      model_verbosity: null
   exec_timeout_sec: 600
 
 # stub: Mock agent
@@ -36,8 +42,10 @@ agent:
   stream_output: true
 
   # When provider is local (Loca):
-  # local_model: gpt-5-codex
+  # default:
+  #   name: gpt-5-codex
   # local_provider: openai-codex
-  # reasoning_effort:
-  #   default: medium
+  # implement_from_specs:
+  #   name: gpt-5.3-codex-spark
+  #   reasoning_effort: xhigh
 ```

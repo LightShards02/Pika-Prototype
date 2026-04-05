@@ -42,6 +42,35 @@ class ConfigLoaderImplementPolicyTests(unittest.TestCase):
         loaded = load_and_validate_config(NUTRITION_CONFIG_PATH, SCHEMA_PATH)
         self.assertIn("commands", loaded)
 
+    def test_local_agent_profile_override_passes_schema_validation(self) -> None:
+        """Nested agent.{agent_name} local-model overrides should validate."""
+        config = yaml.safe_load(EXAMPLE_CONFIG_PATH.read_text(encoding="utf-8"))
+        config["agent"]["default"] = {
+            "name": "gpt-5.3-codex",
+            "reasoning_effort": "medium",
+        }
+        config["agent"]["implement_from_specs"] = {
+            "name": "gpt-5.3-codex-spark",
+            "temperature": 0.4,
+            "top_p": 0.9,
+            "web_search": False,
+        }
+        path = self._write_temp_config(yaml.safe_dump(config, sort_keys=False))
+        loaded = load_and_validate_config(path, SCHEMA_PATH)
+        self.assertEqual(loaded["agent"]["implement_from_specs"]["name"], "gpt-5.3-codex-spark")
+
+    def test_local_agent_profile_null_reasoning_effort_passes_schema_validation(self) -> None:
+        """reasoning_effort: null is valid for Loca sampling (temperature/top_p)."""
+        config = yaml.safe_load(EXAMPLE_CONFIG_PATH.read_text(encoding="utf-8"))
+        config["agent"]["spec_editor"] = {
+            "reasoning_effort": None,
+            "temperature": 0.5,
+            "top_p": 0.5,
+        }
+        path = self._write_temp_config(yaml.safe_dump(config, sort_keys=False))
+        loaded = load_and_validate_config(path, SCHEMA_PATH)
+        self.assertIsNone(loaded["agent"]["spec_editor"]["reasoning_effort"])
+
     def test_unknown_role_fails_schema_validation(self) -> None:
         """Unknown role key should fail schema validation."""
         config = yaml.safe_load(EXAMPLE_CONFIG_PATH.read_text(encoding="utf-8"))

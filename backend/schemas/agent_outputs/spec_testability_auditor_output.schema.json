@@ -1,14 +1,19 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "SpecTestabilityAuditorOutput",
-  "description": "Testability Auditor output. The agent scans SADS acceptance_criteria fields and emits manual_resolution_items for criteria that cannot be directly automated as tests. An empty array means all criteria are already testable. Each item includes a suggested_improvement rewriting the criterion in automatable form.",
+  "description": "Testability Auditor output. The agent scans SADS acceptance_criteria fields and emits manual_resolution_items for criteria that cannot be directly automated as tests or whose evidence category cannot be determined. It also emits evidence_assessments classifying each spec row's expected test evidence as tier_1 or tier_2. An empty manual_resolution_items array means all criteria are testable and evidence categories are clear.",
   "type": "object",
-  "required": ["manual_resolution_items"],
+  "required": ["manual_resolution_items", "evidence_assessments"],
   "additionalProperties": false,
   "properties": {
     "manual_resolution_items": {
       "type": "array",
       "items": { "$ref": "#/$defs/testability_item" }
+    },
+    "evidence_assessments": {
+      "type": "array",
+      "description": "One entry per spec row where the agent is confident about the evidence category. Rows where the agent is uncertain are omitted here and instead produce a manual_resolution_item with field='evidence_category'.",
+      "items": { "$ref": "#/$defs/evidence_assessment" }
     }
   },
   "$defs": {
@@ -43,8 +48,8 @@
         },
         "field": {
           "type": "string",
-          "const": "acceptance_criteria",
-          "description": "Always 'acceptance_criteria' — testability auditor only touches this field."
+          "enum": ["acceptance_criteria", "evidence_category"],
+          "description": "'acceptance_criteria' for untestable criteria items; 'evidence_category' when the agent cannot determine which evidence tier applies to the spec row."
         },
         "untestable_reason": {
           "type": "string",
@@ -66,6 +71,41 @@
           "minItems": 1,
           "items": { "$ref": "#/$defs/resolution_option" },
           "description": "Resolution options presented to the user."
+        }
+      }
+    },
+    "evidence_assessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["spec_id", "evidence_category", "rationale"],
+      "properties": {
+        "spec_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identifier of the spec row being assessed."
+        },
+        "evidence_category": {
+          "type": "string",
+          "enum": [
+            "test_execution_record",
+            "audit_trail",
+            "system_log",
+            "defect_report",
+            "build_version_record",
+            "ui_screenshot",
+            "screen_recording",
+            "serial_debug_log",
+            "network_packet_capture",
+            "database_export",
+            "api_response_log",
+            "performance_profiler_output"
+          ],
+          "description": "Specific evidence type produced when this criterion is verified. Tier 1 (machine-generated): test_execution_record, audit_trail, system_log, defect_report, build_version_record. Tier 2 (human-captured): ui_screenshot, screen_recording, serial_debug_log, network_packet_capture, database_export, api_response_log, performance_profiler_output."
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1,
+          "description": "One-sentence explanation of why this evidence tier applies to the acceptance criterion."
         }
       }
     },

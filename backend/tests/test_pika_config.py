@@ -43,6 +43,8 @@ class PikaConfigTests(unittest.TestCase):
         local = cfg.get("local", {})
         self.assertIn("heartbeat_interval_sec", local)
         self.assertIn("exec_timeout_sec", local)
+        self.assertIn("model", local)
+        self.assertEqual(local["model"]["default"]["name"], "gpt-5.3-codex")
 
     def test_has_default_outputs(self) -> None:
         """Config has default_outputs for workspace fallbacks."""

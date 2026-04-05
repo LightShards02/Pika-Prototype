@@ -10,6 +10,7 @@ from core.format_sads import (
     get_design_spec_add_if_missing,
     truncate_cell,
     write_agent_view_csv,
+    _normalize_col_key,
     _normalize_sensitive_keywords,
     _unicode_to_latex,
     append_missing_columns,
@@ -18,7 +19,9 @@ from core.format_sads import (
     assign_sads_deterministic_ids,
     collapse_empty_columns_before_new,
     derive_contract_columns,
+    derive_subunit_module_tag,
     flatten_sads_rows,
+    get_column_synonyms,
     load_sads_csv_or_xlsx,
     normalize_newlines_in_cells,
     normalize_raw_sads,
@@ -758,6 +761,128 @@ class RowsToCsvTests(unittest.TestCase):
         self.assertIn("\\ensuremath{\\mu}", out)
         self.assertNotIn("∑", out)
         self.assertNotIn("μ", out)
+
+
+class NormalizeColKeyTests(unittest.TestCase):
+    """Tests for _normalize_col_key."""
+
+    def test_strips_dashes(self) -> None:
+        self.assertEqual(_normalize_col_key("sads-id"), "sadsid")
+
+    def test_strips_underscores(self) -> None:
+        self.assertEqual(_normalize_col_key("sads_id"), "sadsid")
+
+    def test_strips_spaces(self) -> None:
+        self.assertEqual(_normalize_col_key("sads id"), "sadsid")
+
+    def test_lowercases(self) -> None:
+        self.assertEqual(_normalize_col_key("SADS ID"), "sadsid")
+
+    def test_mixed_separators(self) -> None:
+        self.assertEqual(_normalize_col_key("Sub-Unit_Name"), "subunitname")
+
+    def test_already_normalized(self) -> None:
+        self.assertEqual(_normalize_col_key("subunit"), "subunit")
+
+
+class FindColumnNormalizedTests(unittest.TestCase):
+    """Tests for the enhanced _find_column with normalized matching."""
+
+    def test_matches_dash_variant(self) -> None:
+        """Header 'SADS-ID' is found via candidate 'SADS ID'."""
+        from core.format_sads import _find_column
+        result = _find_column(["SADS-ID", "SADS"], ["SADS ID"])
+        self.assertEqual(result, "SADS-ID")
+
+    def test_matches_underscore_variant(self) -> None:
+        """Header 'sads_id' is found via candidate 'SADS ID'."""
+        from core.format_sads import _find_column
+        result = _find_column(["sads_id", "sads"], ["SADS ID"])
+        self.assertEqual(result, "sads_id")
+
+    def test_case_insensitive(self) -> None:
+        """Header 'Subunit' is found via candidate 'subunit'."""
+        from core.format_sads import _find_column
+        result = _find_column(["Subunit", "Unit"], ["subunit"])
+        self.assertEqual(result, "Subunit")
+
+    def test_returns_original_header_name(self) -> None:
+        """Returned value is the unmodified header, not the candidate."""
+        from core.format_sads import _find_column
+        result = _find_column(["Sub-Unit"], ["subunit"])
+        self.assertEqual(result, "Sub-Unit")
+
+    def test_priority_order(self) -> None:
+        """First matching candidate wins."""
+        from core.format_sads import _find_column
+        result = _find_column(["req_id", "sads_id"], ["sads_id", "req_id"])
+        self.assertEqual(result, "sads_id")
+
+    def test_no_match_returns_none(self) -> None:
+        from core.format_sads import _find_column
+        result = _find_column(["title", "requirement"], ["sads_id"])
+        self.assertIsNone(result)
+
+
+class DeriveSubunitModuleTagTests(unittest.TestCase):
+    """Tests for derive_subunit_module_tag."""
+
+    def test_maps_module_tag_from_subunit(self) -> None:
+        """module_tag is set to subunit value when module_tag is absent."""
+        headers = ["spec_id", "subunit", "requirement"]
+        rows = [
+            {"spec_id": "A1", "subunit": "auth", "requirement": "Login"},
+            {"spec_id": "A2", "subunit": "billing", "requirement": "Pay"},
+        ]
+        new_headers, new_rows = derive_subunit_module_tag(headers, rows)
+        self.assertIn("module_tag", new_headers)
+        self.assertEqual(new_rows[0]["module_tag"], "auth")
+        self.assertEqual(new_rows[1]["module_tag"], "billing")
+
+    def test_noop_when_module_tag_already_populated(self) -> None:
+        """Existing non-empty module_tag values are preserved."""
+        headers = ["spec_id", "subunit", "module_tag"]
+        rows = [
+            {"spec_id": "A1", "subunit": "auth", "module_tag": "my_module"},
+        ]
+        new_headers, new_rows = derive_subunit_module_tag(headers, rows)
+        self.assertEqual(new_rows[0]["module_tag"], "my_module")
+
+    def test_noop_when_no_subunit_column(self) -> None:
+        """No-op when source has no subunit column."""
+        headers = ["spec_id", "requirement"]
+        rows = [{"spec_id": "A1", "requirement": "Foo"}]
+        new_headers, new_rows = derive_subunit_module_tag(headers, rows)
+        self.assertNotIn("module_tag", new_headers)
+        self.assertNotIn("module_tag", new_rows[0])
+
+    def test_adds_module_tag_to_headers(self) -> None:
+        """module_tag column is inserted after the subunit column in headers."""
+        headers = ["spec_id", "subunit", "requirement"]
+        rows = [{"spec_id": "A1", "subunit": "core", "requirement": "R"}]
+        new_headers, _ = derive_subunit_module_tag(headers, rows)
+        subunit_idx = new_headers.index("subunit")
+        module_tag_idx = new_headers.index("module_tag")
+        self.assertEqual(module_tag_idx, subunit_idx + 1)
+
+    def test_synonym_header_resolved(self) -> None:
+        """A synonym header 'sub-unit' is matched and module_tag is filled."""
+        headers = ["spec_id", "sub-unit", "requirement"]
+        rows = [{"spec_id": "A1", "sub-unit": "payment", "requirement": "Pay"}]
+        new_headers, new_rows = derive_subunit_module_tag(headers, rows)
+        self.assertIn("module_tag", new_headers)
+        self.assertEqual(new_rows[0]["module_tag"], "payment")
+
+    def test_empty_module_tag_column_triggers_derivation(self) -> None:
+        """When module_tag column exists but all values are empty, derivation runs."""
+        headers = ["spec_id", "subunit", "module_tag"]
+        rows = [
+            {"spec_id": "A1", "subunit": "auth", "module_tag": ""},
+            {"spec_id": "A2", "subunit": "auth", "module_tag": ""},
+        ]
+        _, new_rows = derive_subunit_module_tag(headers, rows)
+        self.assertEqual(new_rows[0]["module_tag"], "auth")
+        self.assertEqual(new_rows[1]["module_tag"], "auth")
 
 
 if __name__ == "__main__":

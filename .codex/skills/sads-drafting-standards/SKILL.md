@@ -9,13 +9,14 @@ Follow this skill whenever drafting or revising SADS rows.
 
 ## Rules
 
-1. Write each `requirement` in EARS form: `When the user/system [trigger], [UNIT]-[subunit] shall [observable behavior].`
+1. Write each `requirement` in EARS form: `When the user/system [trigger], the [module] shall [observable behavior].`
 2. Keep every row atomic. Split multi-step flows, branching logic, and complex processing into separate rows.
 3. Describe concrete workflow behavior, not implementation internals.
-4. Replace vague terms (`robust`, `flexible`, `optimized`, `user-friendly`) with observable outcomes.
-5. Use positive expected behavior statements. Avoid `shall not` phrasing.
-6. For any interaction spanning two modules, define separate specs per module: one spec for the sender module trigger and request contents, and one spec for the receiver module handling workflow and outcomes.
-7. Use generalized subunit names and keep subunit shared across the same workflow part; avoid fragmenting one workflow into many narrow subunits.
+4. Never include function names, class names, method names, dotted identifiers, or other code-style symbols in `title`, `requirement`, or `acceptance_criteria`.
+5. Replace vague terms (`robust`, `flexible`, `optimized`, `user-friendly`) with observable outcomes.
+6. Use positive expected behavior statements. Avoid `shall not` phrasing.
+7. For any interaction spanning two modules, define separate specs per module: one spec for the sender module trigger and request contents, and one spec for the receiver module handling workflow and outcomes.
+8. Use generalized subunit names and keep subunit shared across the same workflow part; avoid fragmenting one workflow into many narrow subunits.
 
 ## Workflow Detail Requirements
 
@@ -40,6 +41,7 @@ For service rows, include:
 ## Drafting Checklist (Run Before Finalizing)
 
 - Every requirement uses `When/If the user`, `When/If the system`, or `When/If the {module}` for conditional design specs; uses `the system` or `the {module}` for non-conditional specs; and includes `shall` for all specs.
+- No requirement, title, or acceptance criteria includes function names, class names, method names, or dotted code identifiers.
 - No row combines multiple independent workflows.
 - Use generalized subunits, and assign one shared subunit to all rows in the same workflow part.
 - UI rows contain layout + interaction + state behavior.
