@@ -160,7 +160,22 @@ export interface RawCompoundItem {
   options: RawAgentOption[];
 }
 
-export type RawAgentItem = RawAmbiguityItem | RawTestabilityItem | RawCompoundItem;
+/** Decomposition gate rows (manual_resolution/decomposition.json); not ambiguity/testability v2. */
+export interface RawDecompositionGateItem {
+  item_id: string;
+  title: string;
+  issue_kind: 'split_candidate' | 'merge_candidate';
+  reason: string;
+  options: RawAgentOption[];
+  spec_id?: string;
+  spec_ids?: string[];
+}
+
+export type RawAgentItem =
+  | RawAmbiguityItem
+  | RawTestabilityItem
+  | RawCompoundItem
+  | RawDecompositionGateItem;
 
 // --- Raw implement gate item (from unified_planner.json etc.) ---
 
@@ -211,7 +226,11 @@ export interface ElectronAPI {
   cancelPika: () => Promise<void>;
 
   // Gate I/O
-  readGateOutput: (args: { runDir: string }) => Promise<{ stage: string; format_version?: number; items: RawAgentItem[] }>;
+  readGateOutput: (args: { runDir: string }) => Promise<{
+    stage: string;
+    format_version?: number;
+    items: RawAgentItem[] | RawImplementItem[];
+  }>;
   writeResolution: (args: { runDir: string; resolutions: { itemIndex: number; chosenOptionId: string; editorOutput?: Record<string, unknown> }[] }) => Promise<void>;
 
   // Resolve + Resume

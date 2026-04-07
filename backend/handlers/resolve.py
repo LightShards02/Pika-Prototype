@@ -239,6 +239,16 @@ def _store_editor_output(
     editor_output: dict[str, Any],
 ) -> None:
     """Persist editor_output dict and set chosen_option_id='let_agent_edit' in resolutions.yaml."""
+    _store_editor_output_with_option(resolutions_path, item_index, editor_output, "let_agent_edit")
+
+
+def _store_editor_output_with_option(
+    resolutions_path: Path,
+    item_index: int,
+    editor_output: dict[str, Any],
+    chosen_option_id: str,
+) -> None:
+    """Persist editor_output dict and set the given chosen_option_id in resolutions.yaml."""
     import yaml
 
     with open(resolutions_path, encoding="utf-8") as f:
@@ -247,7 +257,7 @@ def _store_editor_output(
     if 0 <= item_index < len(items):
         item = items[item_index]
         if isinstance(item, dict):
-            item["chosen_option_id"] = "let_agent_edit"
+            item["chosen_option_id"] = chosen_option_id
             item["free_text"] = None
             item["editor_output"] = editor_output
     with open(resolutions_path, "w", encoding="utf-8") as f:
@@ -339,7 +349,12 @@ def _invoke_spec_editor(
         if csv_p.exists():
             try:
                 h, r = load_sads_csv_or_xlsx(csv_p)
-                full_spec_csv = rows_to_csv(h, r)
+                # Minimal CSV — editor only needs requirement context + spec identity;
+                # mapping/output columns add tokens without information value.
+                _hmap = {hh.strip().lower(): hh for hh in h if hh}
+                _minimal_cols = ["spec_id", "module_tag", "subunit", "requirement"]
+                minimal_h = [_hmap[c] for c in _minimal_cols if c in _hmap]
+                full_spec_csv = rows_to_csv(minimal_h, r)
                 if issue_kind == "field":
                     spec_id = item.get("spec_id", "")
                     if item.get("is_compound"):
@@ -428,6 +443,94 @@ def _invoke_spec_editor(
         return None
 
 
+def _invoke_spec_change_merger(
+    item: dict[str, Any],
+    config: dict[str, Any],
+    ctx: Any,
+    run_dir: Path,
+) -> dict[str, Any] | None:
+    """Invoke spec_change_merger agent for accept_both_improvements on a compound item.
+
+    Merges ambiguity and testability suggestions into a single requirement rewrite.
+    Returns spec_editor_output (field edit shape, field=requirement) or None on failure.
+    """
+    project_root = Path(ctx.project_root)
+    schema_path = project_root / "schemas" / "agent_outputs" / "spec_editor_output.schema.json"
+
+    try:
+        context_text = resolve_project_context_content(config, project_root, ctx, project_root)
+    except Exception:
+        context_text = ""
+
+    # Load input SADS CSV for context
+    full_spec_csv = ""
+    run_meta_path = run_dir / "run_meta.json"
+    if run_meta_path.exists():
+        try:
+            run_meta = json.loads(run_meta_path.read_text(encoding="utf-8"))
+            input_csv_path_str = run_meta.get("input_design_spec_path", "")
+            if input_csv_path_str:
+                csv_p = Path(input_csv_path_str)
+                if csv_p.exists():
+                    h, r = load_sads_csv_or_xlsx(csv_p)
+                    # Use minimal columns to save tokens
+                    _hmap = {hh.strip().lower(): hh for hh in h if hh}
+                    minimal_cols = ["spec_id", "module_tag", "subunit", "requirement"]
+                    minimal_h = [_hmap[c] for c in minimal_cols if c in _hmap]
+                    full_spec_csv = rows_to_csv(minimal_h, r)
+        except Exception:
+            pass
+
+    # Extract current requirement text
+    import io
+    import csv as _csv
+    spec_id = item.get("spec_id", "")
+    current_requirement = ""
+    if full_spec_csv:
+        try:
+            reader = _csv.DictReader(io.StringIO(full_spec_csv))
+            for row in reader:
+                if str(row.get("spec_id", "")).strip() == spec_id.strip():
+                    current_requirement = str(row.get("requirement", "")).strip()
+                    break
+        except Exception:
+            pass
+
+    # Extract per-concern data
+    concerns = item.get("concerns") or []
+    amb_concern = next((c for c in concerns if c.get("agent_type") == "ambiguity"), {})
+    test_concern = next((c for c in concerns if c.get("agent_type") == "testability"), {})
+
+    from core.pika_config import get_prompt_name as _get_pn
+    prompt_name = _get_pn("refine", "spec_change_merger")
+
+    template_vars: dict[str, Any] = {
+        "output_schema_file": str(schema_path),
+        "project_context": context_text,
+        "spec_id": spec_id,
+        "current_requirement": current_requirement,
+        "ambiguity_title": amb_concern.get("title", ""),
+        "ambiguity_vague_phrases": ", ".join(amb_concern.get("vague_phrases") or []),
+        "ambiguity_suggestion": amb_concern.get("suggested_improvement", ""),
+        "testability_title": test_concern.get("title", ""),
+        "testability_untestable_reason": test_concern.get("untestable_reason", ""),
+        "testability_suggestion": test_concern.get("suggested_improvement", ""),
+        "full_spec_csv": full_spec_csv,
+    }
+
+    try:
+        return invoke_agent_with_schema_retry(
+            prompt_name=prompt_name,
+            template_vars=template_vars,
+            schema_path=schema_path if schema_path.exists() else None,
+            config=config,
+            ctx=ctx,
+        )
+    except Exception as exc:
+        sys.stderr.write(f"[PIKA] spec_change_merger failed: {exc}\n")
+        return None
+
+
 def _apply_field_edit(
     rows: list[dict[str, Any]],
     headers: list[str],
@@ -488,10 +591,10 @@ def _apply_compound_resolution(
     """Apply resolution for a compound (multi-concern) item.
 
     Compound items have item-level chosen_option_id:
-      - accept_ambiguity: apply ambiguity concern's suggestion only
-      - accept_testability: apply testability concern's suggestion only
-      - accept_both: apply both concerns' suggestions
-      - let_agent_edit: apply single editor_output covering both fields
+      - accept_ambiguity: apply ambiguity concern's suggestion to requirement
+      - accept_testability: apply testability concern's suggestion to requirement
+      - accept_both_improvements: apply merged editor_output (requirement only, from merger agent)
+      - let_agent_edit: apply single editor_output covering both concerns
       - skip: no changes
 
     Returns (updated_changes_count, updated_rows).
@@ -511,10 +614,7 @@ def _apply_compound_resolution(
     for concern in concerns:
         by_type[concern.get("agent_type", "")] = concern
 
-    apply_ambiguity = chosen_id in ("accept_ambiguity", "accept_both")
-    apply_testability = chosen_id in ("accept_testability", "accept_both")
-
-    if apply_ambiguity and "ambiguity" in by_type:
+    if chosen_id == "accept_ambiguity" and "ambiguity" in by_type:
         c = by_type["ambiguity"]
         new_text = c.get("suggested_improvement", "")
         if _apply_field_edit(rows, headers, spec_id, c.get("field", "requirement"), new_text):
@@ -526,19 +626,35 @@ def _apply_compound_resolution(
                 "action": "accept_suggestion",
             })
 
-    if apply_testability and "testability" in by_type:
+    elif chosen_id == "accept_testability" and "testability" in by_type:
         c = by_type["testability"]
         new_text = c.get("suggested_improvement", "")
-        if _apply_field_edit(rows, headers, spec_id, c.get("field", "acceptance_criteria"), new_text):
+        # Both suggestions target requirement — default to requirement
+        if _apply_field_edit(rows, headers, spec_id, c.get("field", "requirement"), new_text):
             changes += 1
             report_entries.append({
                 "spec_id": spec_id,
-                "field": c.get("field", "acceptance_criteria"),
+                "field": c.get("field", "requirement"),
                 "concern_id": c.get("item_id", ""),
                 "action": "accept_suggestion",
             })
 
-    if chosen_id == "let_agent_edit" and isinstance(editor_output, dict):
+    elif chosen_id == "accept_both_improvements" and isinstance(editor_output, dict):
+        # Merger agent output (spec_editor_output shape, field=requirement)
+        edit_type = editor_output.get("edit_type", "")
+        if edit_type == "field":
+            new_text = editor_output.get("new_text", "")
+            target_field = editor_output.get("field", "requirement")
+            if _apply_field_edit(rows, headers, spec_id, target_field, new_text):
+                changes += 1
+                report_entries.append({
+                    "spec_id": spec_id,
+                    "field": target_field,
+                    "action": "accept_both_improvements",
+                    "compound": True,
+                })
+
+    elif chosen_id == "let_agent_edit" and isinstance(editor_output, dict):
         edit_type = editor_output.get("edit_type", "")
         if edit_type == "field":
             new_text = editor_output.get("new_text", "")
@@ -562,7 +678,6 @@ def _apply_compound_resolution(
                 "compound": True,
             })
         elif edit_type == "multi_field":
-            # Spec editor returned per-field edits for compound item
             field_edits = editor_output.get("field_edits") or []
             for fe in field_edits:
                 target_field = fe.get("field", "")
@@ -846,6 +961,18 @@ def _apply_only(
     Used by the desktop GUI which writes resolutions.yaml directly instead of
     using the interactive TUI loop.
     """
+    # Guard: accept_both_improvements requires editor_output to have been set by the merger agent.
+    # If the desktop sends this option without calling the merger first, skip the item with a warning.
+    for _item in items:
+        if not isinstance(_item, dict):
+            continue
+        if _item.get("chosen_option_id") == "accept_both_improvements" and not _item.get("editor_output"):
+            sys.stderr.write(
+                f"[PIKA] Warning: item {_item.get('item_id', '?')} has chosen_option_id='accept_both_improvements' "
+                "but no editor_output — resetting to skip.\n"
+            )
+            _item["chosen_option_id"] = "skip"
+
     valid, errors = validate_resolutions(data)
     if not valid:
         return {
@@ -1191,6 +1318,25 @@ def run_resolve(config: dict[str, Any], ctx: Any) -> dict[str, Any]:
                 data = load_resolution_file(run_dir)
                 if data:
                     items = data.get("items") or []
+            continue
+        if chosen_id == "accept_both_improvements":
+            if not item.get("is_compound"):
+                console.print("  [red]accept_both_improvements is only valid for compound items.[/red]")
+                continue
+            console.print("  [dim]Invoking merger agent to combine both improvements…[/dim]")
+            editor_out = _invoke_spec_change_merger(item, config, ctx, run_dir)
+            if editor_out is None:
+                console.print("  [red]Merger agent failed. Use accept_ambiguity, accept_testability, or let_agent_edit instead.[/red]")
+                continue
+            if not _show_editor_preview(editor_out, item, spec_lookup, console):
+                console.print("  [dim]Edit rejected — returning to item.[/dim]")
+                continue
+            _store_editor_output_with_option(resolutions_path, current, editor_out, "accept_both_improvements")
+            resolved.append(current)
+            current += 1
+            data = load_resolution_file(run_dir)
+            if data:
+                items = data.get("items") or []
             continue
         if chosen_id == "let_agent_edit":
             console.print("  [cyan]Provide instructions for the agent (or Enter to skip):[/cyan]")

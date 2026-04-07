@@ -21,8 +21,8 @@
         },
         "field": {
           "type": "string",
-          "enum": ["requirement", "acceptance_criteria"],
-          "description": "Which field to rewrite."
+          "const": "requirement",
+          "description": "Which field to rewrite. Always 'requirement' — all design-reviewer pipeline suggestions target the requirement column only."
         },
         "new_text": {
           "type": "string",

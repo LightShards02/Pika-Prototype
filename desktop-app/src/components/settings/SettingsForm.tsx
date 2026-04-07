@@ -447,6 +447,21 @@ export const SettingsForm = ({ data, onChange }: SettingsFormProps) => {
         </SettingsField>
       </SettingsSection>
 
+      {/* ── Default outputs (pika.yaml-aligned keys) ───────── */}
+      <SettingsSection title="Default outputs" defaultExpanded>
+        <SettingsField
+          label="Log directory"
+          description="Run log directory (same key as pika.yaml default_outputs.log_dir)"
+        >
+          <input
+            className={inputClass}
+            value={str('default_outputs.log_dir')}
+            onChange={(e) => onChange('default_outputs.log_dir', e.target.value)}
+            placeholder="out/logs"
+          />
+        </SettingsField>
+      </SettingsSection>
+
       {/* ── Agent ───────────────────────────────────────────── */}
       <SettingsSection title="Agent" defaultExpanded>
         <SettingsField label="Provider" description="Agent execution provider">
@@ -482,7 +497,21 @@ export const SettingsForm = ({ data, onChange }: SettingsFormProps) => {
 
         {str('agent.provider') === 'local' && (
           <>
-            <SettingsField label="Local Command" description="Executable name or path (default: codex)">
+            <SettingsField
+              label="Provider sub"
+              description="Loca backend (same key as pika.yaml local.provider_sub)"
+            >
+              <select
+                className={selectClass}
+                value={str('agent.provider_sub') || 'openai-codex'}
+                onChange={(e) => onChange('agent.provider_sub', e.target.value)}
+              >
+                <option value="openai-codex">openai-codex</option>
+                <option value="openai">openai</option>
+                <option value="anthropic">anthropic</option>
+              </select>
+            </SettingsField>
+            <SettingsField label="Local Command" description="Deprecated; unused by Loca (schema compatibility)">
               <input
                 className={inputClass}
                 value={str('agent.local_command')}
@@ -490,13 +519,16 @@ export const SettingsForm = ({ data, onChange }: SettingsFormProps) => {
                 placeholder="codex"
               />
             </SettingsField>
-            <SettingsField label="Local Exec Timeout" description="Timeout in seconds for local subprocess">
+            <SettingsField
+              label="Exec timeout (seconds)"
+              description="Loca call timeout (same key as pika.yaml local.exec_timeout_sec)"
+            >
               <input
                 type="number"
                 min={1}
                 className={inputClass}
-                value={num('agent.local_exec_timeout_sec')}
-                onChange={(e) => onChange('agent.local_exec_timeout_sec', parseInt(e.target.value) || 60)}
+                value={num('agent.exec_timeout_sec')}
+                onChange={(e) => onChange('agent.exec_timeout_sec', parseInt(e.target.value) || 60)}
               />
             </SettingsField>
           </>
@@ -549,17 +581,6 @@ export const SettingsForm = ({ data, onChange }: SettingsFormProps) => {
         })}
       </SettingsSection>
 
-      {/* ── ID Generation ──────────────────────────────────── */}
-      <SettingsSection title="ID Generation">
-        <SettingsField label="Registry Path" description="Path for id_registry.json output">
-          <input
-            className={inputClass}
-            value={str('id_generation.registry_path')}
-            onChange={(e) => onChange('id_generation.registry_path', e.target.value)}
-          />
-        </SettingsField>
-      </SettingsSection>
-
       {/* ── Logging ─────────────────────────────────────────── */}
       <SettingsSection title="Logging">
         <SettingsField label="Level" description="Log level for console output">
@@ -599,13 +620,6 @@ export const SettingsForm = ({ data, onChange }: SettingsFormProps) => {
             <span className="text-[13px] text-text-secondary">Enabled</span>
           </label>
         </SettingsField>
-        <SettingsField label="Log Directory" description="Directory for log files">
-          <input
-            className={inputClass}
-            value={str('logging.log_dir')}
-            onChange={(e) => onChange('logging.log_dir', e.target.value)}
-          />
-        </SettingsField>
       </SettingsSection>
 
       {/* Prompts & Schemas */}
@@ -627,10 +641,20 @@ export const SettingsForm = ({ data, onChange }: SettingsFormProps) => {
         </SettingsField>
       </SettingsSection>
 
-      {/* ID Generation (read-only) */}
+      {/* ID Generation */}
       <SettingsSection title="ID Generation">
+        <SettingsField
+          label="ID registry file"
+          description="Primary id_registry.json path for format (same key as pika.yaml default_outputs.id_registry)"
+        >
+          <input
+            className={inputClass}
+            value={str('id_generation.id_registry')}
+            onChange={(e) => onChange('id_generation.id_registry', e.target.value)}
+          />
+        </SettingsField>
         <p className="text-[12px] text-text-tertiary mb-3">
-          ID patterns are locked. Use Raw YAML mode to view the full configuration.
+          ID patterns (spec/issue/collision) come from PIKA defaults. Use Raw YAML for merged view.
         </p>
         <SettingsField label="Spec Pattern">
           <input className={inputClass + ' bg-bg-elevated text-text-tertiary'} value={str('id_generation.spec.pattern')} readOnly />

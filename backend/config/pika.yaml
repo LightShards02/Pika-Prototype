@@ -75,8 +75,9 @@ commands:
   refine:
     prompt_names:
       ambiguity_detector: spec_ambiguity_detector
-      testability_auditor: spec_testability_auditor
+      testability_enricher: spec_testability_enricher
       spec_editor: spec_editor
+      spec_change_merger: spec_change_merger
 
 # Schema key -> filename mapping under schemas_dir
 schema_map:
@@ -87,6 +88,8 @@ schema_map:
   resolve_plan_output: issue_resolve_output.schema.json
   handshake_output: handshake_output.schema.json
   enrich_output: design_doc_enrich_output.schema.json
+  spec_testability_enricher_output: spec_testability_enricher_output.schema.json
+  spec_testability_triage_output: spec_testability_triage_output.schema.json
 
 # Config file candidates when --config not provided (relative to workspace root)
 config_candidates:
@@ -97,13 +100,12 @@ config_candidates:
 # Agent provider categories: local (Loca in-process), stub (mock).
 # Workspace config agent.provider selects one: local | stub.
 
-# --- local: Local CLI subprocess (e.g. Codex exec) ---
-# Required: command (executable name or path), model.
-# Optional: ps1_path_windows (Windows .ps1 path), heartbeat_interval_sec, exec_timeout_sec.
+# --- local: Loca in-process (model, timeouts, temp workspaces) ---
+# Optional: ps1_path_windows (deprecated Codex CLI helpers on Windows only).
 local:
-  command: codex
-  # Loca sub-provider: openai (API key) or openai-codex (ChatGPT OAuth subscription).
-  # Override in project config agent.local_provider.
+  # Loca sub-provider: openai | anthropic | openai-codex (see agent.provider_sub in workspace schema).
+  # For openai: OPENAI_API_KEY and/or MOONSHOT_API_KEY. For anthropic: ANTHROPIC_API_KEY.
+  # Optional local.model.*.base_url: OpenAI-compat root (openai) or Messages API base (anthropic).
   provider_sub: openai-codex
   # Per-agent local model settings. Keys use stable agent prompt names; local
   # prompt variants such as map_spec_to_code_local resolve through the base key.
@@ -111,26 +113,27 @@ local:
   model:
     default:
       name: gpt-5.3-codex
-      # Use null (or none/off) to omit reasoning_effort so temperature/top_p are honored by Loca.
+      # Use null to omit reasoning_effort so temperature/top_p are honored by Loca.
       reasoning_effort: medium
-      temperature: null
-      top_p: null
+      # temperature: 0.7
+      # top_p: 0.2
       web_search: false
       model_verbosity: null
-    map_spec_to_code:
-      name: gpt-5.3-codex
-    implement_unified_planner:
-      name: gpt-5.3-codex
-    implement_from_specs:
-      name: gpt-5.3-codex-spark
-    spec_editor:
-      name: gpt-5.4-mini
-      # null (or YAML none / string none) omits reasoning_effort so temperature/top_p apply.
-      reasoning_effort: null
-      top_p: 0.1
-      temperature: 0.8
+      # base_url: "https://api.kimi.com/coding/"  # openai: OpenAI-compat root; anthropic: Messages API base
+    # map_spec_to_code:
+    #   name: gpt-5.3-codex
+    # implement_unified_planner:
+    #   name: gpt-5.3-codex
+    # implement_from_specs:
+    #   name: gpt-5.3-codex
+    # spec_editor:
+    #   name: gpt-5.4-mini
+    #   # null (or YAML none / string none) omits reasoning_effort so temperature/top_p apply.
+    #   reasoning_effort: null
+    #   top_p: 0.1
+    #   temperature: 0.8
 
-  # Windows: path to codex.ps1 when installed via npm (used when command is "codex")
+  # Windows: path to codex.ps1 for deprecated Codex CLI subprocess helpers only.
   ps1_path_windows: C:\Users\night\AppData\Roaming\npm\codex.ps1
   heartbeat_interval_sec: 30
   exec_timeout_sec: 600
@@ -162,8 +165,9 @@ default_workspace:
   inputs:
     allowed_extensions: [.csv, .xlsx]
     project_context_filename: PROJECT_CONTEXT.md
+  # Mirrors workspace keys when present (see default_outputs / id_generation in config.schema.json).
   id_generation:
-    registry_path: out/state/id_registry.json
+    id_registry: out/state/id_registry.json
   design_spec_path: out/state/DESIGN-SPEC.csv
 
 # ID generation patterns (project-independent).

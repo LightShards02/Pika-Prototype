@@ -85,6 +85,12 @@ def _validate_local_model_profile(
     if "web_search" in profile:
         _require(isinstance(profile.get("web_search"), bool), f"{path}.web_search", missing)
 
+    # base_url is optional; when present, it must be a non-empty string
+    if "base_url" in profile:
+        base_url = profile.get("base_url")
+        if base_url is not None:
+            _require_non_empty_string(base_url, f"{path}.base_url", missing)
+
     for field_name, minimum, maximum in (("temperature", 0, 2), ("top_p", 0, 1)):
         value = profile.get(field_name)
         if value is None and field_name in profile:
@@ -138,7 +144,6 @@ def _validate_required_config(cfg: dict[str, Any]) -> None:
 
     if isinstance(cfg.get("local"), dict):
         local = cfg["local"]
-        _require_non_empty_string(local.get("command"), "local.command", missing)
         _require(isinstance(local.get("heartbeat_interval_sec"), (int, float)), "local.heartbeat_interval_sec", missing)
         _require(isinstance(local.get("exec_timeout_sec"), (int, float)), "local.exec_timeout_sec", missing)
         _require_non_empty_string(local.get("temp_workspace_prefix"), "local.temp_workspace_prefix", missing)
@@ -254,7 +259,7 @@ def _validate_required_config(cfg: dict[str, Any]) -> None:
         refine_pn = refine_cmd.get("prompt_names")
         _require(isinstance(refine_pn, dict), "commands.refine.prompt_names", missing)
         if isinstance(refine_pn, dict):
-            for sub in ("ambiguity_detector", "testability_auditor", "spec_editor"):
+            for sub in ("ambiguity_detector", "testability_enricher", "spec_editor"):
                 _require_non_empty_string(refine_pn.get(sub), f"commands.refine.prompt_names.{sub}", missing)
 
     _require(isinstance(cfg.get("id_generation"), dict), "id_generation", missing)

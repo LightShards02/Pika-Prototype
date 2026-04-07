@@ -528,7 +528,7 @@ def _run_implement_inner(config: dict[str, Any], ctx: RuntimeContext) -> dict[st
     # --- Load appendices ---
     appendix_entries = load_appendix_files(config, root, command="implement")
     registry_path = Path(
-        config.get("id_generation", {}).get("registry_path", "out/state/id_registry.json")
+        config.get("id_generation", {}).get("id_registry", "out/state/id_registry.json")
     )
     if appendix_entries:
         appendix_entries = assign_appendix_ids(appendix_entries, registry_path, root)

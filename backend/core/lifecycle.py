@@ -43,6 +43,8 @@ from core.vocab_loader import resolve_control_vocab_content
 
 RUN_LOGGER_NAME = "agent_cli.run"
 _LOCAL_AGENT_TEMP_PREFIX = "pika-local-agent-"
+# Max JSON characters written to stderr / logs when schema validation fails.
+_SCHEMA_VALIDATION_DEBUG_MAX_CHARS = 14_000
 
 
 def _emit_agent_conclusion(
@@ -883,6 +885,22 @@ def _flatten_oneof_for_api(schema: dict[str, Any]) -> dict[str, Any]:
     return flat
 
 
+def _json_preview_for_schema_debug(
+    obj: Any, *, max_chars: int = _SCHEMA_VALIDATION_DEBUG_MAX_CHARS
+) -> str:
+    """Serialize *obj* for human-readable schema-failure diagnostics."""
+    try:
+        text = json.dumps(obj, ensure_ascii=False, indent=2, default=str)
+    except (TypeError, ValueError):
+        text = repr(obj)
+    if len(text) > max_chars:
+        return (
+            text[:max_chars]
+            + f"\n... [truncated, {len(text) - max_chars} more chars]"
+        )
+    return text
+
+
 def validate_output_against_schema(
     output: dict[str, Any],
     schema_path: Path,
@@ -907,6 +925,28 @@ def validate_output_against_schema(
     validator = Draft202012Validator(schema)
     errors = list(validator.iter_errors(output))
     if errors:
+        preview = _json_preview_for_schema_debug(output)
+        err_bits = [f"{e.message} at {list(e.path)}" for e in errors[:5]]
+        err_summary = "; ".join(err_bits)
+        if len(errors) > 5:
+            err_summary += f" ... (+{len(errors) - 5} more issue(s))"
+        try:
+            sys.stderr.write(
+                "[PIKA] Output schema validation failed.\n"
+                "[PIKA] Parsed output after filter/backfill (for debugging):\n"
+                + preview
+                + "\n[PIKA] Validation issues: "
+                + err_summary
+                + "\n"
+            )
+            sys.stderr.flush()
+        except OSError:
+            pass
+        get_run_logger().warning(
+            "Output schema validation failed. Issues: %s | output preview (truncated): %s",
+            err_summary[:800],
+            preview[:4000],
+        )
         first = errors[0]
         raise AgentSchemaError(
             f"Output schema validation failed: {first.message} at {list(first.path)}"
@@ -955,13 +995,13 @@ def get_local_exec_timeout_sec(config: dict[str, Any]) -> int:
     """Return Loca agent call timeout in seconds (local provider).
 
     Resolution order:
-    1) workspace config `agent.local_exec_timeout_sec` (positive number),
-    2) pika default `local.exec_timeout_sec`,
-    3) hard default `600`.
+    1) workspace config ``agent.exec_timeout_sec`` (positive number),
+    2) pika default ``local.exec_timeout_sec``,
+    3) hard default ``600``.
     """
     agent = config.get("agent")
     if isinstance(agent, dict):
-        override = agent.get("local_exec_timeout_sec")
+        override = agent.get("exec_timeout_sec")
         if isinstance(override, (int, float)) and override > 0:
             return int(override)
 
@@ -977,8 +1017,8 @@ _LOCAL_AGENT_RUNTIME_KEYS = {
     "schema_validation_retries",
     "stream_output",
     "local_command",
-    "local_exec_timeout_sec",
-    "local_provider",
+    "exec_timeout_sec",
+    "provider_sub",
     "local_temp_workspace_dir",
     "local_temp_workspace_ttl_sec",
 }
@@ -1050,6 +1090,13 @@ def _read_local_agent_profile(node: Any) -> dict[str, Any]:
             profile["top_p"] = None
         elif _is_number(top_p) and 0 <= float(top_p) <= 1:
             profile["top_p"] = float(top_p)
+
+    if "base_url" in node:
+        base_url = node.get("base_url")
+        if base_url is None:
+            profile["base_url"] = None
+        elif isinstance(base_url, str) and base_url.strip():
+            profile["base_url"] = base_url.strip()
 
     return profile
 
@@ -1473,11 +1520,12 @@ def invoke_agent_local(
 
     try:
         if not check_loca_available(provider_sub):
-            auth_hint = (
-                "Run `loca --login` to authenticate."
-                if provider_sub == "openai-codex"
-                else "Set the OPENAI_API_KEY environment variable."
-            )
+            if provider_sub == "openai-codex":
+                auth_hint = "Run `loca --login` to authenticate."
+            elif provider_sub == "anthropic":
+                auth_hint = "Set the ANTHROPIC_API_KEY environment variable."
+            else:
+                auth_hint = "Set the OPENAI_API_KEY environment variable."
             raise AgentInvocationError(
                 f"Local provider ({provider_sub}) authentication is unavailable. {auth_hint}"
             )
@@ -1805,9 +1853,34 @@ def invoke_agent_stub(
     storage_file = template_vars.get("run_summary_file") or "-"
     if not isinstance(storage_file, str) or not storage_file.strip():
         storage_file = "-"
+    # spec_testability_enricher (full mode) — return enrichments + empty MR items
+    if prompt_name in ("spec_testability_enricher",) and template_vars.get("enrich_mode") == "full":
+        return {
+            "enrichments": [],
+            "manual_resolution_items": [],
+        }
+    # spec_testability_enricher (triage mode) or spec_testability_triage_output — MR items only
+    if prompt_name in ("spec_testability_enricher",) and template_vars.get("enrich_mode") == "triage":
+        return {
+            "manual_resolution_items": [],
+        }
+    # spec_change_merger — return a field-level requirement edit (stub text)
+    if prompt_name in ("spec_change_merger",):
+        spec_id_val = template_vars.get("spec_id", "UNKNOWN")
+        return {
+            "edit_type": "field",
+            "spec_id": spec_id_val,
+            "field": "requirement",
+            "new_text": f"Stub merged requirement for {spec_id_val}.",
+            "rationale": "Stub: merged ambiguity and testability suggestions.",
+        }
+    # design_doc_enricher — modules only (no specs array)
+    if prompt_name in ("design_doc_enricher",):
+        return {
+            "modules": [],
+        }
     base = {
         "manual_resolution_items": [],
-        "evidence_assessments": [],
         "run_summary": {
             "command": cmd_label,
             "status": "success",

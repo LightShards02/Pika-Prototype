@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from core.context import RuntimeContext
+from core.errors import AgentSchemaError
 from core.lifecycle import (
     _create_local_agent_temp_workspace,
     _emit_agent_conclusion,
@@ -334,8 +335,8 @@ class GetLocalExecTimeoutTests(unittest.TestCase):
     """Tests for get_local_exec_timeout_sec."""
 
     def test_uses_workspace_override(self) -> None:
-        """Workspace agent.local_exec_timeout_sec overrides pika defaults."""
-        config = {"agent": {"local_exec_timeout_sec": 1234}}
+        """Workspace agent.exec_timeout_sec overrides pika defaults."""
+        config = {"agent": {"exec_timeout_sec": 1234}}
         self.assertEqual(get_local_exec_timeout_sec(config), 1234)
 
     def test_falls_back_to_pika_default(self) -> None:
@@ -353,7 +354,7 @@ class GetLocalExecTimeoutTests(unittest.TestCase):
             return_value={"local": {"exec_timeout_sec": "bad"}},
         ):
             self.assertEqual(
-                get_local_exec_timeout_sec({"agent": {"local_exec_timeout_sec": -1}}),
+                get_local_exec_timeout_sec({"agent": {"exec_timeout_sec": -1}}),
                 600,
             )
 
@@ -960,7 +961,7 @@ class InvokeAgentLocalIsolationTests(unittest.TestCase):
     """Tests for local-agent isolated temp workspace execution."""
 
     def test_invoke_agent_local_passes_workspace_timeout_override(self) -> None:
-        """invoke_agent_local forwards agent.local_exec_timeout_sec to Loca config."""
+        """invoke_agent_local forwards agent.exec_timeout_sec to Loca config."""
         tmp = _test_tmpdir()
         try:
             root = tmp
@@ -990,7 +991,7 @@ class InvokeAgentLocalIsolationTests(unittest.TestCase):
                 "agent": {
                     "provider": "local",
                     "stream_output": False,
-                    "local_exec_timeout_sec": 1200,
+                    "exec_timeout_sec": 1200,
                 }
             }
             ctx = RuntimeContext(
@@ -1455,6 +1456,34 @@ class FilterAndBackfillTests(unittest.TestCase):
         self.assertIn("created_at", result)
         self.assertEqual(len(result["mappings"]), 1)
         self.assertEqual(result["mappings"][0]["spec_id"], "A1")
+
+    def test_validate_failure_writes_debug_to_stderr(self) -> None:
+        """Failed validation prints parsed output and issues to stderr for debugging."""
+        import json as json_lib
+
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"ok": {"type": "boolean"}},
+            "required": ["ok"],
+        }
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".schema.json", delete=False, encoding="utf-8"
+        ) as f:
+            json_lib.dump(schema, f)
+            path = Path(f.name)
+        try:
+            buf = io.StringIO()
+            with patch.object(sys, "stderr", buf):
+                with self.assertRaises(AgentSchemaError):
+                    validate_output_against_schema({"ok": "not-a-bool"}, path)
+            err = buf.getvalue()
+            self.assertIn("Output schema validation failed", err)
+            self.assertIn("Parsed output after filter/backfill", err)
+            self.assertIn("not-a-bool", err)
+            self.assertIn("Validation issues:", err)
+        finally:
+            path.unlink(missing_ok=True)
 
 
 class TestFlattenOneOfForApi(unittest.TestCase):

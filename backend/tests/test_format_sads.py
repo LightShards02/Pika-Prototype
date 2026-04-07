@@ -474,7 +474,7 @@ class NormalizeRawSadsTests(unittest.TestCase):
         )
         try:
             config = {
-                "id_generation": {"registry_path": "out/state/id_registry.json"},
+                "id_generation": {"id_registry": "out/state/id_registry.json"},
             }
             content, log = normalize_raw_sads(csv_path, config, root, dry_run=True)
             self.assertIn("spec_id", content)
@@ -506,7 +506,7 @@ class NormalizeRawSadsTests(unittest.TestCase):
                         },
                     }
                 },
-                "id_generation": {"registry_path": "out/state/id_registry.json"},
+                "id_generation": {"id_registry": "out/state/id_registry.json"},
             }
             content, log = normalize_raw_sads(csv_path, config, root, dry_run=True)
             self.assertIn("[REDACTED]", content)
@@ -536,7 +536,7 @@ class NormalizeRawSadsTests(unittest.TestCase):
                         },
                     }
                 },
-                "id_generation": {"registry_path": "out/state/id_registry.json"},
+                "id_generation": {"id_registry": "out/state/id_registry.json"},
             }
             content, log = normalize_raw_sads(csv_path, config, root, dry_run=True)
             self.assertIn("[SOFTWARE]", content)
@@ -682,7 +682,7 @@ class NormalizeSadsFormatTests(unittest.TestCase):
         try:
             config = {
                 "commands": {"format": {}},
-                "id_generation": {"registry_path": str(root / "id_registry.json")},
+                "id_generation": {"id_registry": str(root / "id_registry.json")},
             }
             content, log = normalize_raw_sads(csv_path, config, root, dry_run=False)
             self.assertTrue(log["sads_format"])

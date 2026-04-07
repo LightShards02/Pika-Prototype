@@ -67,12 +67,12 @@ class RunLoggerTests(unittest.TestCase):
             resume_run_id=resume_run_id,
         )
 
-    def test_init_run_logger_uses_logging_log_dir(self) -> None:
-        """Test that init run logger uses logging log dir."""
+    def test_init_run_logger_uses_default_outputs_log_dir(self) -> None:
+        """Test that init run logger uses default_outputs.log_dir (pika.yaml-aligned key)."""
         root = Path(tempfile.mkdtemp(prefix="run-logger-"))
         configured_log_dir = root / "custom-logs"
         ctx = self._make_ctx(root=root)
-        config = {"logging": {"log_dir": str(configured_log_dir)}}
+        config = {"default_outputs": {"log_dir": str(configured_log_dir)}}
 
         created_path = init_run_logger(project_root=root, config=config, ctx=ctx)
         logger = logging.getLogger(RUN_LOGGER_NAME)
@@ -101,7 +101,7 @@ class RunLoggerTests(unittest.TestCase):
         bad_path = root / "bad-target"
         bad_path.write_text("not a directory\n", encoding="utf-8")
         ctx = self._make_ctx(root=root, run_id="run456")
-        config = {"logging": {"log_dir": str(bad_path / "nested")}}
+        config = {"default_outputs": {"log_dir": str(bad_path / "nested")}}
 
         with self.assertRaises(RuntimeError) as exc_ctx:
             init_run_logger(project_root=root, config=config, ctx=ctx)
@@ -123,8 +123,8 @@ class RunLoggerTests(unittest.TestCase):
             "logging": {
                 "level": "ERROR",
                 "verbose_level": "DEBUG",
-                "log_dir": str(root / "logs"),
-            }
+            },
+            "default_outputs": {"log_dir": str(root / "logs")},
         }
 
         _ = init_run_logger(project_root=root, config=config, ctx=ctx)
@@ -153,7 +153,7 @@ class RunLoggerTests(unittest.TestCase):
         )
 
         ctx = self._make_ctx(root=root, run_id="run123", resume_run_id="run123")
-        config = {"logging": {"log_dir": str(logs_dir)}}
+        config = {"default_outputs": {"log_dir": str(logs_dir)}}
 
         created_path = init_run_logger(project_root=root, config=config, ctx=ctx)
         logger = logging.getLogger(RUN_LOGGER_NAME)
@@ -176,7 +176,7 @@ class RunLoggerTests(unittest.TestCase):
         existing.write_text("existing\n", encoding="utf-8")
 
         ctx = self._make_ctx(root=root, run_id="run123")
-        config = {"logging": {"log_dir": str(logs_dir)}}
+        config = {"default_outputs": {"log_dir": str(logs_dir)}}
 
         with self.assertRaises(RuntimeError) as exc_ctx:
             init_run_logger(project_root=root, config=config, ctx=ctx)

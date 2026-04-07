@@ -66,7 +66,7 @@ class CommandRouterTests(unittest.TestCase):
                         },
                     },
                 },
-                "id_generation": {"registry_path": "out/state/id_registry.json"},
+                "id_generation": {"id_registry": "out/state/id_registry.json"},
             }
             result = dispatch("format", config, self._make_ctx("format", project_root=str(root)))
             self.assertEqual(result["command"], "format")
@@ -110,7 +110,7 @@ class CommandRouterTests(unittest.TestCase):
                         },
                     },
                 },
-                "id_generation": {"registry_path": str(root / "state" / "id_registry.json")},
+                "id_generation": {"id_registry": str(root / "state" / "id_registry.json")},
             }
             ctx = self._make_ctx("format", project_root=str(root), dry_run=False)
             ctx = RuntimeContext(

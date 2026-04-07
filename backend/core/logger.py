@@ -136,10 +136,14 @@ class _StructuredTextFormatter(logging.Formatter):
 
 
 def _resolve_log_dir(project_root: Path, config: dict[str, Any]) -> Path:
-    """Resolve log dir."""
-    logging_section = config.get("logging")
-    if isinstance(logging_section, dict):
-        log_dir = logging_section.get("log_dir")
+    """Resolve log dir.
+
+    Uses workspace ``default_outputs.log_dir`` when set (same key as
+    ``pika.yaml`` ``default_outputs.log_dir``), else PIKA default.
+    """
+    do = config.get("default_outputs")
+    if isinstance(do, dict):
+        log_dir = do.get("log_dir")
         if isinstance(log_dir, str) and log_dir.strip():
             candidate = Path(log_dir)
             return candidate.resolve() if candidate.is_absolute() else (project_root / candidate).resolve()

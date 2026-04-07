@@ -1,10 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "DesignDocEnrichOutput",
-  "description": "Output of the design_doc_enricher agent. Provides module_role (one entry per unique module_tag), evidence_type and acceptance_criteria (one entry per spec_id).",
+  "description": "Output of the design_doc_enricher agent. Provides module_role (one entry per unique module_tag) only. evidence_type and acceptance_criteria are handled by the spec_testability_enricher agent in the refine stage.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["modules", "specs"],
+  "required": ["modules"],
   "properties": {
     "modules": {
       "type": "array",
@@ -23,46 +23,6 @@
             "type": "string",
             "minLength": 1,
             "description": "Single allowed implement module_role token (e.g. api, domain, frontend) matching commands.implement.allowed_module_roles. Not a prose sentence. Shared by all specs with the same module_tag."
-          }
-        }
-      }
-    },
-    "specs": {
-      "type": "array",
-      "description": "One entry per spec row. Provides concrete acceptance criteria derived from the requirement text.",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["spec_id", "evidence_type", "acceptance_criteria"],
-        "properties": {
-          "spec_id": {
-            "type": "string",
-            "minLength": 1,
-            "description": "spec_id of the row to enrich (matches spec_id column)."
-          },
-          "evidence_type": {
-            "type": "string",
-            "enum": [
-              "test_execution_record",
-              "audit_trail",
-              "system_log",
-              "defect_report",
-              "build_version_record",
-              "ui_screenshot",
-              "screen_recording",
-              "serial_debug_log",
-              "network_packet_capture",
-              "database_export",
-              "api_response_log",
-              "performance_profiler_output",
-              "NA"
-            ],
-            "description": "Most appropriate evidence type for verifying this requirement, or NA when no evidence type applies."
-          },
-          "acceptance_criteria": {
-            "type": "string",
-            "minLength": 1,
-            "description": "Concrete, testable acceptance criteria derived from the requirement. Set to NA when evidence_type is NA."
           }
         }
       }

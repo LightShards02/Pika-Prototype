@@ -801,7 +801,7 @@ prompts:
         description: Content of project context file (e.g. PROJECT_CONTEXT.md).
       - name: design_spec_csv
         required: true
-        description: Full SADS design spec as CSV text (all columns).
+        description: Minimal SADS design spec CSV with columns spec_id, module_tag, subunit, requirement only.
       - name: manual_resolution_file
         required: true
         description: Storage path for manual resolution artifacts.
@@ -818,7 +818,7 @@ prompts:
       You are a strict spec ambiguity detector.
       Your output JSON must validate against {{output_schema_file}} without exception.
       Return JSON only. Do not include markdown fences.
-      Scan every row's requirement field for vague or unmeasurable language. Do NOT scan acceptance_criteria; testability of that field is handled by the testability auditor.
+      Scan every row's requirement field for vague or unmeasurable language. The design spec CSV omits acceptance_criteria; testability enrichment is handled separately by the testability enricher.
       Cross-spec references: If a requirement references another spec by explicit ID (e.g. "as defined in A1001", "see A2003") or by relative position (e.g. "as specified above", "the row below"), resolve the reference against the CSV. For explicit IDs, look up the spec_id directly. For relative references like "above" or "below", use the adjacent rows in CSV order. If the resolved row exists and its requirement is concrete and measurable, do NOT flag the reference as vague. Only flag a cross-spec reference when the target row cannot be resolved or its requirement is itself vague.
       For each issue found, emit one manual_resolution_item with:
         - item_id: unique identifier (e.g. AMB-001)
@@ -860,7 +860,7 @@ prompts:
       Appendix Documents:
       {{appendix_content}}
 
-      Design Spec (CSV):
+      Design Spec (CSV — minimal columns: spec_id, module_tag, subunit, requirement):
       {{design_spec_csv}}
 
       Manual Resolution File:
@@ -1015,7 +1015,7 @@ prompts:
         description: spec_id of the primary spec row being edited.
       - name: field
         required: false
-        description: Field name to rewrite (field mode only — "requirement" or "acceptance_criteria").
+        description: Field name to rewrite (field mode only — always "requirement"; the design-reviewer pipeline targets requirement only).
       - name: affected_spec_ids
         required: false
         description: Comma-separated spec_ids involved (structural mode — split/merge candidates).
@@ -1030,13 +1030,13 @@ prompts:
         description: Agent-suggested improvement from the detector (may be empty for structural mode).
       - name: full_spec_csv
         required: true
-        description: Full SADS design spec as CSV text for context.
+        description: Minimal SADS design spec CSV with columns spec_id, module_tag, subunit, requirement only. Provides row context for coherent rewrites and structural split/merge decisions.
     system: |
       You are a strict spec editor. Produce ONE edit only.
       Your output JSON must validate against {{output_schema_file}} without exception.
       Return JSON only. Do not include markdown fences.
       - If issue_kind is "field": produce a field-level edit with edit_type="field".
-        Set field to the exact column name, new_text to the complete replacement text, rationale to why it improves the spec.
+        Set field to "requirement" (always), new_text to the complete replacement text, rationale to why it improves the spec.
       - If issue_kind is "structural": produce a structural edit with edit_type="structural".
         Use add/update/delete actions on spec rows. row_data must include all required SADS columns.
         rationale must explain why the split or merge is correct.
@@ -1059,7 +1059,198 @@ prompts:
       Suggested Improvement:
       {{suggested_improvement}}
 
-      Full Design Spec (CSV):
+      Design Spec (CSV — minimal columns: spec_id, module_tag, subunit, requirement):
+      {{full_spec_csv}}
+
+  spec_testability_enricher:
+    description: For each spec row, read requirement text and decide whether it is clear enough to derive testable acceptance criteria. In full mode (instance 0), write AC + evidence_type in enrichments[] for clear requirements and emit requirement-targeted MR items for vague ones. In triage mode (replicas), emit MR items only for consensus filtering.
+    output_schema_file: schemas/agent_outputs/spec_testability_enricher_output.schema.json
+    template_variables:
+      - name: output_schema_file
+        required: true
+        description: Schema file path that this prompt output must validate against. Differs between instance 0 (full schema) and replicas (triage schema).
+      - name: enrich_mode
+        required: true
+        description: '"full" for instance 0 — produce enrichments[] + manual_resolution_items[]. "triage" for replicas — produce manual_resolution_items[] only, skip AC writing.'
+      - name: project_context
+        required: true
+        description: Content of project context file (e.g. PROJECT_CONTEXT.md).
+      - name: design_spec_csv
+        required: true
+        description: Minimal SADS design spec CSV with columns spec_id, module_tag, subunit, requirement only.
+      - name: manual_resolution_file
+        required: true
+        description: Storage path for manual resolution artifacts.
+      - name: run_summary_file
+        required: true
+        description: Storage path for run summary artifacts.
+      - name: control_vocab_section
+        required: false
+        description: Per-project controlled vocabulary. Injected by lifecycle when configured.
+      - name: appendix_content
+        required: false
+        description: Formatted appendix documents (data dictionaries, glossaries, API schemas). Use as context for testability assessment.
+    system: |
+      You are a strict spec testability enricher.
+      Your output JSON must validate against {{output_schema_file}} without exception.
+      Return JSON only. Do not include markdown fences.
+
+      Mode: {{enrich_mode}}
+      - If enrich_mode is "full": produce both enrichments[] and manual_resolution_items[].
+      - If enrich_mode is "triage": produce manual_resolution_items[] only. Do NOT produce enrichments[].
+
+      CRITICAL RULE — no dual output: A spec_id must appear in EITHER enrichments[] OR manual_resolution_items[], never both. If the requirement is clear enough for AC, add it to enrichments[]. If it is vague, add it to manual_resolution_items[]. Never add the same spec_id to both arrays.
+
+      AC honesty rule: Do not invent concrete details in acceptance_criteria that are not grounded in the requirement text or appendix (no fabricated thresholds, field lists, error codes, or behaviors). If the requirement is too vague to derive honest AC, flag it in manual_resolution_items[] instead.
+
+      Step 0 — Build an appendix type-map (do this once before reading any spec row):
+      Read every appendix document in the Appendix Documents section. For each one, identify:
+        - Its domain type: source contracts (input field formats and constraints), configuration
+          proposals (runtime parameter values), DTO schemas (structured message definitions),
+          error code registries, data flow diagrams, or other.
+        - What kind of resolution it can provide: concrete values, field formats, type definitions,
+          enum lists, error code mappings, etc.
+      Record this type-map mentally. You will use it in Step 1.
+
+      Step 1 — Decide whether to consult the appendix for each spec row:
+      Consult the appendix for a spec row when the requirement references an external contract,
+      schema, configuration parameter, DTO, or error mapping. Do NOT consult for rows with
+      no external references.
+
+      For each spec row, follow this triage in order:
+
+      Step 2 — Classify evidence_type:
+      Pick the single most specific evidence type a tester would produce when verifying this requirement.
+
+      Tier 1 (machine-generated): test_execution_record | audit_trail | system_log | defect_report | build_version_record
+      Tier 2 (human-captured): ui_screenshot | screen_recording | serial_debug_log | network_packet_capture | database_export | api_response_log | performance_profiler_output
+
+      If you cannot classify with confidence, treat the requirement as vague (go to Step 4).
+      If evidence_type is NA (requirement is inherently non-verifiable), add to enrichments[] with acceptance_criteria = "NA".
+
+      Step 3 — Is the requirement clear enough to produce honest, testable AC?
+      Ask: can you write a concrete Given/When/Then criterion from this requirement text alone
+      (plus appendix if applicable), without inventing details?
+
+      - If YES (enrich_mode = "full"): Write acceptance_criteria.
+        High-process-risk form: "Given [precondition], when [action], then [system] returns/logs/emits [specific value, status, or state]."
+        Human-captured form: "Given [precondition], when [action], the [artifact] shows [specific field/value/layout]."
+        Rules: use "shall", "returns", "emits", "logs". Never "may", "might", "should", "could", "typically", "usually".
+        Add to enrichments[] with spec_id, acceptance_criteria, evidence_type.
+
+      - If YES (enrich_mode = "triage"): Skip AC writing. Do not add to any array for this spec.
+
+      - If NO (requirement is vague): Go to Step 4.
+
+      Step 4 — Flag vague requirements:
+      The requirement is too vague to derive honest AC when it:
+        - Uses modal verbs ("should", "may", "might", "could") for observable behavior
+        - Names behavior without measurable outcomes (e.g. "handles errors appropriately")
+        - References external contracts/schemas that the appendix does not resolve
+        - Has circular or deferred oracle ("as defined in the spec")
+        - Uses ":" or "as follows:" at the end (sequence header) only if the detail rows also fail
+
+      Emit a manual_resolution_item with:
+        - field: "requirement" (always)
+        - suggested_improvement: complete replacement requirement text that would make AC derivable
+        - untestable_reason: one sentence explaining why the current requirement cannot produce honest AC
+        - suggested_test_type: unit | integration | e2e | manual
+        - options: exactly [accept_suggestion, let_agent_edit, skip]
+
+      Step 5 — Multi-row sequence awareness:
+      If a requirement ends with ":" or "as follows:" and subsequent spec_ids share the same
+      module_tag, evaluate the sequence as a unit. Do not flag a header row if the detail rows
+      supply the missing specifics. Only flag when the entire sequence leaves the oracle incomplete.
+
+      An empty manual_resolution_items array is the preferred output when all requirements are clear.
+    user: |
+      Project Context:
+      {{project_context}}
+      {{control_vocab_section}}
+
+      Appendix Documents:
+      {{appendix_content}}
+
+      Design Spec (CSV — minimal columns):
+      {{design_spec_csv}}
+
+      Manual Resolution File:
+      {{manual_resolution_file}}
+
+      Run Summary File:
+      {{run_summary_file}}
+
+  spec_change_merger:
+    description: Merge ambiguity and testability improvement suggestions for a compound spec issue into a single requirement rewrite. Produces a spec_editor_output (field edit, field=requirement).
+    output_schema_file: schemas/agent_outputs/spec_editor_output.schema.json
+    template_variables:
+      - name: output_schema_file
+        required: true
+        description: Schema file path that this prompt output must validate against.
+      - name: project_context
+        required: true
+        description: Content of project context file (e.g. PROJECT_CONTEXT.md).
+      - name: spec_id
+        required: true
+        description: spec_id of the row being merged.
+      - name: current_requirement
+        required: true
+        description: Current requirement text for this spec row.
+      - name: ambiguity_title
+        required: true
+        description: Short summary of the ambiguity concern.
+      - name: ambiguity_vague_phrases
+        required: true
+        description: Comma-separated list of vague phrases identified by the ambiguity detector.
+      - name: ambiguity_suggestion
+        required: true
+        description: Ambiguity detector's proposed requirement rewrite.
+      - name: testability_title
+        required: true
+        description: Short summary of the testability concern.
+      - name: testability_untestable_reason
+        required: true
+        description: Explanation of why the requirement cannot produce testable AC.
+      - name: testability_suggestion
+        required: true
+        description: Testability enricher's proposed requirement rewrite.
+      - name: full_spec_csv
+        required: true
+        description: Minimal SADS design spec CSV for context.
+    system: |
+      You are a strict spec change merger.
+      Your output JSON must validate against {{output_schema_file}} without exception.
+      Return JSON only. Do not include markdown fences.
+
+      You receive two independently proposed rewrites of the same requirement:
+        1. An ambiguity fix that addresses vague or unmeasurable language.
+        2. A testability fix that makes the requirement clear enough to derive testable AC.
+
+      Your task: produce ONE merged requirement rewrite that satisfies BOTH concerns.
+      The merged rewrite must be concrete, measurable, and clear enough to derive testable AC without inventing details.
+
+      Output a field-level edit with edit_type="field", field="requirement", spec_id as given,
+      new_text as the merged requirement, and rationale explaining how both concerns were addressed.
+    user: |
+      Project Context:
+      {{project_context}}
+
+      Spec ID: {{spec_id}}
+
+      Current Requirement:
+      {{current_requirement}}
+
+      Ambiguity Concern: {{ambiguity_title}}
+      Vague Phrases: {{ambiguity_vague_phrases}}
+      Ambiguity Suggestion:
+      {{ambiguity_suggestion}}
+
+      Testability Concern: {{testability_title}}
+      Untestable Reason: {{testability_untestable_reason}}
+      Testability Suggestion:
+      {{testability_suggestion}}
+
+      Design Spec (CSV — minimal columns: spec_id, module_tag, subunit, requirement):
       {{full_spec_csv}}
 
   resolve_issues_with_diffs:
@@ -1127,7 +1318,7 @@ prompts:
       {{agent_artifacts_dir}}
 
   design_doc_enricher:
-    description: Infer module_role (per unique module_tag), evidence_type and acceptance_criteria (per spec) from requirement text and module groupings. Produces a JSON object with modules[] and specs[] arrays validated against the enrich output schema.
+    description: Infer module_role (one per unique module_tag) from requirement text and module groupings. Produces a JSON object with modules[] array validated against the enrich output schema. Does NOT write acceptance_criteria or evidence_type — those are handled by the spec_testability_enricher agent in the refine stage.
     output_schema_file: schemas/agent_outputs/design_doc_enrich_output.schema.json
     template_variables:
       - name: output_schema_file
@@ -1144,7 +1335,10 @@ prompts:
         description: Contents of PROJECT_CONTEXT.md for domain grounding (optional).
     system: |
       You are a software architect assistant. You receive a CSV of design specs (spec_id,
-      module_tag, requirement). Produce a JSON object with modules[] and specs[].
+      module_tag, requirement). Produce a JSON object with modules[] only.
+
+      Do NOT write acceptance_criteria or evidence_type. These are handled by the
+      spec_testability_enricher agent in the refine stage.
 
       ## 1. module_role (one per unique module_tag)
 
@@ -1160,56 +1354,10 @@ prompts:
 
       Only use tokens from the allowed list. Any other string fails validation.
 
-      ## 2. evidence_type → acceptance_criteria (one per spec_id)
-
-      For each spec, follow this decision flow in order:
-
-      STEP A — Classify evidence_type. Read the requirement and select the single most
-      appropriate type. If the requirement describes something that cannot be verified by
-      any type below, set evidence_type to "NA".
-
-      High-process-risk types (prefer these — automated/scripted verification):
-        test_execution_record  — unit/integration/E2E test pass/fail
-        audit_trail            — system actions with user ID and timestamp
-        system_log             — application or process log entry
-        defect_report          — tracked defect with repro steps
-        build_version_record   — commit hash, CI artifact, version tag
-
-      Not-high-process-risk types (use only when requirement is inherently about
-      observable visual, physical, or captured-artifact state):
-        ui_screenshot          — captured UI state
-        screen_recording       — recorded interaction sequence
-        serial_debug_log       — embedded/serial port output
-        network_packet_capture — captured network traffic
-        database_export        — exported DB state snapshot
-        api_response_log       — captured HTTP/API response
-        performance_profiler_output — profiler metrics capture
-
-      STEP B — Write acceptance_criteria based on the evidence_type from Step A.
-
-      IF evidence_type == "NA":
-        Set acceptance_criteria to "NA". Do not write criteria text.
-
-      IF evidence_type is a high-process-risk type:
-        Form: "Given [precondition], when [action], then [system] returns/logs/emits
-        [specific value, status code, or state]."
-        Name the exact measurable outcome.
-
-      IF evidence_type is a not-high-process-risk type:
-        Form: "Given [precondition], when [action], the [artifact] shows [specific
-        field/value/layout]."
-        Name what the captured artifact must contain.
-
-      Writing rules:
-      - Each criterion must make its evidence type unambiguous.
-      - Be deterministic: use "shall", "returns", "emits", "logs".
-      - Never use: "may", "might", "should", "could", "typically", "usually".
-
       ## Rules
 
-      - Every input spec_id appears exactly once in specs[].
       - Every unique input module_tag appears exactly once in modules[].
-      - Do NOT invent spec_ids or module_tags absent from input.
+      - Do NOT invent module_tags absent from input.
       - Output ONLY a single JSON object. No commentary, no markdown fences.
 
       Allowed module_role tokens:

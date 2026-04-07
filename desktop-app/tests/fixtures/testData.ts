@@ -45,9 +45,9 @@ export const mockTestabilityItem: RawTestabilityItem = {
   ],
 };
 
-export const mockCsvContent = `spec_id,module_tag,module_role,requirement,acceptance_criteria
-SPEC-001,AUTH,Authentication,System shall authenticate users via OAuth2,User receives a valid JWT token
-SPEC-002,EXPORT,Data Export,System shall export data to CSV,Downloaded file contains all visible rows`;
+export const mockCsvContent = `spec_id,module_tag,module_role,requirement
+SPEC-001,AUTH,Authentication,System shall authenticate users via OAuth2
+SPEC-002,EXPORT,Data Export,System shall export data to CSV`;
 
 export const stderrLines = {
   loadOk: '[PIKA] Load: ok \u2014 Loaded 2 specs',
@@ -98,6 +98,8 @@ export function buildGateItems(): ResolutionItem[] {
       suggestedText: 'System shall authenticate users via OAuth2 with PKCE flow',
       field: 'requirement',
       itemIndex: 0,
+      isCompound: false,
+      concerns: [],
       options: [
         { id: 'accept_suggestion', label: 'Accept Suggestion', description: 'Replace with suggested text' },
         { id: 'let_agent_edit', label: 'Let Agent Edit', description: 'Agent will rewrite' },
@@ -113,6 +115,8 @@ export function buildGateItems(): ResolutionItem[] {
       suggestedText: 'Downloaded CSV contains exactly N rows matching the current filter',
       field: 'acceptance_criteria',
       itemIndex: 1,
+      isCompound: false,
+      concerns: [],
       options: [
         { id: 'accept_suggestion', label: 'Accept Suggestion', description: 'Replace with suggested text' },
         { id: 'skip', label: 'Skip', description: 'Keep original' },

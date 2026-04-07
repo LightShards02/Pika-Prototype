@@ -11,6 +11,8 @@ import type {
   RawAgentItem,
   RawAmbiguityItem,
   RawCompoundItem,
+  RawDecompositionGateItem,
+  RawImplementItem,
   ResolutionItem,
   Spec,
 } from '../types';
@@ -240,6 +242,19 @@ function isCompoundItem(item: RawAgentItem): item is RawCompoundItem {
   return 'is_compound' in item && (item as RawCompoundItem).is_compound === true;
 }
 
+function isDecompositionGateItem(item: unknown): item is RawDecompositionGateItem {
+  if (!item || typeof item !== 'object') return false;
+  const rec = item as Record<string, unknown>;
+  const kind = rec.issue_kind;
+  return kind === 'split_candidate' || kind === 'merge_candidate';
+}
+
+function hasV2Concerns(raw: RawAgentItem): raw is RawCompoundItem {
+  if (!('concerns' in raw)) return false;
+  const c = (raw as RawCompoundItem).concerns;
+  return Array.isArray(c) && c.length > 0;
+}
+
 /**
  * Transform a v2 compound raw item into a ResolutionItem with concerns.
  */
@@ -291,7 +306,10 @@ function transformCompoundItem(
 
 /**
  * Transform raw agent items (from agent_review.json) into ResolutionItem[] for the UI.
- * Supports both v1 (flat) and v2 (compound) formats.
+ * Supports v1 flat rows, v2 merged rows (concerns + is_compound), and decomposition gate rows.
+ *
+ * Detection is structural: refine `_write_resolution_block` sets `format_version: 2` but the
+ * renderer previously ignored it, so we must not rely on formatVersion alone.
  */
 export function transformAgentItems(
   rawItems: RawAgentItem[],
@@ -299,15 +317,39 @@ export function transformAgentItems(
   formatVersion?: number,
 ): ResolutionItem[] {
   const specMap = new Map(specs.map((s) => [s.spec_id, s]));
+  const useV2Shapes = formatVersion === undefined || formatVersion === 2;
 
   return rawItems.map((raw, index) => {
-    // V2 compound items
-    if (formatVersion === 2 && isCompoundItem(raw)) {
+    if (isDecompositionGateItem(raw)) {
+      const specIds =
+        raw.spec_ids && raw.spec_ids.length > 0
+          ? raw.spec_ids
+          : raw.spec_id
+            ? [raw.spec_id]
+            : [];
+      return {
+        id: raw.item_id,
+        spec_ids: specIds,
+        type: raw.title,
+        reason: raw.reason,
+        itemIndex: index,
+        isCompound: false,
+        concerns: [],
+        options: raw.options.map((o) => ({
+          id: o.option_id,
+          label: o.label,
+          description: o.effect,
+        })),
+      };
+    }
+
+    // V2 compound items (merged ambiguity + testability for one spec)
+    if (useV2Shapes && isCompoundItem(raw)) {
       return transformCompoundItem(raw, specMap, index);
     }
 
     // V2 single-concern items (is_compound: false) — unwrap the concern
-    if (formatVersion === 2 && 'concerns' in raw) {
+    if (useV2Shapes && hasV2Concerns(raw)) {
       const v2 = raw as RawCompoundItem;
       const concern = v2.concerns[0];
       const spec = specMap.get(v2.spec_id);
@@ -388,24 +430,33 @@ export function transformAgentItems(
 
 /**
  * Transform raw implement gate items (from unified_planner.json etc.) into ResolutionItem[].
- * Implement items have a different schema from refine items: no spec_id/field,
- * but have title, question, blocking_reason, and options.
+ * Implement items use title, question, blocking_reason, and options; validation may add
+ * `evidence_refs` (spec ids) and items with empty `options` (manual YAML resolution).
  */
 export function transformImplementItems(
   rawItems: RawImplementItem[],
 ): ResolutionItem[] {
-  return rawItems.map((raw, index) => ({
-    id: raw.item_id,
-    spec_ids: [],
-    type: raw.title,
-    reason: raw.blocking_reason,
-    currentText: raw.question,
-    suggestedText: undefined,
-    itemIndex: index,
-    options: raw.options.map((o) => ({
-      id: o.option_id,
-      label: o.label,
-      description: o.effect,
-    })),
-  }));
+  return rawItems.map((raw, index) => {
+    const evidence = raw.evidence_refs;
+    const specIds = Array.isArray(evidence)
+      ? evidence.map((s) => String(s).trim()).filter(Boolean)
+      : [];
+    const opts = Array.isArray(raw.options) ? raw.options : [];
+    return {
+      id: String(raw.item_id ?? `item-${index}`),
+      spec_ids: specIds,
+      type: raw.title,
+      reason: raw.blocking_reason,
+      currentText: raw.question,
+      suggestedText: undefined,
+      itemIndex: index,
+      isCompound: false,
+      concerns: [],
+      options: opts.map((o) => ({
+        id: o.option_id,
+        label: o.label,
+        description: o.effect,
+      })),
+    };
+  });
 }

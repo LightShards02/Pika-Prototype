@@ -33,7 +33,8 @@ from handlers.refine.config import _get_refine_cfg
 from handlers.refine.decomposition import _build_decomposition_items, run_decomposition_check
 
 
-_REQUIRED_COLUMNS = ["spec_id", "module_tag", "module_role", "requirement", "acceptance_criteria"]
+# acceptance_criteria is produced by refine (testability enricher), not required on input.
+_REQUIRED_COLUMNS = ["spec_id", "module_tag", "module_role", "requirement"]
 
 
 def _report_refine_step(step: str, status: str, detail: str) -> None:
@@ -114,17 +115,22 @@ def _merge_all_items(
                 {
                     "option_id": "accept_ambiguity",
                     "label": "Accept ambiguity fix",
-                    "effect": "Apply suggestion to requirement field",
+                    "effect": "Apply ambiguity suggestion to requirement field",
                 },
                 {
                     "option_id": "accept_testability",
                     "label": "Accept testability fix",
-                    "effect": "Apply suggestion to acceptance_criteria field",
+                    "effect": "Apply testability suggestion to requirement field",
+                },
+                {
+                    "option_id": "accept_both_improvements",
+                    "label": "Accept both improvements",
+                    "effect": "Invoke merger agent to produce a single merged requirement rewrite (with preview)",
                 },
                 {
                     "option_id": "let_agent_edit",
                     "label": "Let agent edit",
-                    "effect": "Agent edits both fields in one pass",
+                    "effect": "Agent rewrites the requirement addressing all concerns",
                 },
                 {
                     "option_id": "skip",
@@ -269,26 +275,52 @@ def _run_refine_agents(
         return {"command": "refine", "status": "failed", "reason": f"project_context: {exc}"}
 
     ambiguity_schema = _resolve_refine_schema(config, project_root, "spec_ambiguity_detector_output")
-    testability_schema = _resolve_refine_schema(config, project_root, "spec_testability_auditor_output")
+    # Full schema for instance 0; triage schema for replicas (no AC writing in replicas)
+    testability_full_schema = _resolve_refine_schema(config, project_root, "spec_testability_enricher_output")
+    testability_triage_schema = _resolve_refine_schema(config, project_root, "spec_testability_triage_output")
 
-    design_csv = rows_to_csv(headers, rows)
-    common_vars: dict[str, Any] = {
+    # Build minimal CSV for testability enricher (strip unused columns to save tokens)
+    _minimal_cols = ["spec_id", "module_tag", "subunit", "requirement"]
+    _header_lower = {h.strip().lower(): h for h in headers if h}
+    minimal_headers = [_header_lower[c] for c in _minimal_cols if c in _header_lower]
+    minimal_design_csv = rows_to_csv(minimal_headers, rows)
+
+    common_base: dict[str, Any] = {
         "project_context": context_text,
-        "design_spec_csv": design_csv,
         "manual_resolution_file": str(manual_dir),
         "run_summary_file": str(run_dir / "summary.json"),
         "control_vocab_section": "",
         "appendix_content": appendix_text,
     }
-    ambiguity_vars = {**common_vars, "output_schema_file": str(ambiguity_schema)}
-    testability_vars = {**common_vars, "output_schema_file": str(testability_schema)}
+    # Ambiguity detector only reads spec_id + requirement (cross-spec ref resolution);
+    # minimal CSV saves ~70% tokens with no information loss.
+    ambiguity_vars = {
+        **common_base,
+        "design_spec_csv": minimal_design_csv,
+        "output_schema_file": str(ambiguity_schema),
+    }
+    # Instance 0: full mode — writes enrichments[] + MR items
+    testability_full_vars = {
+        **common_base,
+        "design_spec_csv": minimal_design_csv,
+        "enrich_mode": "full",
+        "output_schema_file": str(testability_full_schema),
+    }
+    # Replicas 1..N-1: triage mode — writes MR items only (no AC, saves output tokens)
+    testability_triage_vars = {
+        **common_base,
+        "design_spec_csv": minimal_design_csv,
+        "enrich_mode": "triage",
+        "output_schema_file": str(testability_triage_schema),
+    }
 
     agent_replicas = cfg["agent_replicas"]
     consensus_min_votes = cfg["consensus_min_votes"]
 
     _report_refine_step(
         "Agents", "running",
-        f"ambiguity detector x{agent_replicas} + testability auditor x{agent_replicas}",
+        f"ambiguity detector x{agent_replicas} + testability enricher x{agent_replicas} "
+        f"(1 full + {agent_replicas - 1} triage)",
     )
 
     def _make_caller(prompt_name: str, template_vars: dict[str, Any],
@@ -316,9 +348,16 @@ def _run_refine_agents(
                 ambiguity_schema, "ambiguity", i,
             ))
             futures[fut_a] = ("ambiguity", i)
+            # Instance 0 uses full schema; replicas use triage schema
+            if i == 0:
+                t_vars = testability_full_vars
+                t_schema = testability_full_schema
+            else:
+                t_vars = testability_triage_vars
+                t_schema = testability_triage_schema
             fut_t = executor.submit(_make_caller(
-                cfg["testability_auditor_prompt_name"], testability_vars,
-                testability_schema, "testability", i,
+                cfg["testability_enricher_prompt_name"], t_vars,
+                t_schema, "testability", i,
             ))
             futures[fut_t] = ("testability", i)
 
@@ -371,17 +410,59 @@ def _run_refine_agents(
         "testability_post_consensus": len(testability_items),
     })
 
+    # Collect enrichments from instance 0 (full mode only).
+    # Guard: skip any spec_id that also appears in the consensus MR items (MR takes priority).
+    flagged_spec_ids: set[str] = {
+        str(item.get("spec_id", "")).strip()
+        for item in testability_items
+        if item.get("spec_id")
+    }
+    instance0_out = testability_outputs[0] if testability_outputs else None
+    enrichments: list[dict[str, Any]] = []
+    if isinstance(instance0_out, dict):
+        for entry in (instance0_out.get("enrichments") or []):
+            if not isinstance(entry, dict):
+                continue
+            sid = str(entry.get("spec_id", "")).strip()
+            if sid and sid not in flagged_spec_ids:
+                enrichments.append(entry)
+
+    # Apply enrichments (AC + evidence_type) to the working rows.
+    # Ensure both columns exist in headers before writing.
+    if enrichments and not ctx.dry_run:
+        _header_map = {h.strip().lower(): h for h in headers if h}
+        ac_col = _header_map.get("acceptance_criteria", "acceptance_criteria")
+        et_col = _header_map.get("evidence_type", "evidence_type")
+        sid_col = _header_map.get("spec_id", "spec_id")
+        if ac_col not in headers:
+            headers = list(headers) + [ac_col]
+        if et_col not in headers:
+            headers = list(headers) + [et_col]
+        for entry in enrichments:
+            sid = str(entry.get("spec_id", "")).strip()
+            ac_val = str(entry.get("acceptance_criteria", "")).strip()
+            et_val = str(entry.get("evidence_type", "")).strip()
+            for row in rows:
+                if str(row.get(sid_col, "")).strip() == sid:
+                    if ac_val:
+                        row[ac_col] = ac_val
+                    if et_val:
+                        row[et_col] = et_val
+                    break
+
+    _write_json(run_dir / "enrichments.json", {"enrichments": enrichments})
+
     all_items = _merge_all_items([], ambiguity_items, testability_items)
 
     if not all_items:
-        _report_refine_step("Refine", "ok", "no issues found — copying input to output")
+        _report_refine_step("Refine", "ok", "no issues found — writing enriched output")
         output_path = _resolve_output_csv_path(config, project_root)
         if not ctx.dry_run:
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(design_path, output_path)
+            output_path.write_text(rows_to_csv(headers, rows), encoding="utf-8")
         _write_json(run_dir / "summary.json", {
             "status": "completed",
-            "specs_improved": 0,
+            "specs_enriched": len(enrichments),
             "output_path": str(output_path),
         })
         # Merge into existing run_meta (preserves command, run_id, input_design_spec_path)
@@ -404,7 +485,7 @@ def _run_refine_agents(
             "command": "refine",
             "status": "completed",
             "run_id": ctx.run_id,
-            "specs_improved": 0,
+            "specs_enriched": len(enrichments),
             "output_path": str(output_path),
             "dry_run": ctx.dry_run,
         }
@@ -428,6 +509,7 @@ def _run_refine_agents(
         "blocking_items": len(all_items),
         "ambiguity_items": len(ambiguity_items),
         "testability_items": len(testability_items),
+        "specs_enriched": len(enrichments),
         "input_design_spec_path": str(design_path),
     })
     log_lifecycle_event("lifecycle_manual_resolution", command="refine", run_id=ctx.run_id)

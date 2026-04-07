@@ -88,8 +88,8 @@ class FormatEnrichmentApplyTests(unittest.TestCase):
             },
         }
 
-    def test_apply_enrichment_fills_module_role_evidence_type_and_criteria(self) -> None:
-        """Agent output is applied: module_role + evidence_type + acceptance_criteria columns filled."""
+    def test_apply_enrichment_fills_module_role_only(self) -> None:
+        """Agent output is applied: module_role filled. AC and evidence_type are NOT written by format."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             out_file = tmp_path / "DESIGN-SPEC.csv"
@@ -113,12 +113,9 @@ class FormatEnrichmentApplyTests(unittest.TestCase):
             ]
             self._write_csv(out_file, rows)
 
+            # Format enricher now returns modules[] only — no specs[] array
             agent_output = {
                 "modules": [{"module_tag": "auth", "module_role": "domain"}],
-                "specs": [
-                    {"spec_id": "A1", "evidence_type": "test_execution_record", "acceptance_criteria": "Given valid credentials, user is authenticated."},
-                    {"spec_id": "A2", "evidence_type": "audit_trail", "acceptance_criteria": "Session token expires after 30 minutes of inactivity."},
-                ],
             }
 
             config = self._base_config()
@@ -139,56 +136,14 @@ class FormatEnrichmentApplyTests(unittest.TestCase):
 
             self.assertEqual(result_rows[0]["module_role"], "domain")
             self.assertEqual(result_rows[1]["module_role"], "domain")
-            self.assertEqual(result_rows[0]["evidence_type"], "test_execution_record")
-            self.assertEqual(result_rows[1]["evidence_type"], "audit_trail")
-            self.assertIn("authenticated", result_rows[0]["acceptance_criteria"])
-            self.assertIn("inactivity", result_rows[1]["acceptance_criteria"])
-
-    def test_apply_enrichment_na_evidence_type_sets_na_criteria(self) -> None:
-        """When evidence_type is NA, acceptance_criteria is also NA."""
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            out_file = tmp_path / "DESIGN-SPEC.csv"
-            rows = [
-                {
-                    "spec_id": "A1",
-                    "module_tag": "docs",
-                    "requirement": "Provide user manual",
-                    "module_role": "",
-                    "evidence_type": "",
-                    "acceptance_criteria": "",
-                },
-            ]
-            self._write_csv(out_file, rows)
-
-            agent_output = {
-                "modules": [{"module_tag": "docs", "module_role": "shared"}],
-                "specs": [
-                    {"spec_id": "A1", "evidence_type": "NA", "acceptance_criteria": "NA"},
-                ],
-            }
-
-            config = self._base_config()
-            ctx = self._make_ctx(tmp)
-
-            with patch("handlers.format.invoke_agent_with_schema_retry", return_value=agent_output), \
-                 patch("handlers.format.get_agent_provider", return_value="stub"), \
-                 patch("handlers.format.get_prompt_name", return_value="design_doc_enricher"), \
-                 patch("handlers.format.resolve_output_schema_path", return_value=None), \
-                 patch("handlers.format.resolve_project_context_content", return_value=""), \
-                 patch("handlers.format.resolve_project_state_path", return_value=None):
-                from handlers.format import _run_format_enrichment
-                _run_format_enrichment(config, ctx, out_file)
-
-            result_text = out_file.read_text(encoding="utf-8")
-            reader = csv.DictReader(result_text.splitlines())
-            result_rows = list(reader)
-
-            self.assertEqual(result_rows[0]["evidence_type"], "NA")
-            self.assertEqual(result_rows[0]["acceptance_criteria"], "NA")
+            # AC and evidence_type must remain empty — format stage does not write them
+            self.assertEqual(result_rows[0]["evidence_type"], "")
+            self.assertEqual(result_rows[1]["evidence_type"], "")
+            self.assertEqual(result_rows[0]["acceptance_criteria"], "")
+            self.assertEqual(result_rows[1]["acceptance_criteria"], "")
 
     def test_skip_filled_rows_not_overwritten(self) -> None:
-        """Rows with existing module_role + evidence_type + acceptance_criteria are not overwritten."""
+        """Rows with existing module_role are not overwritten (skip_filled=True)."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             out_file = tmp_path / "DESIGN-SPEC.csv"
@@ -198,15 +153,12 @@ class FormatEnrichmentApplyTests(unittest.TestCase):
                     "module_tag": "auth",
                     "requirement": "Login",
                     "module_role": "Existing role",
-                    "evidence_type": "test_execution_record",
-                    "acceptance_criteria": "Existing criteria",
                 },
             ]
             self._write_csv(out_file, rows)
 
             agent_output = {
                 "modules": [],
-                "specs": [],
             }
 
             config = self._base_config()
@@ -221,15 +173,13 @@ class FormatEnrichmentApplyTests(unittest.TestCase):
                 from handlers.format import _run_format_enrichment
                 _run_format_enrichment(config, ctx, out_file)
 
-            # Agent should not have been called — all rows already filled
+            # Agent should not have been called — module_role already filled
             mock_agent.assert_not_called()
 
             result_text = out_file.read_text(encoding="utf-8")
             reader = csv.DictReader(result_text.splitlines())
             result_rows = list(reader)
             self.assertEqual(result_rows[0]["module_role"], "Existing role")
-            self.assertEqual(result_rows[0]["evidence_type"], "test_execution_record")
-            self.assertEqual(result_rows[0]["acceptance_criteria"], "Existing criteria")
 
     def test_enrichment_disabled_skips_agent(self) -> None:
         """When enrichment.enabled=false, _run_format_enrichment is never called."""

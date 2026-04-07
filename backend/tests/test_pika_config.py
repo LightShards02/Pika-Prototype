@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import copy
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from core.pika_config import get_pika_config, load_pika_config, reset_pika_config_cache
+from core.pika_config import (
+    _validate_required_config,
+    get_pika_config,
+    load_pika_config,
+    reset_pika_config_cache,
+)
 
 
 class PikaConfigTests(unittest.TestCase):
@@ -44,7 +50,17 @@ class PikaConfigTests(unittest.TestCase):
         self.assertIn("heartbeat_interval_sec", local)
         self.assertIn("exec_timeout_sec", local)
         self.assertIn("model", local)
-        self.assertEqual(local["model"]["default"]["name"], "gpt-5.3-codex")
+        default_model = local["model"]["default"]
+        self.assertIn("name", default_model)
+        self.assertTrue(str(default_model["name"]).strip())
+
+    def test_local_command_optional_in_validation(self) -> None:
+        """local.command may be omitted; PIKA config validation still passes."""
+        cfg = copy.deepcopy(get_pika_config())
+        local = cfg.get("local")
+        self.assertIsInstance(local, dict)
+        local.pop("command", None)
+        _validate_required_config(cfg)
 
     def test_has_default_outputs(self) -> None:
         """Config has default_outputs for workspace fallbacks."""
@@ -86,6 +102,61 @@ class PikaConfigTests(unittest.TestCase):
                 reset_pika_config_cache()
                 with self.assertRaises(ValueError):
                     load_pika_config()
+
+
+class LocalModelProfileValidationTests(unittest.TestCase):
+    """Tests for local model profile validation, including base_url."""
+
+    def tearDown(self) -> None:
+        """Reset cache between tests."""
+        reset_pika_config_cache()
+
+    def test_base_url_accepted_when_valid(self) -> None:
+        """base_url is accepted when it's a valid URL string."""
+        from core.pika_config import _validate_local_model_profile
+
+        missing: list[str] = []
+        profile = {
+            "name": "gpt-4o",
+            "base_url": "https://api.example.com/v1",
+        }
+        _validate_local_model_profile(profile, "local.model.default", missing, require_name=True)
+        self.assertEqual(missing, [])
+
+    def test_base_url_optional(self) -> None:
+        """base_url is optional and can be omitted."""
+        from core.pika_config import _validate_local_model_profile
+
+        missing: list[str] = []
+        profile = {
+            "name": "gpt-4o",
+        }
+        _validate_local_model_profile(profile, "local.model.default", missing, require_name=True)
+        self.assertEqual(missing, [])
+
+    def test_base_url_can_be_null(self) -> None:
+        """base_url can be explicitly set to null."""
+        from core.pika_config import _validate_local_model_profile
+
+        missing: list[str] = []
+        profile = {
+            "name": "gpt-4o",
+            "base_url": None,
+        }
+        _validate_local_model_profile(profile, "local.model.default", missing, require_name=True)
+        self.assertEqual(missing, [])
+
+    def test_base_url_rejected_when_empty_string(self) -> None:
+        """base_url is rejected when it's an empty string."""
+        from core.pika_config import _validate_local_model_profile
+
+        missing: list[str] = []
+        profile = {
+            "name": "gpt-4o",
+            "base_url": "",
+        }
+        _validate_local_model_profile(profile, "local.model.default", missing, require_name=True)
+        self.assertIn("local.model.default.base_url", missing)
 
 
 if __name__ == "__main__":

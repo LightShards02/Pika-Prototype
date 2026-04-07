@@ -130,6 +130,8 @@ def run_decomposition_check(
 ) -> dict[str, Any]:
     """Run NLP decomposition check on SADS spec rows.
 
+    Uses each row's requirement text only (refine input does not include acceptance_criteria).
+
     Returns:
         {
             "split_candidates": [{"spec_id", "reason", "variance"}],
@@ -146,7 +148,6 @@ def run_decomposition_check(
     model = SentenceTransformer("all-MiniLM-L6-v2")
 
     req_col = _find_col_lower(rows, "requirement")
-    ac_col = _find_col_lower(rows, "acceptance_criteria")
     spec_col = _find_col_lower(rows, "spec_id")
     tag_col = _find_col_lower(rows, "module_tag")
 
@@ -161,8 +162,7 @@ def run_decomposition_check(
         if not spec_id:
             continue
         req = str(row.get(req_col or "requirement", "")).strip()
-        ac = str(row.get(ac_col or "acceptance_criteria", "")).strip()
-        combined = f"{req} {ac}".strip()
+        combined = req
         if not combined:
             continue
         variance = _compute_sentence_variance(combined, model)
@@ -186,8 +186,7 @@ def run_decomposition_check(
         if not spec_id or not module_tag:
             continue
         req = str(row.get(req_col or "requirement", "")).strip()
-        ac = str(row.get(ac_col or "acceptance_criteria", "")).strip()
-        combined = f"{req} {ac}".strip()
+        combined = req
         by_module.setdefault(module_tag, []).append({
             "spec_id": spec_id,
             "text": combined,

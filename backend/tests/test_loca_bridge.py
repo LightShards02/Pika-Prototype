@@ -7,8 +7,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+# Import agent_invoker first to avoid circular import when loca_bridge
+# imports from it at module level.
+from core import agent_invoker  # noqa: F401
+
 from core.loca_bridge import (
     _UsageTrackingLLM,
+    _get_local_base_url,
     _get_local_provider_sub,
     _get_local_temperature,
     _get_local_top_p,
@@ -49,13 +54,24 @@ class GetLocalProviderSubTests(unittest.TestCase):
     @patch("core.loca_bridge.get_pika_config")
     def test_workspace_override(self, mock_pika: MagicMock) -> None:
         mock_pika.return_value = {"local": {"provider_sub": "openai-codex"}}
-        config = {"agent": {"local_provider": "openai"}}
+        config = {"agent": {"provider_sub": "openai"}}
         self.assertEqual(_get_local_provider_sub(config), "openai")
 
     @patch("core.loca_bridge.get_pika_config")
     def test_pika_default(self, mock_pika: MagicMock) -> None:
         mock_pika.return_value = {"local": {"provider_sub": "openai"}}
         self.assertEqual(_get_local_provider_sub({}), "openai")
+
+    @patch("core.loca_bridge.get_pika_config")
+    def test_anthropic_from_pika(self, mock_pika: MagicMock) -> None:
+        mock_pika.return_value = {"local": {"provider_sub": "anthropic"}}
+        self.assertEqual(_get_local_provider_sub({}), "anthropic")
+
+    @patch("core.loca_bridge.get_pika_config")
+    def test_anthropic_workspace_override(self, mock_pika: MagicMock) -> None:
+        mock_pika.return_value = {"local": {"provider_sub": "openai-codex"}}
+        config = {"agent": {"provider_sub": "anthropic"}}
+        self.assertEqual(_get_local_provider_sub(config), "anthropic")
 
     @patch("core.loca_bridge.get_pika_config")
     def test_invalid_value_falls_to_default(self, mock_pika: MagicMock) -> None:
@@ -114,6 +130,77 @@ class GetLocalTopPTests(unittest.TestCase):
         self.assertAlmostEqual(_get_local_top_p({}, "map_spec_to_code"), 0.7)
 
 
+class GetLocalBaseUrlTests(unittest.TestCase):
+    """Tests for _get_local_base_url."""
+
+    @patch("core.lifecycle._get_effective_local_agent_profile")
+    def test_returns_none_when_not_set(self, mock_profile: MagicMock) -> None:
+        mock_profile.return_value = {"name": "gpt-5.3-codex"}
+        self.assertIsNone(_get_local_base_url({}, "map_spec_to_code"))
+
+    @patch("core.lifecycle._get_effective_local_agent_profile")
+    def test_returns_none_when_null(self, mock_profile: MagicMock) -> None:
+        mock_profile.return_value = {"name": "gpt-5.3-codex", "base_url": None}
+        self.assertIsNone(_get_local_base_url({}, "map_spec_to_code"))
+
+    @patch("core.lifecycle._get_effective_local_agent_profile")
+    def test_returns_url_when_set(self, mock_profile: MagicMock) -> None:
+        mock_profile.return_value = {"name": "gpt-5.3-codex", "base_url": "https://api.example.com/v1"}
+        self.assertEqual(_get_local_base_url({}, "map_spec_to_code"), "https://api.example.com/v1")
+
+    @patch("core.lifecycle._get_effective_local_agent_profile")
+    def test_whitespace_stripped(self, mock_profile: MagicMock) -> None:
+        mock_profile.return_value = {"name": "gpt-5.3-codex", "base_url": "  https://api.example.com/v1  "}
+        self.assertEqual(_get_local_base_url({}, "map_spec_to_code"), "https://api.example.com/v1")
+
+    @patch("core.lifecycle._get_effective_local_agent_profile")
+    def test_empty_string_returns_none(self, mock_profile: MagicMock) -> None:
+        mock_profile.return_value = {"name": "gpt-5.3-codex", "base_url": ""}
+        self.assertIsNone(_get_local_base_url({}, "map_spec_to_code"))
+
+    @patch("core.lifecycle.get_pika_config")
+    def test_base_url_from_pika_model_profiles(self, mock_pika: MagicMock) -> None:
+        """base_url in pika.yaml local.model must survive profile normalization."""
+        mock_pika.return_value = {
+            "local": {
+                "model": {
+                    "default": {
+                        "name": "kimi-k2.5",
+                        "base_url": "https://api.moonshot.ai/v1",
+                    },
+                    "map_spec_to_code": {"name": "gpt-5.3-codex"},
+                }
+            }
+        }
+        config = {"agent": {}}
+        self.assertEqual(
+            _get_local_base_url(config, "map_spec_to_code"),
+            "https://api.moonshot.ai/v1",
+        )
+
+    @patch("core.lifecycle.get_pika_config")
+    def test_base_url_workspace_overrides_pika(self, mock_pika: MagicMock) -> None:
+        mock_pika.return_value = {
+            "local": {
+                "model": {
+                    "default": {
+                        "name": "kimi-k2.5",
+                        "base_url": "https://api.moonshot.ai/v1",
+                    },
+                }
+            }
+        }
+        config = {
+            "agent": {
+                "default": {"base_url": "https://api.other.example/v1"},
+            }
+        }
+        self.assertEqual(
+            _get_local_base_url(config, "map_spec_to_code"),
+            "https://api.other.example/v1",
+        )
+
+
 class BuildLocaConfigTests(unittest.TestCase):
     """Tests for build_loca_config."""
 
@@ -140,6 +227,7 @@ class BuildLocaConfigTests(unittest.TestCase):
         self.assertEqual(loca_cfg.model.reasoning_effort, "medium")
         self.assertIsNone(loca_cfg.model.temperature)
         self.assertIsNone(loca_cfg.model.top_p)
+        self.assertIsNone(loca_cfg.model.base_url)
         self.assertEqual(loca_cfg.agent.max_schema_retries, 0)
         self.assertIn("test-workspace", loca_cfg.sandbox.working_dir)
 
@@ -158,7 +246,7 @@ class BuildLocaConfigTests(unittest.TestCase):
 
         config = {
             "agent": {
-                "local_provider": "openai",
+                "provider_sub": "openai",
                 "map_spec_to_code": {
                     "temperature": 0.5,
                     "top_p": 0.9,
@@ -173,6 +261,124 @@ class BuildLocaConfigTests(unittest.TestCase):
         self.assertEqual(loca_cfg.model.provider, "openai")
         self.assertAlmostEqual(loca_cfg.model.temperature, 0.5)
         self.assertAlmostEqual(loca_cfg.model.top_p, 0.9)
+
+    @patch("core.loca_bridge.get_pika_config")
+    @patch("core.lifecycle.get_pika_config")
+    def test_openai_base_url_from_pika_model_default(
+        self, mock_lifecycle_pika: MagicMock, mock_bridge_pika: MagicMock
+    ) -> None:
+        """Moonshot-style base_url in pika local.model.default reaches Loca config."""
+        pika_cfg = {
+            "local": {
+                "provider_sub": "openai",
+                "model": {
+                    "default": {
+                        "name": "kimi-k2.5",
+                        "base_url": "https://api.moonshot.ai/v1",
+                    },
+                    "map_spec_to_code": {"name": "kimi-k2.5"},
+                },
+                "exec_timeout_sec": 600,
+            },
+        }
+        mock_lifecycle_pika.return_value = pika_cfg
+        mock_bridge_pika.return_value = pika_cfg
+
+        config = {"agent": {"provider_sub": "openai"}}
+        workspace = Path("/tmp/test-workspace")
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}):
+            loca_cfg = build_loca_config(config, "map_spec_to_code", workspace)
+
+        self.assertEqual(loca_cfg.model.provider, "openai")
+        self.assertEqual(loca_cfg.model.base_url, "https://api.moonshot.ai/v1")
+
+    @patch("core.loca_bridge.get_pika_config")
+    @patch("core.lifecycle.get_pika_config")
+    def test_anthropic_api_key_and_base_url(
+        self, mock_lifecycle_pika: MagicMock, mock_bridge_pika: MagicMock
+    ) -> None:
+        """Anthropic sub-provider resolves ANTHROPIC_API_KEY and optional base_url."""
+        pika_cfg = {
+            "local": {
+                "provider_sub": "anthropic",
+                "model": {
+                    "default": {
+                        "name": "claude-sonnet-4-6",
+                        "base_url": "https://proxy.example/v1",
+                    },
+                },
+                "exec_timeout_sec": 600,
+            },
+        }
+        mock_lifecycle_pika.return_value = pika_cfg
+        mock_bridge_pika.return_value = pika_cfg
+
+        config = {"agent": {"provider_sub": "anthropic"}}
+        workspace = Path("/tmp/test-workspace")
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-test"}):
+            loca_cfg = build_loca_config(config, "map_spec_to_code", workspace)
+
+        self.assertEqual(loca_cfg.model.provider, "anthropic")
+        self.assertEqual(loca_cfg.model.api_key, "sk-ant-test")
+        self.assertEqual(loca_cfg.model.base_url, "https://proxy.example/v1")
+
+    @patch("core.loca_bridge.get_pika_config")
+    @patch("core.lifecycle.get_pika_config")
+    def test_openai_api_key_from_moonshot_env_when_openai_unset(
+        self, mock_lifecycle_pika: MagicMock, mock_bridge_pika: MagicMock
+    ) -> None:
+        """Kimi docs use MOONSHOT_API_KEY; Loca ignores it when Pika passes ''."""
+        pika_cfg = {
+            "local": {
+                "provider_sub": "openai",
+                "model": {"default": {"name": "kimi-k2.5", "reasoning_effort": "medium"}},
+                "exec_timeout_sec": 600,
+            },
+        }
+        mock_lifecycle_pika.return_value = pika_cfg
+        mock_bridge_pika.return_value = pika_cfg
+        env = {k: v for k, v in os.environ.items() if k not in ("OPENAI_API_KEY", "MOONSHOT_API_KEY")}
+        with patch.dict(os.environ, env, clear=True):
+            with patch.dict(os.environ, {"MOONSHOT_API_KEY": "sk-ms-from-moonshot"}):
+                loca_cfg = build_loca_config(
+                    {"agent": {"provider_sub": "openai"}},
+                    "map_spec_to_code",
+                    Path("/tmp/test-workspace"),
+                )
+        self.assertEqual(loca_cfg.model.api_key, "sk-ms-from-moonshot")
+
+    @patch("core.loca_bridge._get_local_base_url")
+    @patch("core.loca_bridge.get_pika_config")
+    @patch("core.lifecycle.get_pika_config")
+    def test_base_url_passthrough(self, mock_lifecycle_pika: MagicMock, mock_bridge_pika: MagicMock, mock_base_url: MagicMock) -> None:
+        pika_cfg = {
+            "local": {
+                "provider_sub": "openai",
+                "model": {"default": {"name": "gpt-4o", "reasoning_effort": "medium"}},
+                "exec_timeout_sec": 300,
+            },
+        }
+        mock_lifecycle_pika.return_value = pika_cfg
+        mock_bridge_pika.return_value = pika_cfg
+        mock_base_url.return_value = "https://custom-api.example.com/v1"
+
+        config = {
+            "agent": {
+                "provider_sub": "openai",
+                "map_spec_to_code": {
+                    "base_url": "https://custom-api.example.com/v1",
+                },
+            },
+        }
+        workspace = Path("/tmp/test-workspace")
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}):
+            loca_cfg = build_loca_config(config, "map_spec_to_code", workspace)
+
+        self.assertEqual(loca_cfg.model.provider, "openai")
+        self.assertEqual(loca_cfg.model.base_url, "https://custom-api.example.com/v1")
 
     @patch("core.loca_bridge.get_pika_config")
     @patch("core.lifecycle.get_pika_config")
@@ -226,11 +432,45 @@ class CheckLocaAvailableTests(unittest.TestCase):
             self.assertTrue(check_loca_available("openai"))
 
     def test_openai_without_key(self) -> None:
-        with patch.dict(os.environ, {}, clear=True):
-            env = os.environ.copy()
-            env.pop("OPENAI_API_KEY", None)
-            with patch.dict(os.environ, env, clear=True):
-                self.assertFalse(check_loca_available("openai"))
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in ("OPENAI_API_KEY", "MOONSHOT_API_KEY")
+        }
+        with patch.dict(os.environ, env, clear=True):
+            self.assertFalse(check_loca_available("openai"))
+
+    def test_openai_moonshot_env_only(self) -> None:
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in ("OPENAI_API_KEY", "MOONSHOT_API_KEY")
+        }
+        with patch.dict(os.environ, env, clear=True):
+            with patch.dict(os.environ, {"MOONSHOT_API_KEY": "sk-ms"}):
+                self.assertTrue(check_loca_available("openai"))
+
+    def test_openai_prefers_openai_key_over_moonshot(self) -> None:
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in ("OPENAI_API_KEY", "MOONSHOT_API_KEY")
+        }
+        with patch.dict(os.environ, env, clear=True):
+            with patch.dict(
+                os.environ,
+                {"OPENAI_API_KEY": "sk-openai", "MOONSHOT_API_KEY": "sk-ms"},
+            ):
+                self.assertTrue(check_loca_available("openai"))
+
+    def test_anthropic_with_key(self) -> None:
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-test"}):
+            self.assertTrue(check_loca_available("anthropic"))
+
+    def test_anthropic_without_key(self) -> None:
+        env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+        with patch.dict(os.environ, env, clear=True):
+            self.assertFalse(check_loca_available("anthropic"))
 
     @patch("loca.auth.get_valid_token", return_value={"access": "tok", "accountId": "acc"})
     def test_codex_with_token(self, _mock: MagicMock) -> None:
@@ -407,6 +647,70 @@ class RunLocaAgentTests(unittest.TestCase):
                     loca_config=loca_cfg,
                     stream_output=False,
                 )
+
+    @patch("core.loca_bridge.build_default_registry")
+    @patch("core.loca_bridge.get_llm_client")
+    def test_schema_error_recovers_when_json_extractable(self, mock_get_client: MagicMock, mock_registry: MagicMock) -> None:
+        """When Loca schema_error fires but JSON is in messages, return output for PIKA filter."""
+        from loca.agent import AgentResult
+        from loca.config import LocaConfig
+
+        mock_get_client.return_value = MagicMock()
+        mock_registry.return_value = MagicMock()
+
+        # Agent returned valid JSON with extra properties that Loca's strict schema rejected
+        mock_result = AgentResult(
+            messages=[
+                {"role": "assistant", "content": [
+                    {"type": "text", "text": '{"manual_resolution_items": [], "extra_field": true}'}
+                ]}
+            ],
+            stop_reason="schema_error",
+            turns=1,
+            error="Additional properties are not allowed ('extra_field' was unexpected)",
+        )
+
+        with patch("core.loca_bridge.Agent") as MockAgent:
+            MockAgent.return_value.run.return_value = mock_result
+            loca_cfg = LocaConfig()
+
+            output, usage = run_loca_agent(
+                system_prompt="sys",
+                user_prompt="user",
+                loca_config=loca_cfg,
+                stream_output=False,
+            )
+            self.assertEqual(output, {"manual_resolution_items": [], "extra_field": True})
+
+    @patch("core.loca_bridge.build_default_registry")
+    @patch("core.loca_bridge.get_llm_client")
+    def test_schema_error_recovers_from_json_output(self, mock_get_client: MagicMock, mock_registry: MagicMock) -> None:
+        """When Loca schema_error fires but json_output is populated, return it."""
+        from loca.agent import AgentResult
+        from loca.config import LocaConfig
+
+        mock_get_client.return_value = MagicMock()
+        mock_registry.return_value = MagicMock()
+
+        mock_result = AgentResult(
+            messages=[],
+            stop_reason="schema_error",
+            turns=1,
+            error="Additional properties are not allowed",
+            json_output={"manual_resolution_items": [], "notes": "extra"},
+        )
+
+        with patch("core.loca_bridge.Agent") as MockAgent:
+            MockAgent.return_value.run.return_value = mock_result
+            loca_cfg = LocaConfig()
+
+            output, usage = run_loca_agent(
+                system_prompt="sys",
+                user_prompt="user",
+                loca_config=loca_cfg,
+                stream_output=False,
+            )
+            self.assertEqual(output, {"manual_resolution_items": [], "notes": "extra"})
 
     @patch("core.loca_bridge.build_default_registry")
     @patch("core.loca_bridge.get_llm_client")

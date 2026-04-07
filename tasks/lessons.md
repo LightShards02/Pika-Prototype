@@ -51,3 +51,5 @@
   Rule: Whenever new project (workspace) config is added to `backend/config/config.schema.json`, update `backend/config/config.example.yaml` in the same change so the canonical example stays valid and documents the new fields.
 - Pattern: Newly authored SADS datasets used code-style function or class identifiers inside architectural requirements.
   Rule: In SADS rows, keep ownership at the module or workflow-subunit level only. Never include function names, class names, method names, or code-like dotted identifiers in `title`, `requirement`, or `acceptance_criteria`.
+- Pattern: Changes around local agent invocation (Loca bridge, lifecycle `invoke_agent_*`, provider config, streaming/schema paths) were treated as done after unit tests alone, while real providers behaved differently (e.g. Codex streaming vs completed payload).
+  Rule: Whenever you touch code that affects model invocation, run at least one real PIKA command end-to-end against a workspace (any command that exercises the path—`refine`, `map`, `format` smoke, etc.) before you call the edit finished. Mocks and static review are not a substitute for that run.

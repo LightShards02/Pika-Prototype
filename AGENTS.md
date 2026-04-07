@@ -132,7 +132,7 @@ python3 cli.py agent format --project-root <workspace> --dry-run
 
 - `stub` (default): mock agent, no external dependencies — use for testing
 - `api`: requires `NVIDIA_API_KEY` env var
-- `local`: requires Loca (Python package) and auth for `local_provider` (e.g. `openai-codex` OAuth or `openai` + `OPENAI_API_KEY`); not the codex npm CLI
+- `local`: requires Loca (Python package) and auth for workspace `agent.provider_sub` (same as `pika.yaml` `local.provider_sub`: `openai-codex` OAuth, `openai` + `OPENAI_API_KEY` / `MOONSHOT_API_KEY`, or `anthropic` + `ANTHROPIC_API_KEY`); not the codex npm CLI
 
 ### Linting
 

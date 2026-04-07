@@ -33,9 +33,9 @@ These phases analyze the design spec for quality issues before any code is gener
 
 | # | Phase Name | Type | Blocking? | Description |
 |---|-----------|------|-----------|-------------|
-| R1 | Load & Validate Spec | Deterministic | Never | Loads the design spec CSV, checks required columns (`spec_id`, `module_tag`, `module_role`, `requirement`, `acceptance_criteria`) |
+| R1 | Load & Validate Spec | Deterministic | Never | Loads the design spec CSV, checks required columns (`spec_id`, `module_tag`, `module_role`, `requirement`) |
 | R2 | Decomposition Check | Deterministic (NLP) | **Conditional** | Detects specs with mixed responsibilities (split candidates) and specs that are overly similar within the same module (merge candidates). Uses sentence-level embedding variance. |
-| R3 | Ambiguity Detection | Agent (AI) | **Conditional** | AI agent reads all specs in parallel and flags specs whose requirements or acceptance criteria are ambiguous or underspecified |
+| R3 | Ambiguity Detection | Agent (AI) | **Conditional** | AI agent reads all specs in parallel and flags specs whose requirements are ambiguous or underspecified |
 | R4 | Testability Audit | Agent (AI) | **Conditional** | AI agent reads all specs in parallel and flags specs that cannot be deterministically tested |
 
 **Refine blocking behavior:** Phases R2, R3, R4 each produce a list of `manual_resolution_items`. Each item is a flag on one or more specs. If any items exist, the pipeline pauses and the user must resolve each item before continuing.

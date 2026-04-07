@@ -6,7 +6,7 @@ PIKA supports two provider categories: **local** and **stub**. Each has its own 
 
 | Category | Description | Example implementations |
 |----------|-------------|-------------------------|
-| **local** | Loca in-process LLM agent | OpenAI Codex, OpenAI API via Loca |
+| **local** | Loca in-process LLM agent | Anthropic Messages API, OpenAI-compatible API, or ChatGPT Codex via Loca |
 | **stub** | Mock agent for testing | Deterministic stub outputs |
 
 ## Config Structure
@@ -16,8 +16,7 @@ PIKA supports two provider categories: **local** and **stub**. Each has its own 
 ```yaml
 # local: Loca in-process agent
 local:
-  command: codex
-  provider_sub: openai-codex   # openai (API key) or openai-codex (ChatGPT OAuth)
+  provider_sub: openai-codex   # openai | anthropic | openai-codex
   model:
     default:
       name: gpt-5.3-codex
@@ -44,7 +43,7 @@ agent:
   # When provider is local (Loca):
   # default:
   #   name: gpt-5-codex
-  # local_provider: openai-codex
+  # provider_sub: openai-codex  # workspace key matches pika.yaml local.provider_sub
   # implement_from_specs:
   #   name: gpt-5.3-codex-spark
   #   reasoning_effort: xhigh

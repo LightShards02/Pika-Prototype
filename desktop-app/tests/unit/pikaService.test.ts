@@ -4,8 +4,9 @@ import {
   mapStderrToPhaseUpdates,
   computeProgress,
   transformAgentItems,
+  transformImplementItems,
 } from '../../src/services/pikaService';
-import type { Phase } from '../../src/types';
+import type { Phase, RawAgentItem, RawDecompositionGateItem } from '../../src/types';
 import { stderrLines, mockSpecs, mockAmbiguityItem, mockTestabilityItem } from '../fixtures/testData';
 
 // --- parseStderrLine ---
@@ -392,5 +393,80 @@ describe('transformAgentItems', () => {
     const result = transformAgentItems([mockAmbiguityItem, mockTestabilityItem], mockSpecs);
     expect(result[0].itemIndex).toBe(0);
     expect(result[1].itemIndex).toBe(1);
+  });
+
+  it('transforms v2 single-concern merged item when format_version is omitted (gate JSON)', () => {
+    const v2single: RawAgentItem = {
+      item_id: 'AMB-001',
+      spec_id: 'SPEC-001',
+      is_compound: false,
+      title: 'Vague authentication requirement',
+      concerns: [
+        {
+          item_id: 'AMB-001',
+          agent_type: 'ambiguity',
+          title: 'Vague authentication requirement',
+          field: 'requirement',
+          suggested_improvement: 'System shall authenticate users via OAuth2 with PKCE flow',
+          vague_phrases: ['authenticate users'],
+        },
+      ],
+      options: mockAmbiguityItem.options,
+    };
+    const result = transformAgentItems([v2single], mockSpecs);
+    expect(result[0].reason).toBe('authenticate users');
+    expect(result[0].currentText).toBe('System shall authenticate users via OAuth2');
+    expect(result[0].isCompound).toBe(false);
+    expect(result[0].concerns).toHaveLength(1);
+  });
+
+  it('transforms decomposition split_candidate rows', () => {
+    const decomp: RawDecompositionGateItem = {
+      item_id: 'DECOMP-SPLIT-SPEC-001',
+      title: 'Spec may have mixed responsibilities: SPEC-001',
+      spec_id: 'SPEC-001',
+      issue_kind: 'split_candidate',
+      reason: 'High topic variance detected.',
+      options: [
+        { option_id: 'let_agent_edit', label: 'Let agent split', effect: 'Calls spec_editor.' },
+        { option_id: 'skip', label: 'Keep as-is', effect: 'Leaves unchanged.' },
+      ],
+    };
+    const result = transformAgentItems([decomp], mockSpecs);
+    expect(result[0].spec_ids).toEqual(['SPEC-001']);
+    expect(result[0].reason).toBe('High topic variance detected.');
+    expect(result[0].options).toHaveLength(2);
+    expect(result[0].isCompound).toBe(false);
+  });
+});
+
+describe('transformImplementItems', () => {
+  it('maps evidence_refs to spec_ids for highlighting', () => {
+    const result = transformImplementItems([
+      {
+        item_id: 'issue-1',
+        title: 'Dependency gap',
+        question: 'Which module owns the DTO?',
+        blocking_reason: 'Planner could not infer ownership.',
+        options: [{ option_id: 'skip', label: 'Skip', effect: 'Defer' }],
+        evidence_refs: ['A1', 'B2'],
+      },
+    ]);
+    expect(result[0].spec_ids).toEqual(['A1', 'B2']);
+    expect(result[0].isCompound).toBe(false);
+    expect(result[0].concerns).toEqual([]);
+  });
+
+  it('tolerates missing or empty options (validation-only items)', () => {
+    const result = transformImplementItems([
+      {
+        item_id: 'val-1',
+        title: 'Contract edit required',
+        question: 'Fix duplicate field in contract X.',
+        blocking_reason: 'Duplicate field name.',
+        options: [],
+      },
+    ]);
+    expect(result[0].options).toEqual([]);
   });
 });

@@ -15,7 +15,7 @@
    b. Extract headers and row dicts for downstream steps.
    c. Produces no file.
 4. `[v0.0.0][deterministic]` **Validate Required Columns** (`refine.required_column_validation`): Enforce required columns on the loaded design spec.
-  a. Check headers for required columns: `spec_id`, `module_tag`, `module_role`, `requirement`, `acceptance_criteria`.
+  a. Check headers for required columns: `spec_id`, `module_tag`, `module_role`, `requirement`. (`acceptance_criteria` is optional on input; refine may add or overwrite it in output.)
    b. Match is case-insensitive.
    c. Stop early with a clear error listing all missing columns if any are absent.
    d. Produces no file.
@@ -26,8 +26,8 @@
    d. Produces: `run_meta.json`.
 6. `[v0.0.0][deterministic]` **Run Decomposition Check** (`refine.decomposition.enabled`): Detect structural issues in specs using NLP sentence embeddings.
   a. Load `all-MiniLM-L6-v2` sentence-transformer model.
-   b. **Split candidates**: For each spec, combine `requirement` + `acceptance_criteria` text, split into sentences, compute pairwise cosine similarity variance across sentence embeddings. Flag specs where variance exceeds `variance_threshold` (default `0.15`), indicating mixed topic responsibilities.
-   c. **Merge candidates**: Group specs by `module_tag`, embed combined text per spec, compute cross-spec pairwise cosine similarity. Flag spec pairs where similarity exceeds `similarity_threshold` (default `0.85`), indicating redundant specs within the same module.
+   b. **Split candidates**: For each spec, use `requirement` text only, split into sentences, compute pairwise cosine similarity variance across sentence embeddings. Flag specs where variance exceeds `variance_threshold` (default `0.15`), indicating mixed topic responsibilities.
+   c. **Merge candidates**: Group specs by `module_tag`, embed requirement text per spec, compute cross-spec pairwise cosine similarity. Flag spec pairs where similarity exceeds `similarity_threshold` (default `0.85`), indicating redundant specs within the same module.
    d. If `decomposition.blocking` is true and any items are found, convert flags to `manual_resolution_items` and block execution. Each item offers `let_agent_edit` (agent splits/merges) or `skip` (keep as-is) options.
    e. Skipped entirely when `decomposition.enabled` is false or the sentence-transformers library is unavailable.
    f. Produces: `decomposition_flags.json`.

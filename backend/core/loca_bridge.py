@@ -10,6 +10,7 @@ Provides:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -29,6 +30,106 @@ from loca.tools import build_default_registry
 
 from core.agent_invoker import extract_json_from_text
 from core.pika_config import get_pika_config
+
+# Loca ``model.provider`` values Pika may select via workspace / pika.yaml.
+_VALID_LOCAL_PROVIDER_SUB = frozenset({"openai", "openai-codex", "anthropic"})
+
+_RUN_LOG = logging.getLogger("agent_cli.run")
+_LOCA_SCHEMA_DEBUG_MAX_CHARS = 14_000
+
+
+def _last_assistant_text_from_messages(messages: list[dict]) -> str:
+    """Extract plain text from the last assistant message (Anthropic-style blocks)."""
+    for msg in reversed(messages):
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            parts: list[str] = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    parts.append(str(block.get("text", "")))
+            return " ".join(parts).strip()
+    return ""
+
+
+def _try_recover_json_from_result(result: AgentResult) -> dict[str, Any] | None:
+    """Try to extract parseable JSON from a Loca result that failed schema validation.
+
+    Returns a dict when JSON is recoverable (PIKA's filter+validate can handle
+    extra-property stripping), or None when no valid JSON is available.
+    """
+    # Loca may have parsed the output even though schema validation failed.
+    if result.json_output is not None and isinstance(result.json_output, dict):
+        return result.json_output
+    # Fall back to text extraction from the last assistant message.
+    last_text = _last_assistant_text_from_messages(result.messages)
+    if not last_text.strip():
+        return None
+    try:
+        return extract_json_from_text(last_text)
+    except (ValueError, json.JSONDecodeError):
+        return None
+
+
+def _emit_loca_schema_failure_debug(result: AgentResult) -> None:
+    """When Loca's in-loop schema check fails, log always; stderr only if text is extractable."""
+    excerpt = _last_assistant_text_from_messages(result.messages)
+    if excerpt.strip():
+        preview = excerpt[:_LOCA_SCHEMA_DEBUG_MAX_CHARS]
+        if len(excerpt) > _LOCA_SCHEMA_DEBUG_MAX_CHARS:
+            preview += (
+                f"\n... [truncated, {len(excerpt) - _LOCA_SCHEMA_DEBUG_MAX_CHARS} more chars]"
+            )
+        try:
+            sys.stderr.write(
+                "[PIKA] Loca schema validation failed (before PIKA post-check).\n"
+                "[PIKA] Last assistant message text (raw model output, may be truncated):\n"
+                + preview
+                + "\n"
+            )
+            sys.stderr.flush()
+        except OSError:
+            pass
+        _RUN_LOG.warning(
+            "Loca schema validation failed: %s | assistant excerpt (truncated): %s",
+            result.error,
+            excerpt[:4000],
+        )
+    else:
+        # Capture raw assistant message structure for diagnostics.
+        raw_content_info = ""
+        for msg in reversed(result.messages):
+            if msg.get("role") != "assistant":
+                continue
+            content = msg.get("content")
+            if isinstance(content, list):
+                raw_content_info = (
+                    f"assistant content blocks: {len(content)}, "
+                    f"types: {[b.get('type', '?') for b in content if isinstance(b, dict)]}"
+                )
+            elif isinstance(content, str):
+                raw_content_info = f"assistant content is str, len={len(content)}"
+            else:
+                raw_content_info = f"assistant content type: {type(content).__name__}"
+            break
+        if not raw_content_info:
+            raw_content_info = f"no assistant message found ({len(result.messages)} messages total)"
+        try:
+            sys.stderr.write(
+                f"[PIKA] Loca schema validation failed (no extractable text). "
+                f"Diagnostic: {raw_content_info} | error: {result.error}\n"
+            )
+            sys.stderr.flush()
+        except OSError:
+            pass
+        _RUN_LOG.warning(
+            "Loca schema validation failed (no extractable assistant text in history): %s | diagnostic: %s",
+            result.error,
+            raw_content_info,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -81,19 +182,19 @@ class _UsageTrackingLLM(LLMClient):
 # ---------------------------------------------------------------------------
 
 def _get_local_provider_sub(config: dict[str, Any]) -> str:
-    """Return Loca provider sub-type: 'openai' or 'openai-codex'.
+    """Return Loca provider sub-type: 'openai', 'openai-codex', or 'anthropic'.
 
-    Resolution: workspace config agent.local_provider -> pika local.provider_sub -> 'openai-codex'.
+    Resolution: workspace ``agent.provider_sub`` -> pika ``local.provider_sub`` -> 'openai-codex'.
     """
     agent = config.get("agent")
     if isinstance(agent, dict):
-        val = agent.get("local_provider")
-        if isinstance(val, str) and val in ("openai", "openai-codex"):
+        val = agent.get("provider_sub")
+        if isinstance(val, str) and val in _VALID_LOCAL_PROVIDER_SUB:
             return val
 
     pika_local = get_pika_config().get("local", {})
     val = pika_local.get("provider_sub")
-    if isinstance(val, str) and val in ("openai", "openai-codex"):
+    if isinstance(val, str) and val in _VALID_LOCAL_PROVIDER_SUB:
         return val
     return "openai-codex"
 
@@ -126,6 +227,23 @@ def _get_local_top_p(config: dict[str, Any], prompt_name: str) -> float | None:
     return None
 
 
+def _get_local_base_url(config: dict[str, Any], prompt_name: str) -> str | None:
+    """Return base_url for the effective local agent profile.
+
+    Resolution is delegated to lifecycle's merged agent-profile helper.
+    Returns ``None`` when the provider default should be used.
+
+    Used for ``openai`` (OpenAI-compatible root) and ``anthropic`` (Messages API
+    base). Ignored for ``openai-codex`` (Codex uses the official endpoint).
+    """
+    from core.lifecycle import _get_effective_local_agent_profile
+
+    value = _get_effective_local_agent_profile(config, prompt_name).get("base_url")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
 def _map_reasoning_effort(effort: str) -> str | None:
     """Map Pika reasoning_effort to Loca's accepted values.
 
@@ -134,6 +252,45 @@ def _map_reasoning_effort(effort: str) -> str | None:
     """
     mapping = {"low": "low", "medium": "medium", "high": "high", "xhigh": "high"}
     return mapping.get(effort)
+
+
+def _resolve_openai_compatible_api_key() -> str:
+    """Return the API key for Loca's ``openai`` provider.
+
+    Loca only backfills from ``OPENAI_API_KEY`` when ``api_key`` is omitted; Pika
+    passes ``api_key`` explicitly, so an empty string would otherwise skip
+    Moonshot's documented ``MOONSHOT_API_KEY`` and yield 401s.
+
+    Precedence: ``OPENAI_API_KEY``, then ``MOONSHOT_API_KEY``. Values are
+    stripped of leading/trailing whitespace.
+
+    Returns:
+        Non-empty key string, or empty when neither variable yields a value.
+    """
+    for var in ("OPENAI_API_KEY", "MOONSHOT_API_KEY"):
+        raw = os.environ.get(var, "")
+        if isinstance(raw, str):
+            stripped = raw.strip()
+            if stripped:
+                return stripped
+    return ""
+
+
+def _resolve_anthropic_api_key() -> str:
+    """Return the API key for Loca's ``anthropic`` provider.
+
+    Loca backfills from ``ANTHROPIC_API_KEY`` when ``api_key`` is omitted; Pika
+    passes ``api_key`` explicitly so we mirror the openai env resolution here.
+
+    Returns:
+        Non-empty key string, or empty when the variable is unset or blank.
+    """
+    raw = os.environ.get("ANTHROPIC_API_KEY", "")
+    if isinstance(raw, str):
+        stripped = raw.strip()
+        if stripped:
+            return stripped
+    return ""
 
 
 def build_loca_config(
@@ -165,12 +322,15 @@ def build_loca_config(
     )
     temperature = _get_local_temperature(pika_config, prompt_name)
     top_p = _get_local_top_p(pika_config, prompt_name)
+    base_url = _get_local_base_url(pika_config, prompt_name)
     timeout = get_local_exec_timeout_sec(pika_config)
 
-    # Resolve API key for openai provider (Codex uses OAuth internally)
+    # Resolve API key (Codex uses OAuth internally)
     api_key = ""
     if provider_sub == "openai":
-        api_key = os.environ.get("OPENAI_API_KEY", "")
+        api_key = _resolve_openai_compatible_api_key()
+    elif provider_sub == "anthropic":
+        api_key = _resolve_anthropic_api_key()
 
     # Build stream setting from pika config
     stream = True
@@ -186,6 +346,7 @@ def build_loca_config(
             "temperature": temperature,
             "top_p": top_p,
             "reasoning_effort": reasoning_effort,
+            "base_url": base_url,
         },
         "agent": {
             "max_turns": 30,
@@ -215,7 +376,7 @@ def check_loca_available(provider_sub: str | None = None) -> bool:
     """Check if Loca can authenticate for the given sub-provider.
 
     Args:
-        provider_sub: 'openai' or 'openai-codex'. Defaults to 'openai-codex'.
+        provider_sub: 'openai', 'anthropic', or 'openai-codex'. Defaults to 'openai-codex'.
 
     Returns:
         True if credentials are available, False otherwise.
@@ -223,7 +384,10 @@ def check_loca_available(provider_sub: str | None = None) -> bool:
     provider_sub = provider_sub or "openai-codex"
 
     if provider_sub == "openai":
-        return bool(os.environ.get("OPENAI_API_KEY"))
+        return bool(_resolve_openai_compatible_api_key())
+
+    if provider_sub == "anthropic":
+        return bool(_resolve_anthropic_api_key())
 
     if provider_sub == "openai-codex":
         try:
@@ -333,28 +497,26 @@ def run_loca_agent(
             f"Loca agent exceeded max turns ({result.turns})"
         )
     if result.stop_reason == "schema_error":
-        raise ValueError(
-            f"Loca schema validation failed: {result.error or 'unknown'}"
-        )
-
-    # Extract JSON output
-    json_output: dict[str, Any]
-    if result.json_output is not None:
+        _emit_loca_schema_failure_debug(result)
+        # Attempt recovery: Loca rejects extra properties that PIKA's
+        # _filter_output_to_schema_properties would strip.  If we can
+        # extract parseable JSON, return it and let PIKA filter+validate.
+        recovered = _try_recover_json_from_result(result)
+        if recovered is not None:
+            _RUN_LOG.info(
+                "Loca schema validation failed but JSON was recoverable; "
+                "deferring to PIKA filter+validate pipeline."
+            )
+            json_output = recovered
+        else:
+            raise ValueError(
+                f"Loca schema validation failed: {result.error or 'unknown'}"
+            )
+    elif result.json_output is not None:
         json_output = result.json_output
     else:
         # Fall back to extracting JSON from last text block
-        last_text = ""
-        if result.messages:
-            last_msg = result.messages[-1]
-            content = last_msg.get("content")
-            if isinstance(content, str):
-                last_text = content
-            elif isinstance(content, list):
-                text_parts = [
-                    b.get("text", "") for b in content
-                    if isinstance(b, dict) and b.get("type") == "text"
-                ]
-                last_text = " ".join(text_parts)
+        last_text = _last_assistant_text_from_messages(result.messages)
         if not last_text.strip():
             raise ValueError("Loca agent produced no output")
         json_output = extract_json_from_text(last_text)

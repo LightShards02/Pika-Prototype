@@ -272,6 +272,6 @@ flowchart TB
 - `design_spec_path`: `commands.implement.inputs.design_spec_path` or `project.state.design_spec_path` -> e.g. `state/DESIGN-SPEC.csv`
 - `agent_runs_dir`: `out/agent_runs`
 - `agent_artifacts_dir`: `out/agent_artifacts`
-- `log_dir`: `logging.log_dir` or `out/logs`
+- `log_dir`: `default_outputs.log_dir` (workspace; same key as `pika.yaml` `default_outputs.log_dir`) or PIKA default `out/logs`
 - `test_spec_path`: `commands.implement.test_spec_path` -> `out/state/test_spec.csv`
 - `backups_dir`: `out/backups`

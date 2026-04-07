@@ -12,11 +12,14 @@ project:
     design_spec_path: spec.csv
     id_registry_path: out/state/id_registry.json
     sads_id_mapping_path: out/state/sads_id_mapping.json
+default_outputs:
+  log_dir: out/logs
+id_generation:
+  id_registry: out/state/id_registry.json
 logging:
   level: INFO
   verbose_level: DEBUG
   json: false
-  log_dir: out/logs
 `;
 
 describe('SettingsPage', () => {

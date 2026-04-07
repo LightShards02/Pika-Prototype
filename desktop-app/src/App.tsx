@@ -253,7 +253,11 @@ function App() {
               const gateData = await window.electronAPI.readGateOutput({ runDir });
               const items = activeCmd === 'implement'
                 ? transformImplementItems(gateData.items as RawImplementItem[])
-                : transformAgentItems(gateData.items as RawAgentItem[], useStore.getState().specs);
+                : transformAgentItems(
+                    gateData.items as RawAgentItem[],
+                    useStore.getState().specs,
+                    gateData.format_version,
+                  );
               setCurrentGateItems(items);
               setActiveItemIndex(0);
 

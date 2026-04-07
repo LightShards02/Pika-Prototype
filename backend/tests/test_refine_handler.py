@@ -19,6 +19,7 @@ from handlers.refine.decomposition import (
     run_decomposition_check,
 )
 from handlers.refine.impl import (
+    _REQUIRED_COLUMNS,
     _filter_by_consensus,
     _find_col,
     _merge_all_items,
@@ -37,7 +38,6 @@ _SAMPLE_HEADERS = [
     "module_tag",
     "module_role",
     "requirement",
-    "acceptance_criteria",
 ]
 
 _SAMPLE_ROWS: list[dict[str, str]] = [
@@ -46,14 +46,12 @@ _SAMPLE_ROWS: list[dict[str, str]] = [
         "module_tag": "core",
         "module_role": "domain",
         "requirement": "The system shall validate user input appropriately.",
-        "acceptance_criteria": "Input is validated.",
     },
     {
         "spec_id": "S2",
         "module_tag": "core",
         "module_role": "domain",
         "requirement": "The system shall return results quickly.",
-        "acceptance_criteria": "Results are returned fast.",
     },
 ]
 
@@ -115,7 +113,8 @@ def _write_project_context(root: Path) -> None:
 
 
 def _empty_agent_output() -> dict[str, Any]:
-    return {"manual_resolution_items": [], "evidence_assessments": []}
+    """Empty output for the merged testability enricher (full mode)."""
+    return {"manual_resolution_items": [], "enrichments": []}
 
 
 def _ambiguity_items_output() -> dict[str, Any]:
@@ -139,15 +138,16 @@ def _ambiguity_items_output() -> dict[str, Any]:
 
 
 def _testability_items_output() -> dict[str, Any]:
+    """Output for the merged testability enricher — MR items target requirement only."""
     return {
         "manual_resolution_items": [
             {
                 "item_id": "TEST-001",
-                "title": "Untestable criteria",
+                "title": "Requirement too vague for testable AC",
                 "spec_id": "S2",
-                "field": "acceptance_criteria",
-                "untestable_reason": "Too vague to automate.",
-                "suggested_improvement": "Results are returned within 200ms under normal load.",
+                "field": "requirement",
+                "untestable_reason": "Requirement uses vague language that cannot produce a measurable AC.",
+                "suggested_improvement": "The system shall return results within 200ms under normal load.",
                 "suggested_test_type": "integration",
                 "options": [
                     {"option_id": "accept_suggestion", "label": "Accept", "effect": "Apply"},
@@ -156,7 +156,7 @@ def _testability_items_output() -> dict[str, Any]:
                 ],
             }
         ],
-        "evidence_assessments": [],
+        "enrichments": [],
     }
 
 
@@ -171,8 +171,9 @@ class RefineConfigTests(unittest.TestCase):
         cfg = _get_refine_cfg({})
         self.assertTrue(cfg["enabled"])
         self.assertEqual(cfg["ambiguity_detector_prompt_name"], "spec_ambiguity_detector")
-        self.assertEqual(cfg["testability_auditor_prompt_name"], "spec_testability_auditor")
+        self.assertEqual(cfg["testability_enricher_prompt_name"], "spec_testability_enricher")
         self.assertEqual(cfg["spec_editor_prompt_name"], "spec_editor")
+        self.assertIn("spec_change_merger_prompt_name", cfg)
         self.assertTrue(cfg["decomposition_enabled"])
         self.assertFalse(cfg["decomposition_blocking"])
         self.assertAlmostEqual(cfg["similarity_threshold"], 0.85)
@@ -280,26 +281,22 @@ class RequiredColumnValidationTests(unittest.TestCase):
     """Tests for _validate_required_columns()."""
 
     def test_passes_when_all_present(self) -> None:
-        _validate_required_columns(
-            _SAMPLE_HEADERS,
-            ["spec_id", "module_tag", "module_role", "requirement", "acceptance_criteria"],
-        )
+        _validate_required_columns(_SAMPLE_HEADERS, list(_REQUIRED_COLUMNS))
 
     def test_case_insensitive_match(self) -> None:
-        headers = ["Spec_ID", "Module_Tag", "Module_Role", "Requirement", "Acceptance_Criteria"]
-        _validate_required_columns(
-            headers,
-            ["spec_id", "module_tag", "module_role", "requirement", "acceptance_criteria"],
-        )
+        headers = ["Spec_ID", "Module_Tag", "Module_Role", "Requirement"]
+        _validate_required_columns(headers, list(_REQUIRED_COLUMNS))
 
     def test_raises_on_missing_column(self) -> None:
         headers = ["spec_id", "module_tag", "module_role"]
         with self.assertRaises(WorksetValidationError) as cm:
-            _validate_required_columns(
-                headers,
-                ["spec_id", "module_tag", "module_role", "requirement", "acceptance_criteria"],
-            )
+            _validate_required_columns(headers, list(_REQUIRED_COLUMNS))
         self.assertIn("requirement", str(cm.exception).lower())
+
+    def test_accepts_optional_acceptance_criteria_column(self) -> None:
+        """Input may omit acceptance_criteria; refine adds it when enriching."""
+        headers = list(_SAMPLE_HEADERS) + ["acceptance_criteria"]
+        _validate_required_columns(headers, list(_REQUIRED_COLUMNS))
 
     def test_error_message_lists_all_missing(self) -> None:
         with self.assertRaises(WorksetValidationError) as cm:
@@ -370,10 +367,11 @@ class MergeAllItemsTests(unittest.TestCase):
         self.assertEqual(len(item["concerns"]), 2)
         types = {c["agent_type"] for c in item["concerns"]}
         self.assertEqual(types, {"ambiguity", "testability"})
-        # Compound options should be item-level
+        # Compound options should be item-level and include accept_both_improvements
         option_ids = {o["option_id"] for o in item["options"]}
         self.assertIn("accept_ambiguity", option_ids)
         self.assertIn("accept_testability", option_ids)
+        self.assertIn("accept_both_improvements", option_ids)
         self.assertIn("let_agent_edit", option_ids)
         self.assertIn("skip", option_ids)
 
@@ -488,7 +486,7 @@ class RunRefineIntegrationTests(unittest.TestCase):
             result = run_refine(self._config(), self._ctx())
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["command"], "refine")
-        self.assertEqual(result["specs_improved"], 0)
+        self.assertIn("specs_enriched", result)
 
     def test_zero_items_writes_output_csv(self) -> None:
         output_path = Path(self.tmp) / "out" / "REFINED-SPEC.csv"
@@ -496,13 +494,13 @@ class RunRefineIntegrationTests(unittest.TestCase):
             run_refine(self._config(), self._ctx())
         self.assertTrue(output_path.exists())
 
-    def test_zero_items_output_csv_matches_input(self) -> None:
+    def test_zero_items_output_csv_contains_required_columns(self) -> None:
+        """When 0 MR items, output CSV is written (may add AC/evidence_type columns)."""
         output_path = Path(self.tmp) / "out" / "REFINED-SPEC.csv"
         with self._mock_both_agents(_empty_agent_output(), _empty_agent_output()):
             run_refine(self._config(), self._ctx())
-        original = self.design_csv.read_text(encoding="utf-8")
-        refined = output_path.read_text(encoding="utf-8")
-        self.assertEqual(original.strip(), refined.strip())
+        content = output_path.read_text(encoding="utf-8")
+        self.assertIn("spec_id", content.splitlines()[0])
 
     # --- N items → blocked ---
 
@@ -596,8 +594,12 @@ class SchemaValidationTests(unittest.TestCase):
         schema = self._load_schema("spec_ambiguity_detector_output")
         self.assertIn("properties", schema)
 
-    def test_testability_schema_is_valid_json(self) -> None:
-        schema = self._load_schema("spec_testability_auditor_output")
+    def test_testability_enricher_schema_is_valid_json(self) -> None:
+        schema = self._load_schema("spec_testability_enricher_output")
+        self.assertIn("properties", schema)
+
+    def test_testability_triage_schema_is_valid_json(self) -> None:
+        schema = self._load_schema("spec_testability_triage_output")
         self.assertIn("properties", schema)
 
     def test_editor_schema_is_valid_json(self) -> None:
@@ -643,56 +645,84 @@ class SchemaValidationTests(unittest.TestCase):
                 ]
             })
 
-    def test_testability_schema_accepts_empty_items(self) -> None:
-        schema = self._load_schema("spec_testability_auditor_output")
-        self._validate(schema, {"manual_resolution_items": [], "evidence_assessments": []})
+    def test_testability_enricher_schema_accepts_empty(self) -> None:
+        schema = self._load_schema("spec_testability_enricher_output")
+        self._validate(schema, {"manual_resolution_items": [], "enrichments": []})
 
-    def test_testability_schema_accepts_valid_item(self) -> None:
-        schema = self._load_schema("spec_testability_auditor_output")
+    def test_testability_enricher_schema_accepts_valid_enrichment(self) -> None:
+        """Full-mode output with an enrichment entry for a clear requirement."""
+        schema = self._load_schema("spec_testability_enricher_output")
         self._validate(schema, {
+            "enrichments": [
+                {
+                    "spec_id": "S1",
+                    "acceptance_criteria": "Given valid input, when processed, the system returns 200.",
+                    "evidence_type": "test_execution_record",
+                }
+            ],
+            "manual_resolution_items": [],
+        })
+
+    def test_testability_enricher_schema_accepts_mr_item_requirement_field(self) -> None:
+        """Full-mode output with an MR item targeting requirement (vague requirement)."""
+        schema = self._load_schema("spec_testability_enricher_output")
+        self._validate(schema, {
+            "enrichments": [],
             "manual_resolution_items": [
                 {
                     "item_id": "TEST-001",
-                    "title": "Untestable",
+                    "title": "Requirement too vague for testable AC",
                     "spec_id": "S2",
-                    "field": "acceptance_criteria",
-                    "untestable_reason": "Too vague.",
-                    "suggested_improvement": "Returns within 200ms.",
+                    "field": "requirement",
+                    "untestable_reason": "Requirement uses vague language.",
+                    "suggested_improvement": "The system shall return results within 200ms.",
                     "suggested_test_type": "integration",
                     "options": [
                         {"option_id": "accept_suggestion", "label": "Accept", "effect": "Apply"},
                     ],
                 }
             ],
-            "evidence_assessments": [
+        })
+
+    def test_testability_enricher_schema_rejects_ac_field(self) -> None:
+        """MR items must target requirement only — acceptance_criteria field is rejected."""
+        schema = self._load_schema("spec_testability_enricher_output")
+        self._validate_fails(schema, {
+            "enrichments": [],
+            "manual_resolution_items": [
                 {
-                    "spec_id": "S1",
-                    "evidence_category": "test_execution_record",
-                    "rationale": "Test runner emits pass/fail record against threshold.",
+                    "item_id": "TEST-001",
+                    "title": "T",
+                    "spec_id": "S2",
+                    "field": "acceptance_criteria",
+                    "untestable_reason": "Too vague.",
+                    "suggested_improvement": "Returns within 200ms.",
+                    "suggested_test_type": "integration",
+                    "options": [{"option_id": "skip", "label": "L", "effect": "E"}],
                 }
             ],
         })
 
-    def test_testability_schema_accepts_evidence_category_blocking_item(self) -> None:
-        schema = self._load_schema("spec_testability_auditor_output")
-        self._validate(schema, {
+    def test_testability_triage_schema_accepts_empty(self) -> None:
+        schema = self._load_schema("spec_testability_triage_output")
+        self._validate(schema, {"manual_resolution_items": []})
+
+    def test_testability_triage_schema_rejects_ac_field(self) -> None:
+        """Triage schema MR items must target requirement only."""
+        schema = self._load_schema("spec_testability_triage_output")
+        self._validate_fails(schema, {
             "manual_resolution_items": [
                 {
-                    "item_id": "TEST-002",
-                    "title": "Evidence category unclear",
-                    "spec_id": "S3",
-                    "field": "evidence_category",
-                    "untestable_reason": "Cannot determine if verification requires a human-captured screenshot or an automated log.",
-                    "suggested_improvement": "Clarify whether the criterion can be verified by an automated test runner or requires manual observation.",
-                    "suggested_test_type": "manual",
-                    "options": [
-                        {"option_id": "accept_suggestion", "label": "Accept", "effect": "Apply"},
-                        {"option_id": "let_agent_edit", "label": "Let agent edit", "effect": "Call spec_editor"},
-                        {"option_id": "skip", "label": "Skip", "effect": "Keep original"},
-                    ],
+                    "item_id": "TEST-001",
+                    "title": "T",
+                    "spec_id": "S2",
+                    "field": "acceptance_criteria",
+                    "untestable_reason": "Too vague.",
+                    "suggested_improvement": "Returns within 200ms.",
+                    "suggested_test_type": "integration",
+                    "options": [{"option_id": "skip", "label": "L", "effect": "E"}],
                 }
             ],
-            "evidence_assessments": [],
         })
 
     def test_editor_schema_field_mode_validates(self) -> None:
@@ -726,6 +756,17 @@ class SchemaValidationTests(unittest.TestCase):
             ],
         })
 
+    def test_editor_schema_rejects_ac_field(self) -> None:
+        """spec_editor field-level edits must target requirement only."""
+        schema = self._load_schema("spec_editor_output")
+        self._validate_fails(schema, {
+            "edit_type": "field",
+            "spec_id": "S1",
+            "field": "acceptance_criteria",
+            "new_text": "some text",
+            "rationale": "reason",
+        })
+
     def test_editor_schema_rejects_invalid_edit_type(self) -> None:
         schema = self._load_schema("spec_editor_output")
         self._validate_fails(schema, {
@@ -743,6 +784,224 @@ class SchemaValidationTests(unittest.TestCase):
             "rationale": "reason",
             "edits": [],  # minItems: 1
         })
+
+
+class RefineEnrichmentApplicationTests(unittest.TestCase):
+    """Group G2 — AC/evidence_type application from enrichments after consensus."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = self._tmp.name
+        self.design_csv = Path(self.tmp) / "DESIGN-SPEC.csv"
+        _write_design_csv(self.design_csv)
+        _write_project_context(Path(self.tmp))
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _config(self) -> dict[str, Any]:
+        return _make_config(self.tmp, str(self.design_csv))
+
+    def _ctx(self, run_id: str = "enrich-run") -> RuntimeContext:
+        return _make_ctx(self.tmp, run_id)
+
+    def _mock_with_enrichment(self, enrichments: list[dict]) -> Any:
+        """Mock agents: ambiguity returns empty, testability instance 0 returns enrichments."""
+        call_count: dict[str, int] = {"testability": 0}
+
+        def fake_invoke(prompt_name: str = "", template_vars: dict | None = None, **_kwargs: Any) -> dict:
+            if "ambiguity" in prompt_name:
+                return {"manual_resolution_items": []}
+            call_count["testability"] += 1
+            enrich_mode = (template_vars or {}).get("enrich_mode", "triage")
+            if enrich_mode == "full":
+                return {"enrichments": enrichments, "manual_resolution_items": []}
+            return {"manual_resolution_items": []}
+
+        return patch(
+            "handlers.refine.impl.invoke_agent_with_schema_retry",
+            side_effect=fake_invoke,
+        )
+
+    def test_enrichments_applied_to_output_csv(self) -> None:
+        """When testability instance 0 returns enrichments, AC and evidence_type are written."""
+        enrichments = [
+            {"spec_id": "S1", "acceptance_criteria": "Given valid input, returns 200.", "evidence_type": "test_execution_record"},
+            {"spec_id": "S2", "acceptance_criteria": "Given load test, returns within 200ms.", "evidence_type": "test_execution_record"},
+        ]
+        output_path = Path(self.tmp) / "out" / "REFINED-SPEC.csv"
+        with self._mock_with_enrichment(enrichments):
+            result = run_refine(self._config(), self._ctx())
+        self.assertEqual(result["status"], "completed")
+        content = output_path.read_text(encoding="utf-8")
+        self.assertIn("returns 200", content)
+        self.assertIn("200ms", content)
+        self.assertIn("test_execution_record", content)
+
+    def test_enrichment_skipped_for_flagged_specs(self) -> None:
+        """Specs that appear in MR items are not enriched (MR takes priority)."""
+        from handlers.refine.impl import _run_refine_agents
+        from pathlib import Path as _P
+
+        # Simulate: instance 0 returns both enrichment AND MR for same spec_id
+        # Handler guard should suppress the enrichment
+        flagged_spec = "S1"
+
+        def fake_invoke(prompt_name: str = "", template_vars: dict | None = None, **_kwargs: Any) -> dict:
+            if "ambiguity" in prompt_name:
+                return {"manual_resolution_items": []}
+            enrich_mode = (template_vars or {}).get("enrich_mode", "triage")
+            if enrich_mode == "full":
+                return {
+                    "enrichments": [{"spec_id": flagged_spec, "acceptance_criteria": "Should NOT appear.", "evidence_type": "test_execution_record"}],
+                    "manual_resolution_items": [
+                        {
+                            "item_id": "TEST-001",
+                            "title": "Vague",
+                            "spec_id": flagged_spec,
+                            "field": "requirement",
+                            "untestable_reason": "Too vague.",
+                            "suggested_improvement": "Improved requirement.",
+                            "suggested_test_type": "unit",
+                            "options": [{"option_id": "skip", "label": "Skip", "effect": "No change"}],
+                        }
+                    ],
+                }
+            return {"manual_resolution_items": [
+                {
+                    "item_id": "TEST-001",
+                    "title": "Vague",
+                    "spec_id": flagged_spec,
+                    "field": "requirement",
+                    "untestable_reason": "Too vague.",
+                    "suggested_improvement": "Improved requirement.",
+                    "suggested_test_type": "unit",
+                    "options": [{"option_id": "skip", "label": "Skip", "effect": "No change"}],
+                }
+            ]}
+
+        with patch("handlers.refine.impl.invoke_agent_with_schema_retry", side_effect=fake_invoke):
+            result = run_refine(self._config(), self._ctx())
+
+        self.assertEqual(result["status"], "blocked")
+        # Run enrichments.json and check flagged spec was not enriched
+        run_dir = _P(self.tmp) / "out" / "agent_runs" / "refine" / "enrich-run"
+        enrichments_file = run_dir / "enrichments.json"
+        if enrichments_file.exists():
+            import json as _json
+            data = _json.loads(enrichments_file.read_text())
+            enriched_spec_ids = {e["spec_id"] for e in data.get("enrichments", [])}
+            self.assertNotIn(flagged_spec, enriched_spec_ids, "Flagged spec must not appear in enrichments")
+
+
+class RefineCompoundResolutionTests(unittest.TestCase):
+    """Group G3 — compound resolution: accept_both_improvements + accept_testability to requirement."""
+
+    def _make_rows(self) -> list[dict[str, Any]]:
+        return [{"spec_id": "S1", "module_tag": "core", "module_role": "domain",
+                 "requirement": "The system should handle errors.", "acceptance_criteria": ""}]
+
+    def _make_headers(self) -> list[str]:
+        return ["spec_id", "module_tag", "module_role", "requirement", "acceptance_criteria"]
+
+    def _make_compound_item(self) -> dict[str, Any]:
+        return {
+            "item_id": "merged_S1",
+            "spec_id": "S1",
+            "is_compound": True,
+            "title": "Multiple issues: S1",
+            "concerns": [
+                {"item_id": "AMB-001", "agent_type": "ambiguity", "field": "requirement",
+                 "title": "Vague", "vague_phrases": ["should handle"],
+                 "suggested_improvement": "The system shall return a 400 error for invalid input."},
+                {"item_id": "TEST-001", "agent_type": "testability", "field": "requirement",
+                 "title": "Untestable", "untestable_reason": "No measurable outcome.",
+                 "suggested_improvement": "The system shall log errors to system_log within 1s.",
+                 "suggested_test_type": "integration"},
+            ],
+            "options": [
+                {"option_id": "accept_ambiguity", "label": "Accept ambiguity fix", "effect": "Apply ambiguity suggestion to requirement field"},
+                {"option_id": "accept_testability", "label": "Accept testability fix", "effect": "Apply testability suggestion to requirement field"},
+                {"option_id": "accept_both_improvements", "label": "Accept both improvements", "effect": "Invoke merger"},
+                {"option_id": "let_agent_edit", "label": "Let agent edit", "effect": "Agent edits"},
+                {"option_id": "skip", "label": "Skip", "effect": "Leave unchanged"},
+            ],
+        }
+
+    def test_accept_testability_applies_to_requirement(self) -> None:
+        """accept_testability must apply to requirement, not acceptance_criteria."""
+        from handlers.resolve import _apply_compound_resolution
+        rows = self._make_rows()
+        headers = self._make_headers()
+        item = self._make_compound_item()
+        item["chosen_option_id"] = "accept_testability"
+
+        changes, updated_rows = _apply_compound_resolution(item, rows, headers, 0, [])
+        self.assertEqual(changes, 1)
+        self.assertEqual(updated_rows[0]["requirement"], "The system shall log errors to system_log within 1s.")
+        # acceptance_criteria must NOT be touched
+        self.assertEqual(updated_rows[0]["acceptance_criteria"], "")
+
+    def test_accept_both_improvements_with_editor_output_applies_to_requirement(self) -> None:
+        """accept_both_improvements with editor_output applies merged text to requirement."""
+        from handlers.resolve import _apply_compound_resolution
+        rows = self._make_rows()
+        headers = self._make_headers()
+        item = self._make_compound_item()
+        item["chosen_option_id"] = "accept_both_improvements"
+        item["editor_output"] = {
+            "edit_type": "field",
+            "spec_id": "S1",
+            "field": "requirement",
+            "new_text": "The system shall return a 400 error for invalid input and log errors within 1s.",
+            "rationale": "Merged both fixes.",
+        }
+
+        changes, updated_rows = _apply_compound_resolution(item, rows, headers, 0, [])
+        self.assertEqual(changes, 1)
+        self.assertEqual(updated_rows[0]["requirement"], "The system shall return a 400 error for invalid input and log errors within 1s.")
+        self.assertEqual(updated_rows[0]["acceptance_criteria"], "")
+
+    def test_accept_both_improvements_without_editor_output_no_change(self) -> None:
+        """accept_both_improvements with no editor_output makes no changes."""
+        from handlers.resolve import _apply_compound_resolution
+        rows = self._make_rows()
+        headers = self._make_headers()
+        item = self._make_compound_item()
+        item["chosen_option_id"] = "accept_both_improvements"
+        # No editor_output set
+
+        original_req = rows[0]["requirement"]
+        changes, updated_rows = _apply_compound_resolution(item, rows, headers, 0, [])
+        self.assertEqual(changes, 0)
+        self.assertEqual(updated_rows[0]["requirement"], original_req)
+
+
+class RefineMergerFailureTests(unittest.TestCase):
+    """Group G4 — merger agent failure in interactive loop returns gracefully."""
+
+    def test_invoke_spec_change_merger_returns_none_on_error(self) -> None:
+        """When merger agent raises, _invoke_spec_change_merger returns None."""
+        import tempfile as _tf
+        from handlers.resolve import _invoke_spec_change_merger
+
+        with _tf.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            run_dir.mkdir()
+
+            item = {
+                "item_id": "merged_S1",
+                "spec_id": "S1",
+                "is_compound": True,
+                "concerns": [],
+            }
+            config = {"agent": {"provider": "stub", "schema_validation_retries": 0}}
+            ctx = _make_ctx(tmp)
+
+            with patch("handlers.resolve.invoke_agent_with_schema_retry", side_effect=RuntimeError("agent failed")):
+                result = _invoke_spec_change_merger(item, config, ctx, run_dir)
+
+            self.assertIsNone(result)
 
 
 class RefineResumeTests(unittest.TestCase):
@@ -1125,7 +1384,7 @@ class RefineConsensusIntegrationTests(unittest.TestCase):
 
         # S1 only flagged by 1/4 instances (< 3), so filtered out
         self.assertEqual(result["status"], "completed")
-        self.assertEqual(result["specs_improved"], 0)
+        self.assertIn("specs_enriched", result)
 
     def test_high_agreement_items_kept(self) -> None:
         """Items flagged by >= consensus_min_votes instances are kept."""

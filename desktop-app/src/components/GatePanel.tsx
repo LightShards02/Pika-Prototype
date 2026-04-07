@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, CheckCircle2, Wand2, SkipForward, RefreshCcw, Loader2, Check, X, ArrowLeft } from 'lucide-react';
+import { ChevronLeft, ChevronRight, CheckCircle2, Wand2, SkipForward, RefreshCcw, Loader2, Check, X, ArrowLeft, GitMerge } from 'lucide-react';
 import { useStore } from '../store';
 import { clsx } from 'clsx';
 import { useEffect, useState } from 'react';
@@ -38,6 +38,7 @@ export const GatePanel = () => {
 
   const currentItem = currentGateItems[activeItemIndex];
   const allResolved = currentGateItems.every(item => item.selectedOption);
+  const isImplementGate = run.command === 'implement';
 
   useEffect(() => {
     if (currentItem) {
@@ -264,6 +265,8 @@ export const GatePanel = () => {
       case 'accept_testability':
       case 'accept':
         return <CheckCircle2 size={20} />;
+      case 'accept_both_improvements':
+        return <GitMerge size={20} />;
       case 'let_agent_edit':
       case 'agent':
         return <Wand2 size={20} />;
@@ -626,10 +629,16 @@ export const GatePanel = () => {
           <div className="p-1.5 bg-warning/10 text-warning rounded">
             <RefreshCcw size={20} />
           </div>
-          <h2 className="text-[16px] font-semibold text-text-primary">Gate: Ambiguity & Testability Review</h2>
+          <h2 className="text-[16px] font-semibold text-text-primary">
+            {isImplementGate
+              ? 'Gate: implementation plan review'
+              : 'Gate: Ambiguity & Testability Review'}
+          </h2>
         </div>
         <p className="text-[14px] text-text-secondary mb-6">
-          {currentGateItems.length} items need your review to continue.
+          {isImplementGate
+            ? `${currentGateItems.length} planner or validation items need a decision before continuing.`
+            : `${currentGateItems.length} items need your review to continue.`}
         </p>
 
         <div className="flex items-center gap-4">
@@ -668,7 +677,11 @@ export const GatePanel = () => {
             <div>
               <div className="mb-3 flex items-center gap-2">
                 <span className="px-2 py-0.5 bg-indigo-light text-indigo-dark text-[12px] font-mono font-semibold rounded">
-                  {currentItem.spec_ids.join(', ')}
+                  {currentItem.spec_ids.length > 0
+                    ? currentItem.spec_ids.join(', ')
+                    : isImplementGate
+                      ? 'Plan / contract'
+                      : '—'}
                 </span>
                 {currentItem.isCompound && (
                   <span className="px-2 py-0.5 bg-amber-100 text-amber-700 text-[11px] font-bold rounded">
@@ -694,7 +707,7 @@ export const GatePanel = () => {
                           )}>
                             {concern.agentType}
                           </span>
-                          <span className="text-[11px] font-mono text-text-tertiary">{concern.field}</span>
+                          <span className="text-[11px] font-mono text-text-tertiary">requirement</span>
                         </div>
                         <h3 className="text-[16px] font-mono text-indigo-dark leading-relaxed">
                           &ldquo;{concern.currentText}&rdquo;
@@ -736,10 +749,10 @@ export const GatePanel = () => {
                     );
                   })}
 
-                  {/* Shared actions: let_agent_edit and skip */}
+                  {/* Shared actions: accept_both_improvements, let_agent_edit, skip */}
                   <div className="grid grid-cols-1 gap-3 pt-2 border-t border-border-subtle">
                     {currentItem.options
-                      .filter(o => o.id === 'let_agent_edit' || o.id === 'skip')
+                      .filter(o => o.id === 'accept_both_improvements' || o.id === 'let_agent_edit' || o.id === 'skip')
                       .map((option) => (
                         <button
                           key={option.id}
@@ -782,7 +795,14 @@ export const GatePanel = () => {
                     &ldquo;{currentItem.currentText}&rdquo;
                   </h3>
                   <p className="text-[14px] text-text-secondary leading-relaxed">
-                    <span className="font-semibold text-text-primary">Vague Phrases:</span> {currentItem.reason}
+                    <span className="font-semibold text-text-primary">
+                      {isImplementGate
+                        ? 'Why this blocks:'
+                        : currentItem.type.startsWith('Testability')
+                          ? 'Untestable reason:'
+                          : 'Vague phrases:'}
+                    </span>{' '}
+                    {currentItem.reason}
                   </p>
                 </>
               )}
@@ -799,7 +819,7 @@ export const GatePanel = () => {
             )}
 
             {/* Option buttons (single items only — compound uses inline buttons above) */}
-            {!currentItem.isCompound && (
+            {!currentItem.isCompound && currentItem.options.length > 0 && (
               <div className="grid grid-cols-1 gap-3">
                 {currentItem.options.map((option) => (
                   <button
@@ -832,6 +852,13 @@ export const GatePanel = () => {
                   </button>
                 ))}
               </div>
+            )}
+            {!currentItem.isCompound && currentItem.options.length === 0 && (
+              <p className="text-[13px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-4 leading-relaxed">
+                This item has no selectable options in the UI (for example contract or spec edits). Resolve it by
+                editing <span className="font-mono">manual_resolution/resolutions.yaml</span> for this run, then use
+                the CLI <span className="font-mono">pika agent resolve</span> flow, or re-run after fixing the plan/spec.
+              </p>
             )}
           </div>
 

@@ -7,7 +7,8 @@
 #   - prompts.prompt_file (resolved from PIKA root)
 #   - prompt_names (resolved from pika.yaml)
 #   - schemas (resolved from pika.yaml schema_map)
-#   - id_generation.pattern, collision_scope
+#   - id_generation.spec/issue patterns, collision_scope (PIKA pika.yaml only)
+#   - default_outputs beyond log_dir (PIKA pika.yaml)
 #   - csv_contracts.add_if_missing (contract-defined columns)
 #   - outputs.* path structure (out/, out/logs, etc.)
 # Workspace config overrides PIKA defaults when specified.
@@ -28,8 +29,9 @@ agent:
   schema_validation_retries: 3
   stream_output: true  # Stream output + heartbeat when agent runs (local).
   # When provider is local (Loca):
-  # local_exec_timeout_sec: 1200  # Optional workspace override for long-running Loca calls
-  # local_provider: openai-codex  # Loca sub-provider: openai (API key) | openai-codex (ChatGPT OAuth). Default: openai-codex.
+  # exec_timeout_sec: 1200  # Optional workspace override (same key as pika.yaml local.exec_timeout_sec)
+  # provider_sub: openai-codex  # openai | anthropic | openai-codex (same key as pika.yaml local.provider_sub)
+  # With provider_sub openai, set OPENAI_API_KEY and/or MOONSHOT_API_KEY (Kimi/Moonshot docs use the latter).
   # Agent-specific local model settings. Keys use stable agent prompt names;
   # local prompt variants like map_spec_to_code_local resolve through the base key.
   # default:
@@ -221,7 +223,8 @@ commands:
       blocking: false          # set true to gate on split/merge candidates before agents run
       similarity_threshold: 0.85
       variance_threshold: 0.15
-    # Ambiguity detector + testability auditor: N parallel instances each; consensus filters by spec_id vote count.
+    # Ambiguity detector + testability enricher: N parallel instances each; consensus filters MR items by spec_id vote count.
+    # Testability enricher instance 0 runs in full mode (writes AC + evidence_type); replicas run in triage mode (MR only).
     agent_replicas: 4
     consensus_min_votes: 3
     # Optional: same appendix knobs as implement (refine loads appendices for ambiguity/testability agents only).
@@ -240,11 +243,13 @@ commands:
       design_spec_path: { path: out/state/REFINED-SPEC.csv, no_overwrite: false }
       agent_runs_dir: { path: out/agent_runs, no_overwrite: false }
 
+default_outputs:
+  log_dir: out/logs
+
 id_generation:
-  registry_path: out/state/id_registry.json
+  id_registry: out/state/id_registry.json
 
 logging:
   level: INFO
   verbose_level: DEBUG
   json: true
-  log_dir: out/logs

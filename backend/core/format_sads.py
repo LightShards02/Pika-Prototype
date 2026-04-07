@@ -1014,7 +1014,7 @@ def normalize_raw_sads(
     registry_path_str = default_outputs.get("id_registry", "out/state/id_registry.json")
     id_gen = config.get("id_generation", {})
     if isinstance(id_gen, dict):
-        rp = id_gen.get("registry_path")
+        rp = id_gen.get("id_registry")
         if isinstance(rp, str) and rp.strip():
             registry_path_str = rp.strip()
     registry_path = Path(registry_path_str)
@@ -1029,7 +1029,7 @@ def normalize_raw_sads(
 
         # 6. Persist registry and ID mapping: write to out/state first, then copy to project.state
         if not dry_run:
-            # Write registry to out/state (id_generation.registry_path)
+            # Write registry to out/state (id_generation.id_registry)
             resolved_registry = registry_path if registry_path.is_absolute() else (project_root / registry_path)
             resolved_registry.parent.mkdir(parents=True, exist_ok=True)
             resolved_registry.write_text(json.dumps(registry, indent=2), encoding="utf-8")

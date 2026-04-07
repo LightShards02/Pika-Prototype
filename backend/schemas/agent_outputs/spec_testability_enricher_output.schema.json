@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SpecTestabilityEnricherOutput",
+  "description": "Full output of the spec_testability_enricher agent (instance 0 only). For clear requirements: writes acceptance_criteria + evidence_type in enrichments[]. For vague requirements: emits a requirement-targeted manual_resolution_item. An empty manual_resolution_items array means all requirements are clear and all AC is in enrichments[].",
+  "type": "object",
+  "required": ["enrichments", "manual_resolution_items"],
+  "additionalProperties": false,
+  "properties": {
+    "enrichments": {
+      "type": "array",
+      "description": "Per-spec AC + evidence_type for requirements that are clear enough to derive testable criteria. Must NOT include a spec_id that also appears in manual_resolution_items.",
+      "items": { "$ref": "#/$defs/enrichment_item" }
+    },
+    "manual_resolution_items": {
+      "type": "array",
+      "description": "Requirement-targeted items for specs whose requirement is too vague to derive testable AC. field is always 'requirement'. Must NOT include a spec_id that also appears in enrichments.",
+      "items": { "$ref": "#/$defs/testability_item" }
+    }
+  },
+  "$defs": {
+    "enrichment_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["spec_id", "acceptance_criteria", "evidence_type"],
+      "properties": {
+        "spec_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "spec_id of the row being enriched."
+        },
+        "acceptance_criteria": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Concrete, testable acceptance criteria derived from the requirement. Set to 'NA' when evidence_type is 'NA'."
+        },
+        "evidence_type": {
+          "type": "string",
+          "enum": [
+            "test_execution_record",
+            "audit_trail",
+            "system_log",
+            "defect_report",
+            "build_version_record",
+            "ui_screenshot",
+            "screen_recording",
+            "serial_debug_log",
+            "network_packet_capture",
+            "database_export",
+            "api_response_log",
+            "performance_profiler_output",
+            "NA"
+          ],
+          "description": "Most appropriate evidence type for verifying this requirement, or NA when no evidence type applies."
+        }
+      }
+    },
+    "testability_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "item_id",
+        "title",
+        "spec_id",
+        "field",
+        "untestable_reason",
+        "suggested_improvement",
+        "suggested_test_type",
+        "options"
+      ],
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Unique identifier for this resolution item (e.g. TEST-001)."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Short human-readable summary of why the requirement cannot produce testable AC."
+        },
+        "spec_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identifier of the spec row with the vague requirement."
+        },
+        "field": {
+          "type": "string",
+          "const": "requirement",
+          "description": "Always 'requirement'. The suggestion targets the requirement text, not AC."
+        },
+        "untestable_reason": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Explanation of why the requirement is too vague to derive testable AC."
+        },
+        "suggested_improvement": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Complete replacement text for the requirement field that would make it clear enough to derive testable AC."
+        },
+        "suggested_test_type": {
+          "type": "string",
+          "enum": ["unit", "integration", "e2e", "manual"],
+          "description": "Test type the suggested_improvement would enable."
+        },
+        "options": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/resolution_option" },
+          "description": "Resolution options presented to the user."
+        }
+      }
+    },
+    "resolution_option": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["option_id", "label", "effect"],
+      "properties": {
+        "option_id": {
+          "type": "string",
+          "enum": ["accept_suggestion", "let_agent_edit", "skip"],
+          "description": "accept_suggestion: apply suggested_improvement to requirement; let_agent_edit: call spec_editor for a custom rewrite; skip: leave requirement unchanged."
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable option label."
+        },
+        "effect": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Short description of what choosing this option does."
+        }
+      }
+    }
+  }
+}

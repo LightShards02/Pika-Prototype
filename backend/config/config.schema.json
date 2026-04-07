@@ -6,6 +6,7 @@
   "required": [
     "version",
     "project",
+    "default_outputs",
     "commands",
     "id_generation",
     "logging"
@@ -36,6 +37,18 @@
         }
       }
     },
+    "default_outputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["log_dir"],
+      "properties": {
+        "log_dir": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Run log directory (relative to project root or absolute). Same key as pika.yaml default_outputs.log_dir; overrides PIKA default when set."
+        }
+      }
+    },
     "agent": {
       "type": "object",
       "additionalProperties": false,
@@ -60,10 +73,10 @@
           "deprecated": true,
           "description": "Deprecated. Historically used for the codex CLI; PIKA does not read this for provider=local (Loca). Kept for backward-compatible configs."
         },
-        "local_exec_timeout_sec": {
+        "exec_timeout_sec": {
           "type": "integer",
           "minimum": 1,
-          "description": "Timeout (seconds) for Loca agent calls when provider is local. Overrides pika local.exec_timeout_sec for this workspace."
+          "description": "Timeout (seconds) for Loca agent calls when provider is local. Same key as pika.yaml local.exec_timeout_sec; overrides PIKA default for this workspace."
         },
         "default": {
           "$ref": "#/$defs/local_agent_profile",
@@ -109,10 +122,10 @@
           "$ref": "#/$defs/local_agent_profile",
           "description": "Workspace override for the spec_editor agent."
         },
-        "local_provider": {
+        "provider_sub": {
           "type": "string",
-          "enum": ["openai", "openai-codex"],
-          "description": "Loca LLM sub-provider for local agent: openai (API key) or openai-codex (ChatGPT OAuth subscription). Default: openai-codex."
+          "enum": ["openai", "openai-codex", "anthropic"],
+          "description": "Loca LLM sub-provider for local agent: openai (OpenAI-compatible API key), anthropic (Anthropic Messages API + ANTHROPIC_API_KEY), or openai-codex (ChatGPT OAuth). Same key as pika.yaml local.provider_sub. Default: openai-codex."
         }
       }
     },
@@ -662,20 +675,23 @@
     "id_generation": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["registry_path"],
+      "required": ["id_registry"],
       "properties": {
-        "registry_path": { "type": "string", "minLength": 1 }
+        "id_registry": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Primary path for id_registry.json during format (before optional copy to project.state.id_registry_path). Same key as pika.yaml default_outputs.id_registry; overrides PIKA default when set."
+        }
       }
     },
     "logging": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["level", "verbose_level", "json", "log_dir"],
+      "required": ["level", "verbose_level", "json"],
       "properties": {
         "level": { "type": "string", "enum": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] },
         "verbose_level": { "type": "string", "enum": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] },
-        "json": { "type": "boolean" },
-        "log_dir": { "type": "string", "minLength": 1 }
+        "json": { "type": "boolean" }
       }
     }
   },

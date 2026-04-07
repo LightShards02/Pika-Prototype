@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "SpecTestabilityAuditorOutput",
-  "description": "Testability Auditor output. The agent scans SADS acceptance_criteria fields and emits manual_resolution_items for criteria that cannot be directly automated as tests or whose evidence category cannot be determined. It also emits evidence_assessments classifying each spec row's expected test evidence as tier_1 or tier_2. An empty manual_resolution_items array means all criteria are testable and evidence categories are clear.",
+  "description": "DEPRECATED: This schema has been replaced by spec_testability_enricher_output.schema.json and spec_testability_triage_output.schema.json. The merged testability+enricher agent writes acceptance_criteria directly for clear requirements and emits requirement-targeted MR items for vague ones. This file is kept for reference only.",
   "type": "object",
   "required": ["manual_resolution_items", "evidence_assessments"],
   "additionalProperties": false,

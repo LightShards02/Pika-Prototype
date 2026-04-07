@@ -1,9 +1,12 @@
 """Handler for `agent format` — SADS Formatter (Phase 0.b).
 
 Deterministic normalization pipeline (no LLM). Optional agent enrichment phase
-(``commands.format.enrichment.enabled: true``) fills ``module_role``,
-``evidence_type`` and ``acceptance_criteria`` via the ``design_doc_enricher``
-agent after the deterministic step completes.
+(``commands.format.enrichment.enabled: true``) fills ``module_role`` via the
+``design_doc_enricher`` agent after the deterministic step completes.
+
+Note: ``evidence_type`` and ``acceptance_criteria`` are no longer written by the
+format stage. They are produced by the ``spec_testability_enricher`` agent during
+the ``refine`` stage.
 """
 
 from __future__ import annotations
@@ -249,11 +252,13 @@ def _run_format_enrichment(
     ctx: RuntimeContext,
     out_file: Path,
 ) -> None:
-    """Invoke design_doc_enricher agent and apply module_role, evidence_type + acceptance_criteria.
+    """Invoke design_doc_enricher agent and apply module_role only.
 
-    Loads the written CSV, identifies rows needing enrichment (those missing
-    module_role, evidence_type, or acceptance_criteria when skip_filled is True),
-    invokes the agent, then applies the enrichment and re-writes the CSV file.
+    Loads the written CSV, identifies rows needing module_role enrichment, invokes
+    the agent, then applies module_role and re-writes the CSV file.
+
+    Note: evidence_type and acceptance_criteria are no longer written here.
+    They are produced by the spec_testability_enricher agent during the refine stage.
 
     Args:
         config: Full workspace config.
@@ -267,11 +272,9 @@ def _run_format_enrichment(
 
     skip_filled = _enrichment_skip_filled(config)
 
-    # Identify rows that need enrichment
+    # Identify rows that need module_role enrichment
     header_lower = {h.strip().lower(): h for h in headers if h}
     module_role_col = header_lower.get("module_role", "module_role")
-    et_col = header_lower.get("evidence_type", "evidence_type")
-    ac_col = header_lower.get("acceptance_criteria", "acceptance_criteria")
     spec_id_col = header_lower.get("spec_id", "spec_id")
     module_tag_col = header_lower.get("module_tag", "module_tag")
     req_col = header_lower.get("requirement", "requirement")
@@ -280,8 +283,6 @@ def _run_format_enrichment(
         rows_to_enrich = [
             r for r in rows
             if not r.get(module_role_col, "").strip()
-            or not r.get(et_col, "").strip()
-            or not r.get(ac_col, "").strip()
         ]
     else:
         rows_to_enrich = list(rows)
@@ -337,37 +338,22 @@ def _run_format_enrichment(
         post_schema_validate=_post_validate_enrich,
     )
 
-    # Apply enrichment deterministically
+    # Apply module_role enrichment deterministically
     module_role_by_tag: dict[str, str] = {
         m["module_tag"]: m["module_role"]
         for m in (agent_output.get("modules") or [])
         if isinstance(m, dict) and m.get("module_tag") and m.get("module_role")
     }
-    evidence_by_spec: dict[str, str] = {
-        s["spec_id"]: s["evidence_type"]
-        for s in (agent_output.get("specs") or [])
-        if isinstance(s, dict) and s.get("spec_id") and s.get("evidence_type")
-    }
-    criteria_by_spec: dict[str, str] = {
-        s["spec_id"]: s["acceptance_criteria"]
-        for s in (agent_output.get("specs") or [])
-        if isinstance(s, dict) and s.get("spec_id") and s.get("acceptance_criteria")
-    }
 
-    # Ensure module_role, evidence_type, and acceptance_criteria columns exist in headers
+    # Ensure module_role column exists in headers
     new_headers = list(headers)
     if module_role_col not in new_headers:
         new_headers.append(module_role_col)
-    if et_col not in new_headers:
-        new_headers.append(et_col)
-    if ac_col not in new_headers:
-        new_headers.append(ac_col)
 
     enriched_count = 0
     new_rows: list[dict[str, Any]] = []
     for row in rows:
         r = dict(row)
-        sid = r.get(spec_id_col, "").strip()
         mtag = r.get(module_tag_col, "").strip()
         changed = False
 
@@ -375,18 +361,6 @@ def _run_format_enrichment(
             role = module_role_by_tag.get(mtag, "")
             if role:
                 r[module_role_col] = role
-                changed = True
-
-        if not skip_filled or not r.get(et_col, "").strip():
-            ev = evidence_by_spec.get(sid, "")
-            if ev:
-                r[et_col] = ev
-                changed = True
-
-        if not skip_filled or not r.get(ac_col, "").strip():
-            criteria = criteria_by_spec.get(sid, "")
-            if criteria:
-                r[ac_col] = criteria
                 changed = True
 
         if changed:

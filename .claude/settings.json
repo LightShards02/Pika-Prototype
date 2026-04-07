@@ -7,7 +7,8 @@
       "WebFetch(domain:www.researchgate.net)",
       "WebFetch(domain:fda.gov)",
       "Read(~/.claude/plugins/marketplaces/claude-plugins-official/plugins/skill-creator/skills/skill-creator/**)",
-      "WebSearch"
+      "WebSearch",
+      "Read(/c/Users/night/Work/Echelondx/Loca/**)"
     ]
   }
 }
