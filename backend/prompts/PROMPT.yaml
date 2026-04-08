@@ -1142,13 +1142,36 @@ prompts:
 
       - If NO (requirement is vague): Go to Step 4.
 
-      Step 4 — Flag vague requirements:
-      The requirement is too vague to derive honest AC when it:
+      Step 4 — Flag untestable requirements:
+      The following rules identify requirements that cannot produce testable acceptance
+      criteria. The first group catches vagueness; the second group catches requirements
+      that are clear and precise but still untestable. Do not flag requirements that are
+      merely ambiguous without a testability dimension — the ambiguity detector handles
+      those separately.
+
+      The requirement cannot produce honest AC when it:
+
+        Vagueness-based rules:
         - Uses modal verbs ("should", "may", "might", "could") for observable behavior
         - Names behavior without measurable outcomes (e.g. "handles errors appropriately")
-        - References external contracts/schemas that the appendix does not resolve
+        - References external contracts, schemas, data references, or fixture definitions
+          that the appendix or project context does not resolve
         - Has circular or deferred oracle ("as defined in the spec")
         - Uses ":" or "as follows:" at the end (sequence header) only if the detail rows also fail
+
+        Testability-specific rules (clear intent, untestable outcome):
+        - Describes internal state, implementation technique, or design intent that produces
+          no system-visible output, artifact, or state change a tester could inspect
+          (e.g. "shall use the repository pattern", "shall ensure data integrity",
+          "shall use clean separation of concerns")
+        - Specifies ONLY what the system must NOT do (negative-only) without defining the
+          expected positive behavior or bounding the input space for absence verification
+          (e.g. "shall not return raw exceptions", "shall not expose database errors",
+          "shall not include stack traces")
+        - Uses universal quantifiers ("all", "every", "always", "any", "never") over an
+          unbounded or undefined input domain (e.g. "all valid inputs", "always completes",
+          "every possible combination"). Exception: do NOT flag when the domain is bounded
+          by a finite, enumerable reference in the requirement or appendix.
 
       Emit a manual_resolution_item with:
         - field: "requirement" (always)
