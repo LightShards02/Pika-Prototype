@@ -180,6 +180,7 @@ function App() {
             return; // Do NOT call cleanup() — more units remain
           }
           // Unexpected status from load unit (crash, config error, etc.) → terminal
+          updatePhase('R1', { status: 'failed' });
           cleanup();
           const fp = useStore.getState().phases;
           const { refineEnabled: re, implementEnabled: ie, decompositionEnabled: de } = useStore.getState();
@@ -203,6 +204,7 @@ function App() {
             return; // Do NOT call cleanup() — agents unit remains
           }
           // Unexpected status from decomp unit → terminal
+          updatePhase('R2', { status: 'failed' });
           cleanup();
           const fp = useStore.getState().phases;
           const { refineEnabled: re, implementEnabled: ie, decompositionEnabled: de } = useStore.getState();

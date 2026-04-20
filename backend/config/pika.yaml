@@ -76,7 +76,9 @@ commands:
     prompt_names:
       ambiguity_detector: spec_ambiguity_detector
       testability_enricher: spec_testability_enricher
+      testability_enricher: spec_testability_enricher
       spec_editor: spec_editor
+      spec_change_merger: spec_change_merger
       spec_change_merger: spec_change_merger
 
 # Schema key -> filename mapping under schemas_dir
@@ -88,6 +90,8 @@ schema_map:
   resolve_plan_output: issue_resolve_output.schema.json
   handshake_output: handshake_output.schema.json
   enrich_output: design_doc_enrich_output.schema.json
+  spec_testability_enricher_output: spec_testability_enricher_output.schema.json
+  spec_testability_triage_output: spec_testability_triage_output.schema.json
   spec_testability_enricher_output: spec_testability_enricher_output.schema.json
   spec_testability_triage_output: spec_testability_triage_output.schema.json
 
@@ -102,6 +106,8 @@ config_candidates:
 
 # --- local: Loca in-process (model, timeouts, temp workspaces) ---
 # Optional: ps1_path_windows (deprecated Codex CLI helpers on Windows only).
+# --- local: Loca in-process (model, timeouts, temp workspaces) ---
+# Optional: ps1_path_windows (deprecated Codex CLI helpers on Windows only).
 local:
   # Loca sub-provider: openai | anthropic | openai-codex (see agent.provider_sub in workspace schema).
   # For openai: OPENAI_API_KEY and/or MOONSHOT_API_KEY. For anthropic: ANTHROPIC_API_KEY.
@@ -114,7 +120,10 @@ local:
     default:
       name: gpt-5.3-codex
       # Use null to omit reasoning_effort so temperature/top_p are honored by Loca.
+      # Use null to omit reasoning_effort so temperature/top_p are honored by Loca.
       reasoning_effort: medium
+      # temperature: 0.7
+      # top_p: 0.2
       # temperature: 0.7
       # top_p: 0.2
       web_search: false
@@ -132,7 +141,21 @@ local:
     #   reasoning_effort: null
     #   top_p: 0.1
     #   temperature: 0.8
+      # base_url: "https://api.kimi.com/coding/"  # openai: OpenAI-compat root; anthropic: Messages API base
+    # map_spec_to_code:
+    #   name: gpt-5.3-codex
+    # implement_unified_planner:
+    #   name: gpt-5.3-codex
+    # implement_from_specs:
+    #   name: gpt-5.3-codex
+    # spec_editor:
+    #   name: gpt-5.4-mini
+    #   # null (or YAML none / string none) omits reasoning_effort so temperature/top_p apply.
+    #   reasoning_effort: null
+    #   top_p: 0.1
+    #   temperature: 0.8
 
+  # Windows: path to codex.ps1 for deprecated Codex CLI subprocess helpers only.
   # Windows: path to codex.ps1 for deprecated Codex CLI subprocess helpers only.
   ps1_path_windows: C:\Users\night\AppData\Roaming\npm\codex.ps1
   heartbeat_interval_sec: 30

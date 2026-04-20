@@ -802,6 +802,7 @@ prompts:
       - name: design_spec_csv
         required: true
         description: Minimal SADS design spec CSV with columns spec_id, module_tag, subunit, requirement only.
+        description: Minimal SADS design spec CSV with columns spec_id, module_tag, subunit, requirement only.
       - name: manual_resolution_file
         required: true
         description: Storage path for manual resolution artifacts.
@@ -818,6 +819,7 @@ prompts:
       You are a strict spec ambiguity detector.
       Your output JSON must validate against {{output_schema_file}} without exception.
       Return JSON only. Do not include markdown fences.
+      Scan every row's requirement field for vague or unmeasurable language. The design spec CSV omits acceptance_criteria; testability enrichment is handled separately by the testability enricher.
       Scan every row's requirement field for vague or unmeasurable language. The design spec CSV omits acceptance_criteria; testability enrichment is handled separately by the testability enricher.
       Cross-spec references: If a requirement references another spec by explicit ID (e.g. "as defined in A1001", "see A2003") or by relative position (e.g. "as specified above", "the row below"), resolve the reference against the CSV. For explicit IDs, look up the spec_id directly. For relative references like "above" or "below", use the adjacent rows in CSV order. If the resolved row exists and its requirement is concrete and measurable, do NOT flag the reference as vague. Only flag a cross-spec reference when the target row cannot be resolved or its requirement is itself vague.
       For each issue found, emit one manual_resolution_item with:
@@ -860,6 +862,7 @@ prompts:
       Appendix Documents:
       {{appendix_content}}
 
+      Design Spec (CSV — minimal columns: spec_id, module_tag, subunit, requirement):
       Design Spec (CSV — minimal columns: spec_id, module_tag, subunit, requirement):
       {{design_spec_csv}}
 
@@ -1016,6 +1019,7 @@ prompts:
       - name: field
         required: false
         description: Field name to rewrite (field mode only — always "requirement"; the design-reviewer pipeline targets requirement only).
+        description: Field name to rewrite (field mode only — always "requirement"; the design-reviewer pipeline targets requirement only).
       - name: affected_spec_ids
         required: false
         description: Comma-separated spec_ids involved (structural mode — split/merge candidates).
@@ -1031,11 +1035,13 @@ prompts:
       - name: full_spec_csv
         required: true
         description: Minimal SADS design spec CSV with columns spec_id, module_tag, subunit, requirement only. Provides row context for coherent rewrites and structural split/merge decisions.
+        description: Minimal SADS design spec CSV with columns spec_id, module_tag, subunit, requirement only. Provides row context for coherent rewrites and structural split/merge decisions.
     system: |
       You are a strict spec editor. Produce ONE edit only.
       Your output JSON must validate against {{output_schema_file}} without exception.
       Return JSON only. Do not include markdown fences.
       - If issue_kind is "field": produce a field-level edit with edit_type="field".
+        Set field to "requirement" (always), new_text to the complete replacement text, rationale to why it improves the spec.
         Set field to "requirement" (always), new_text to the complete replacement text, rationale to why it improves the spec.
       - If issue_kind is "structural": produce a structural edit with edit_type="structural".
         Use add/update/delete actions on spec rows. row_data must include all required SADS columns.
@@ -1342,6 +1348,7 @@ prompts:
 
   design_doc_enricher:
     description: Infer module_role (one per unique module_tag) from requirement text and module groupings. Produces a JSON object with modules[] array validated against the enrich output schema. Does NOT write acceptance_criteria or evidence_type — those are handled by the spec_testability_enricher agent in the refine stage.
+    description: Infer module_role (one per unique module_tag) from requirement text and module groupings. Produces a JSON object with modules[] array validated against the enrich output schema. Does NOT write acceptance_criteria or evidence_type — those are handled by the spec_testability_enricher agent in the refine stage.
     output_schema_file: schemas/agent_outputs/design_doc_enrich_output.schema.json
     template_variables:
       - name: output_schema_file
@@ -1380,6 +1387,7 @@ prompts:
       ## Rules
 
       - Every unique input module_tag appears exactly once in modules[].
+      - Do NOT invent module_tags absent from input.
       - Do NOT invent module_tags absent from input.
       - Output ONLY a single JSON object. No commentary, no markdown fences.
 
