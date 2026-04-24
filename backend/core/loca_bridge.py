@@ -284,7 +284,6 @@ class _UsageTrackingLLM(LLMClient):
 
 def _get_local_provider_sub(config: dict[str, Any]) -> str:
     """Return Loca provider sub-type: 'openai', 'openai-codex', or 'anthropic'.
-    """Return Loca provider sub-type: 'openai', 'openai-codex', or 'anthropic'.
 
     Resolution: workspace ``agent.provider_sub`` -> pika ``local.provider_sub`` -> 'openai-codex'.
     """
@@ -296,7 +295,6 @@ def _get_local_provider_sub(config: dict[str, Any]) -> str:
 
     pika_local = get_pika_config().get("local", {})
     val = pika_local.get("provider_sub")
-    if isinstance(val, str) and val in _VALID_LOCAL_PROVIDER_SUB:
     if isinstance(val, str) and val in _VALID_LOCAL_PROVIDER_SUB:
         return val
     return "openai-codex"

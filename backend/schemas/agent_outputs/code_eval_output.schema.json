@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CodeEvaluatorOutput",
+  "description": "Output of the implement-stage code_evaluator: per-spec acceptance-criteria assessment plus optional rerun guidance.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "passed",
+    "overall_rationale",
+    "criteria_assessment",
+    "run_summary"
+  ],
+  "properties": {
+    "passed": {
+      "type": "boolean",
+      "description": "Overall pass: true if no spec has a blocker-severity failure."
+    },
+    "failed_specs": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/failed_spec" }
+    },
+    "criteria_assessment": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/criterion_assessment" }
+    },
+    "overall_rationale": { "type": "string", "minLength": 1 },
+    "run_summary": { "$ref": "#/$defs/run_summary" }
+  },
+  "$defs": {
+    "run_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["success", "partial", "failed", "blocked"]
+        },
+        "notes": { "type": "string" }
+      }
+    },
+    "failed_spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["spec_id", "reason", "severity"],
+      "properties": {
+        "spec_id": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 },
+        "suggested_fix": { "type": "string" },
+        "severity": { "enum": ["minor", "major", "blocker"] }
+      }
+    },
+    "criterion_assessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["spec_id", "satisfied", "evidence_summary"],
+      "properties": {
+        "spec_id": { "type": "string", "minLength": 1 },
+        "satisfied": { "type": "boolean" },
+        "evidence_summary": { "type": "string", "minLength": 1 },
+        "evidence_type_considered": { "type": "string" }
+      }
+    }
+  }
+}

@@ -205,6 +205,19 @@ commands:
     #   max_files: 10
     #   max_lines_changed: 600
     #   max_context_tokens: 12000
+    # evaluator:
+    #   enabled: false              # When true, runs code_evaluator after batch execution.
+    #   max_eval_cycles: 1          # Re-run cycles after the first eval (0 disables re-runs).
+    #   fail_action: warn           # block | warn — what to do if eval fails after exhausting cycles.
+    #   rerun_severity_threshold: blocker  # major | blocker — minimum severity to trigger a re-run.
+    #   harnesses:
+    #     - syntax_check
+    #     - import_smoke
+    #     - unresolved_symbol
+    #     - forbidden_path_violation
+    #     - anchor_preservation
+    #     - diff_size_sanity
+    #   diff_size_sanity_max_lines: 2000
   resolve_plan:
     enabled: true
     inputs:
