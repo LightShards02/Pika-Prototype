@@ -14,5 +14,9 @@
       "Bash(npm run:*)",
       "Bash(npm install:*)"
     ]
-  }
+  },
+  "enabledMcpjsonServers": [
+    "playwright"
+  ],
+  "enableAllProjectMcpServers": true
 }

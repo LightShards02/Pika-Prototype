@@ -2,7 +2,7 @@
 
 ### Purpose
 
-PIKA is a contract-first, schema-driven CLI that centrally orchestrates multiple agents and documents to deliver a software project from requirements → design → implementation → review → issue resolution.
+PIKA is a contract-first, schema-driven **workflow orchestrator** (Python CLI in the repository `backend/` tree, plus an optional **desktop-app** operator UI) that centrally coordinates multiple agents and documents to deliver a software project from requirements → design → implementation → review → issue resolution.
 
 The workflow is multi-agent and document-centric:
 
@@ -16,6 +16,8 @@ PIKA’s job is to:
 3) validate agent outputs against JSON Schemas,  
 4) translate validated outputs into deterministic document/code changes,  
 5) persist logs and run artifacts for auditability.
+
+**Typical entrypoints:** Run `cli.py` from the **PIKA root** directory (parent of `core/`, i.e. `backend/` in this repo) with `--project-root` set to the **workspace** project directory. The desktop app drives the same commands and config for local operators.
 
 ---
 
@@ -87,6 +89,11 @@ Some situations require human decisions. These are emitted as **manual_resolutio
   - Inputs: Draft Formatted SADS + Design Issue Tracker
   - Output: Formatted SADS (approved canonical spec)
 
+- **Optional: Spec quality (`refine`; not on the original diagram)**
+  - Inputs: design spec (Formatted SADS or workspace-equivalent path per config), appendices, optional SRS context
+  - Agents: bounded passes (e.g. decomposition checks, ambiguity, testability) with schema-validated outputs
+  - Outputs: refinement reports and artifacts; may emit **manual_resolution_items** like other agent commands
+
 - **Phase 1: Project Implementation**
   - Inputs: Formatted SADS
   - Agent: Unified Planner + per-batch Implementer
@@ -109,12 +116,14 @@ Some situations require human decisions. These are emitted as **manual_resolutio
 
 ---
 
-### Command Surface (One Command per Agent)
+### Command surface
 
-Each agent is invoked by exactly one PIKA command. Each command:
-- produces schema-validated output files (no direct edits),
+Most workflow steps are **one PIKA CLI command ↔ one bounded agent (or deterministic handler)**. Each of those commands:
+- produces schema-validated output files when an LLM agent is involved (no direct edits to tracked documents by the model),
 - has deterministic translation rules for PIKA to apply updates to documents/code,
 - obeys the blocking manual_resolution_items rule.
+
+The **`resolve`** command is different: it is the **interactive** manual-resolution UI for blocked runs (orchestration over existing `manual_resolution_items` / `resolutions.yaml`), not a standalone “planner” agent in the sense of `plan` or `implement`.
 
 #### `plan` — Project Designer (Phase 0.a)
 
@@ -179,6 +188,24 @@ PIKA translation:
 
 ---
 
+#### `refine` — Spec quality (optional; pre- or post-approval)
+
+**Goal:** spec quality review and improvement workflow: decomposition checks, ambiguity detection, testability audit, and structured refinement suggestions.
+
+Inputs:
+- Design spec (per workspace `project.state.design_spec_path` / config)
+- Appendices and other paths as configured for refine
+- Optional SRS / project context for grounding
+
+Agent outputs (schema-validated files, per refine substeps):
+- If manual resolution is required: **manual_resolution_items only** (same blocking rule as other commands)
+- Otherwise: structured JSON artifacts under the run directory (reports, enrichments, etc.) per refine handler contracts
+
+PIKA translation:
+- orchestrates substeps, validates outputs, writes run artifacts, and applies permitted spec/table updates per handler rules
+
+---
+
 #### `map` — SADS Mapper (Phase 2)
 
 **Goal:** produce traceability mappings from each spec to code symbols (or “NA” if unmapped).
@@ -219,7 +246,7 @@ PIKA translation:
 
 ---
 
-#### `resolve_plan` — Resolution Organizer (Phase 2 and Phase 4)
+#### `resolve_plan` — Resolution Organizer (Phase 4)
 
 **Goal:** produce issue→spec mapping, prioritization, and resolution plans (no code diffs).
 
@@ -239,6 +266,14 @@ Agent outputs (schema-validated files):
 PIKA translation:
 - updates only the Implementation Issue Tracker planning/mapping columns (contract-defined)
 - persists resolution packets/checklists as run outputs
+
+---
+
+#### `resolve` — Interactive manual resolution (blocking runs)
+
+**Goal:** when a prior command stopped on **manual_resolution_items**, walk the operator through each item deterministically, record answers in the run’s resolution artifact (`resolutions.yaml` / companion files per handler), and allow resume of the blocked run.
+
+This command does not replace agent JSON schemas; it consumes the blocking items emitted by agents and unblocks downstream re-invocation.
 
 ---
 
@@ -292,8 +327,9 @@ Humans make decisions needed to unblock or finalize issue resolution; those deci
 PIKA distinguishes two roots:
 
 1. **PIKA root** — Parent of `cli.py`; contains PIKA source, schemas, contracts, prompts.
-   - Project-independent paths: `config/config.schema.json`, `docs/csv_contracts.md`, `docs/project_context_contracts.md`, `prompts/PROMPT.yaml`, `schemas/agent_outputs/*.schema.json`
+   - Project-independent paths (defaults): `config/config.schema.json`, `docs/csv_contracts.md`, `docs/project_context_contracts.md`, `prompts/PROMPT.yaml`, `schemas/agent_outputs/*.schema.json`
    - Always resolved from the PIKA installation directory
+   - **Indirection:** concrete paths for prompts, default schema filenames, `csv_contracts` excerpts, and related knobs are also driven by **`config/pika.yaml`** at PIKA root (`backend/config/pika.yaml` in this repo). When `pika.yaml` supplies `paths.*` or `schema_map`, those values are resolved relative to PIKA root unless absolute.
 
 2. **Workspace root** — The project PIKA is used to build (required input via `--project-root`, defaults to current directory).
    - Contains: project config (`config/config.yaml`), runtime outputs (`out/`), inputs (SRS, SADS, etc.)
@@ -301,4 +337,4 @@ PIKA distinguishes two roots:
 
 **Sanity check:** If a file/dir is project-independent, it lives under PIKA root; if it may vary per project, it lives under workspace root.
 
-Prompts are always resolved from PIKA root; only template variables vary per project. Schemas in config: workspace first, then PIKA root. Workspace root (`--project-root`) is required.
+Prompt template files resolve from PIKA root (or an absolute `prompt_file`); only template variables vary per project. **Output JSON Schemas** referenced from workspace `config.yaml` resolve **workspace first**, then PIKA root defaults from `pika.yaml` / built-ins. Workspace root (`--project-root`) is **required** for agent commands.

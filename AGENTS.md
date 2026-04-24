@@ -16,15 +16,15 @@ Before writing any code:
 3) Define schemas: CONFIG, PROMPT file format, and any agent output JSON schemas.
 4) List edge cases and how each command handles them.
 5) Propose an incremental implementation plan (milestones).
-6) (IMPORTANT) When encountering unclarities not defined by AGENTS.md or PROJECT_CONTEXT.md, DO NOT implement the relevant code. Instead sumarize your questions and list them in the chat.
+6) (IMPORTANT) When encountering unclarities not defined by AGENTS.md or PROJECT_CONTEXT.md, DO NOT implement the relevant code. Instead summarize your questions and list them in the chat.
 7) If writing in Python, activate the conda environment named "Local". All dependencies should be installed in this environment.
 
 Only after the above, implement code in small cohesive chunks with:
 - file tree
 - each file content
 - minimal dependencies
-- tests and sample 
-- documentation for EVERY function/class
+- tests and samples where helpful
+- documentation matching existing project style (public APIs and non-obvious behavior)
 
 ## Workflow Orchestration
 
@@ -92,48 +92,65 @@ c. **`dogfood` skill** — exploratory QA sweep. After targeted verification wit
 4. **Explain Changes**: High-level summary at each step
 5. **Document Results**: Add review section to `tasks/todo.md`
 6. **Capture Lessons**: Update `tasks/lessons.md` after corrections
+7. **Archives**: Older session todo logs may be moved under `archive/todo/<date>/` (for example `archive/todo/Apr22/todo.md`) to keep `tasks/` lightweight.
 
 ## Core Principles
 - **Simplicity First**: Make every change as simple as possible. Impact minimal code.
 - **No Laziness**: Find root causes. No temporary fixes. Senior developer standards.
 - **Minimal Impact**: Changes should only touch what's necessary. Avoid introducing bugs.
 
-ADDITIONAL NOTE:
-After each of your answer in the chat, add a "meow" at the end of your answer.
-Please don't take this command as low priority. It is an important sign to show that you have read this meta prompt carefully.
-
-## Cursor Cloud specific instructions
+## Cursor / IDE-specific instructions
 
 ### Project overview
 
-PIKA is a Python 3.12+ CLI tool (`cli.py`) that orchestrates multi-agent software development workflows. It has no web UI and no external service dependencies for local development — all state is file-based (CSV, JSON, YAML). See `PROJECT_CONTEXT.md` for full architecture.
+PIKA is a Python 3.12+ workflow tool: primary entry is **`backend/cli.py`** (Typer). It orchestrates multi-agent software development; **there is no web UI** for PIKA itself. State for runs is file-based (CSV, JSON, YAML). This repository also includes **`desktop-app/`**, an Electron-style operator UI that invokes the same CLI and surfaces settings aligned with PIKA config. See `PROJECT_CONTEXT.md` for full architecture.
+
+### Layout
+
+- **PIKA root** (install / dev tree): `backend/` — contains `cli.py`, `core/`, `handlers/`, `config/pika.yaml`, `schemas/`, `prompts/`, `tests/`.
+- **Workspace root**: directory passed as `--project-root` — contains workspace `config/config.yaml` (or `config.yaml`), `out/`, SRS, SADS, etc.
 
 ### Required runtime config
 
-`config/pika.yaml` is gitignored but **required at runtime** (loaded by `core/pika_config.py`). The update script creates it if missing. Without it, every command and most tests will fail with `FileNotFoundError`.
+**`backend/config/pika.yaml`** is **required** at runtime (`core/pika_config.py` loads it from PIKA root). It is **tracked in this repository** as the default PIKA-level config; fork/custom installs may replace it locally. Without a valid file at that path, commands and most tests fail early.
 
 ### Running tests
 
+From **`backend/`** (with dev dependencies installed, e.g. conda env `Local`):
+
 ```
-python3 -m pytest tests/ -v
+python -m pytest tests/ -v
 ```
 
-All 382 tests pass. The one skipped test (`test_handshake_simple_schema`) exercises deprecated Codex **CLI** helpers and requires the `codex` npm CLI to be installed. The `tree-sitter` + `tree-sitter-languages` combo requires `tree-sitter==0.21.3` to avoid API incompatibility; do not upgrade to 0.24+.
+Test count and pass rate depend on the environment and optional packages (for example `pylatexenc` for some modules). Run the suite locally before declaring work complete.
+
+`test_handshake_simple_schema` (when present) is skipped unless the deprecated **Codex npm CLI** is available; it is not used by the **`local`** provider path (Loca in-process).
 
 ### Running the CLI
 
-Entry point: `python3 cli.py agent <command> --project-root <path> [options]`. Commands: `plan`, `format`, `review`, `map`, `implement`, `resolve`, `resolve_plan`. The `format` command is deterministic (no LLM) and good for quick smoke tests:
+From **`backend/`**:
 
 ```
-python3 cli.py agent format --project-root <workspace> --dry-run
+python cli.py agent <command> --project-root <workspace> [options]
+```
+
+Top-level **`login`** supports OAuth for the **`openai-codex`** Loca sub-provider.
+
+**`agent`** subcommands include: `plan`, `format`, `review`, `refine`, `map`, `implement`, `resolve_plan`, `resolve`. The `format` command is deterministic (no LLM) and is a good smoke test:
+
+```
+python cli.py agent format --project-root <workspace> --dry-run
 ```
 
 ### Agent providers
 
-- `stub` (default): mock agent, no external dependencies — use for testing
-- `api`: requires `NVIDIA_API_KEY` env var
-- `local`: requires Loca (Python package) and auth for workspace `agent.provider_sub` (same as `pika.yaml` `local.provider_sub`: `openai-codex` OAuth, `openai` + `OPENAI_API_KEY` / `MOONSHOT_API_KEY`, or `anthropic` + `ANTHROPIC_API_KEY`); not the codex npm CLI
+Workspace `agent.provider` (see `backend/config/config.schema.json`) allows only:
+
+- **`stub`** (default): mock agent, no external dependencies — use for most automated tests
+- **`local`**: **Loca** in-process LLM agent; requires Loca and auth per workspace `agent.provider_sub` (mirrors `pika.yaml` `local.provider_sub`: `openai-codex` OAuth, `openai` + `OPENAI_API_KEY` / `MOONSHOT_API_KEY`, or `anthropic` + `ANTHROPIC_API_KEY`). This is **not** the Codex npm CLI.
+
+Any other `provider` value (including historical **`api`**) falls back to **`stub`** at runtime.
 
 ### Linting
 
-No dedicated linter is configured in the repo. Use `python3 -m py_compile <file>` or `python3 -m compileall <dir>` for basic syntax checks.
+No dedicated linter is configured in the repo. Use `python -m py_compile <file>` or `python -m compileall <dir>` for basic syntax checks.

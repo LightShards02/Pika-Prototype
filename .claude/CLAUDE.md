@@ -23,8 +23,8 @@ Only after the above, implement code in small cohesive chunks with:
 - file tree
 - each file content
 - minimal dependencies
-- tests and sample 
-- documentation for EVERY function/class
+- tests and samples where helpful
+- documentation matching existing project style (public APIs and non-obvious behavior)
 
 ## Workflow Orchestration
 
@@ -54,6 +54,24 @@ Only after the above, implement code in small cohesive chunks with:
 - Ask yourself: "Would a staff engineer approve this?"
 - Run tests, check logs, demonstrate correctness
 
+### 4.1 UI Verification
+- For UI or component changes, do not stop after unit tests.
+- Use the `playwright` MCP server to validate the changed flow in a real browser.
+- Check desktop and mobile widths before declaring the task done.
+- Verify hover, focus, keyboard navigation, scrolling, and modal behavior.
+- Report concrete UI defects such as overflow, clipping, invisible focus, broken tab order, z-index issues, layout shift, and off-screen dialogs.
+
+#### Recommended Browser Verification Stack
+Use these three tools together for thorough UI validation:
+
+a. **`playwright` MCP** — low-level browser control. Use for targeted, scripted interactions: navigate to a specific URL, fill a form, click a button, assert an element is visible, take a screenshot at a precise moment. This is your scalpel.
+
+b. **`agent-browser` skill** — higher-level browser automation for multi-step flows. Use when the verification task involves a sequence of actions that reads more naturally as a goal ("log in, navigate to settings, verify the toggle persists after reload") rather than individual tool calls. Wrap `playwright` calls inside agent-browser tasks to keep the main context clean.
+
+c. **`dogfood` skill** — exploratory QA sweep. After targeted verification with playwright/agent-browser, invoke `dogfood` to do a broad pass over the affected surface. It finds regressions, UX rough edges, and bugs you didn't think to check for. Use it as a final gate before marking any UI task done.
+
+**Recommended order**: `playwright` (targeted checks) → `agent-browser` (flow-level validation) → `dogfood` (exploratory sweep).
+
 ### 5. Demand Elegance (Balanced)
 - For non-trivial changes: pause and ask "is there a more elegant way?"
 - If a fix feels hacky: "Knowing everything I know now, implement the elegant solution"
@@ -74,15 +92,49 @@ Only after the above, implement code in small cohesive chunks with:
 4. **Explain Changes**: High-level summary at each step
 5. **Document Results**: Add review section to `tasks/todo.md`
 6. **Capture Lessons**: Update `tasks/lessons.md` after corrections
+7. **Archives**: Older session todo logs may be moved under `archive/todo/<date>/` (for example `archive/todo/Apr22/todo.md`) to keep `tasks/` lightweight.
 
 ## Core Principles
 - **Simplicity First**: Make every change as simple as possible. Impact minimal code.
 - **No Laziness**: Find root causes. No temporary fixes. Senior developer standards.
 - **Minimal Impact**: Changes should only touch what's necessary. Avoid introducing bugs.
 
-ADDITIONAL NOTE:
-After each of your answer in the chat, add a "meow" at the end of your answer.
-Please don't take this command as low priority. It is an important sign to show that you have read this meta prompt carefully.
+## Project runtime (Claude Code)
+
+### Project overview
+
+PIKA is a Python 3.12+ workflow tool: primary entry is **`backend/cli.py`**. It orchestrates multi-agent software development; **there is no web UI** for PIKA itself. State for runs is file-based (CSV, JSON, YAML). This repository also includes **`desktop-app/`**, an operator UI that invokes the same CLI. See `PROJECT_CONTEXT.md` for full architecture.
+
+### Layout
+
+- **PIKA root**: `backend/` — `cli.py`, `core/`, `handlers/`, `config/pika.yaml`, `schemas/`, `prompts/`, `tests/`.
+- **Workspace root**: `--project-root` — workspace `config/config.yaml` (or equivalents), `out/`, inputs.
+
+### Required runtime config
+
+**`backend/config/pika.yaml`** is required (`core/pika_config.py`). It is tracked in this repo as the default PIKA-level config.
+
+### Running tests
+
+From **`backend/`** (conda env `Local` recommended):
+
+```
+python -m pytest tests/ -v
+```
+
+Pass rate depends on installed optional dependencies. Run locally before declaring work complete.
+
+### Running the CLI
+
+From **`backend/`**: `python cli.py agent <command> --project-root <workspace> [options]`. Subcommands include `plan`, `format`, `review`, `refine`, `map`, `implement`, `resolve_plan`, `resolve`. Top-level `login` supports OAuth for Loca `openai-codex`.
+
+### Agent providers
+
+Only **`stub`** and **`local`** (Loca) are supported; other values fall back to **`stub`**.
+
+### Linting
+
+Use `python -m py_compile <file>` or `python -m compileall <dir>` for basic syntax checks.
 
 ## Project Skills
 

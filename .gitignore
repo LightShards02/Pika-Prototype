@@ -239,3 +239,5 @@ out
 **/node_modules/
 
 vscode-plugin/
+
+decks/
