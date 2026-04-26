@@ -174,6 +174,14 @@
     >
     > `(planning)` **Insert after the future evaluator gate: Apply Failure-Class Round Control Policy.** Do not treat all failures as "retry implementer once more." Route the next action by failure class: schema/path/semantic failures regenerate the same batch; evaluator or verification misses trigger a repair round; repeated conceptual misses trigger re-planning for the affected batch/spec set; repeated stagnant scores or unchanged failure modes trigger block/escalation.
 
+27. `[v0.0.4][agent+deterministic]` **Run Code Evaluator** (`implement.evaluator.enabled`): After batch execution, run deterministic evidence harnesses and the `code_evaluator` sub-agent to score applied diffs against per-spec acceptance criteria.
+    a. Run enabled deterministic harnesses (`syntax_check`, `import_smoke`, `unresolved_symbol`, `forbidden_path_violation`, `anchor_preservation`, `diff_size_sanity`) against touched files; capture structured results.
+    b. Invoke the `code_evaluator` agent with the harness results, applied-diffs summary, selected-specs CSV (including `acceptance_criteria` and `evidence_type`), and directory snapshot.
+    c. If the evaluator fails and any failed spec exceeds `rerun_severity_threshold`, re-run the affected batches with evaluator feedback as `semantic_retry_context`, up to `max_eval_cycles`.
+    d. On remaining failures: `fail_action=block` converts failed specs into `manual_resolution_items` and blocks the lifecycle; `fail_action=warn` logs and continues.
+    e. Skipped when `evaluator.enabled=false` or in dry-run mode.
+    f. Produces: `agent_outputs/code_eval_cycle_{N}.json`, `agent_outputs/harness_results_cycle_{N}.json`, and (on block) `manual_resolution/code_evaluation.json`.
+
 ## Planning-Only Harness Engineering Loops
 
 - `(planning)` **Out-of-band benchmark + ablation lane (not a per-run phase):** Maintain a representative implement benchmark suite and periodically re-run it while disabling or simplifying individual steps in this document. Use the measured impact on cost, latency, block rate, verification outcomes, and downstream issue rate to decide which harness components are still load-bearing.

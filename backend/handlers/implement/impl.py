@@ -55,6 +55,14 @@ from handlers.implement.catalog import (
 from handlers.implement.config import (
     _get_impl_cfg,
 )
+from handlers.implement.evaluator import (
+    build_evaluator_feedback,
+    collect_failed_spec_ids_above_threshold,
+    eval_failures_to_resolution_items,
+    evaluator_config,
+    run_code_evaluator,
+)
+from handlers.implement.evidence_harnesses import collect_harness_results
 from handlers.implement.execution import _collect_spec_output, _execute_batch
 from handlers.implement.helpers import (
     _find_col,
@@ -1420,12 +1428,60 @@ def _run_implement_inner(config: dict[str, Any], ctx: RuntimeContext) -> dict[st
             )
         _report_implement_phase("Execute", "ok", f"{len(briefs)} batches completed")
 
+    eval_stage_name = "evaluate_implementation"
+    skip_eval_resumed = (
+        resume_mode != "none" and eval_stage_name in completed_stages_set
+    )
+    if skip_eval_resumed:
+        _report_implement_phase("Evaluate", "skipped", "resume: cached")
+    else:
+        eval_outcome = _maybe_run_code_evaluator(
+            config=config,
+            ctx=ctx,
+            impl=impl,
+            schemas=schemas,
+            root=root,
+            paths=paths,
+            headers=headers,
+            selected=selected,
+            briefs=briefs,
+            module_plans=module_plans,
+            spec_outputs=spec_outputs,
+            completed_stages_so_far=base_stages + [f"execute_{b['batch_id']}" for b in briefs],
+            execute_batch_kwargs={
+                "config": config,
+                "ctx": ctx,
+                "impl": impl,
+                "schema_path": schemas["implementer"],
+                "root": root,
+                "context_text": context_text,
+                "paths": paths,
+                "design_headers": headers,
+                "shared_local_workspace": shared_local_workspace,
+                "appendix_text": appendix_text,
+            },
+            run_meta_path=run_meta_path,
+        )
+        if isinstance(eval_outcome, dict) and eval_outcome.get("status") is not None:
+            _cleanup_shared_local_workspace()
+            return eval_outcome
+
+    eval_completed_stages = (
+        [eval_stage_name]
+        if (skip_eval_resumed or evaluator_config(impl)["enabled"])
+        else []
+    )
+
     try:
         _update_design_and_test_spec(config, ctx, impl, design_path, spec_outputs)
     except Exception as exc:
         _update_run_meta_state(
             run_meta_path,
-            completed_stages=base_stages + [f"execute_{b['batch_id']}" for b in briefs],
+            completed_stages=(
+                base_stages
+                + [f"execute_{b['batch_id']}" for b in briefs]
+                + eval_completed_stages
+            ),
             failed_at_stage="translate",
         )
         _report_implement_phase("Translate", "failed", str(exc))
@@ -1448,7 +1504,12 @@ def _run_implement_inner(config: dict[str, Any], ctx: RuntimeContext) -> dict[st
     _report_implement_phase("Translate", "ok", "design spec + test spec updated")
     _update_run_meta_state(
         run_meta_path,
-        completed_stages=base_stages + [f"execute_{b['batch_id']}" for b in briefs] + ["translate"],
+        completed_stages=(
+            base_stages
+            + [f"execute_{b['batch_id']}" for b in briefs]
+            + eval_completed_stages
+            + ["translate"]
+        ),
         failed_at_stage=None,
     )
     _write_json(
@@ -1459,13 +1520,226 @@ def _run_implement_inner(config: dict[str, Any], ctx: RuntimeContext) -> dict[st
     return {"command": "implement", "status": ImplementStatus.COMPLETED, "dry_run": False}
 
 
-def _resolve_prompt_schemas(config: dict[str, Any], impl: dict[str, Any]) -> dict[str, Path]:
-    """Resolve schema paths for unified planner and implementer prompts."""
-    registry = load_prompt_registry(config)
+def _build_spec_to_module_tag(module_plans: list[dict[str, Any]]) -> dict[str, str]:
+    """Map spec_id -> owning module_tag using planned_anchors[].spec_ids."""
+    out: dict[str, str] = {}
+    for mp in module_plans or []:
+        if not isinstance(mp, dict):
+            continue
+        tag = str(mp.get("module_tag") or "").strip()
+        if not tag:
+            continue
+        for anchor in mp.get("planned_anchors", []) or []:
+            if not isinstance(anchor, dict):
+                continue
+            for sid in anchor.get("spec_ids", []) or []:
+                sid_s = str(sid).strip()
+                if sid_s and sid_s not in out:
+                    out[sid_s] = tag
+    return out
+
+
+def _build_anchor_plans_by_module(module_plans: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Same shape as the planner-time map; rebuilt at eval time for clarity."""
     return {
+        str(mp.get("module_tag") or "").strip(): mp
+        for mp in module_plans or []
+        if isinstance(mp, dict) and str(mp.get("module_tag") or "").strip()
+    }
+
+
+def _maybe_run_code_evaluator(
+    *,
+    config: dict[str, Any],
+    ctx: RuntimeContext,
+    impl: dict[str, Any],
+    schemas: dict[str, Path],
+    root: Path,
+    paths: dict[str, Path],
+    headers: list[str],
+    selected: list[dict[str, Any]],
+    briefs: list[dict[str, Any]],
+    module_plans: list[dict[str, Any]],
+    spec_outputs: dict[str, dict[str, Any]],
+    completed_stages_so_far: list[str],
+    execute_batch_kwargs: dict[str, Any],
+    run_meta_path: Path,
+) -> dict[str, Any] | None:
+    """Run code_evaluator stage when enabled. Returns terminal-status dict on block, else None.
+
+    On warn-action failure or pass: returns None and lifecycle continues.
+    On block-action failure: persists manual_resolution, updates run_meta, and
+    returns ``{"command": "implement", "status": ImplementStatus.BLOCKED, ...}``.
+    """
+    if ctx.dry_run:
+        return None
+    eval_cfg = evaluator_config(impl)
+    if not eval_cfg["enabled"]:
+        return None
+    schema_path = schemas.get("code_evaluator")
+    if schema_path is None:
+        _report_implement_phase("Evaluate", "warning", "code_evaluator schema unavailable; skipping")
+        return None
+
+    forbidden_paths = list(impl.get("forbidden_paths") or [])
+    anchor_plans_by_module = _build_anchor_plans_by_module(module_plans)
+    spec_to_module_tag = _build_spec_to_module_tag(module_plans)
+    selected_specs_csv = rows_to_csv(headers, selected)
+
+    max_cycles = max(0, int(eval_cfg["max_eval_cycles"]))
+    threshold = eval_cfg["rerun_severity_threshold"]
+    fail_action = eval_cfg["fail_action"]
+
+    last_eval: dict[str, Any] = {}
+    for cycle in range(max_cycles + 1):
+        try:
+            harness_results = collect_harness_results(
+                enabled_harnesses=eval_cfg["harnesses"],
+                project_root=root,
+                spec_outputs=spec_outputs,
+                forbidden_path_prefixes=forbidden_paths,
+                anchor_plans_by_module=anchor_plans_by_module,
+                spec_to_module_tag=spec_to_module_tag,
+                diff_size_max_lines=int(eval_cfg["diff_size_sanity_max_lines"]),
+            )
+        except Exception as exc:
+            harness_results = [
+                {
+                    "harness_id": "collect_harness_results",
+                    "spec_id": None,
+                    "passed": False,
+                    "details": f"harness collection error: {exc}",
+                    "duration_ms": 0,
+                }
+            ]
+        _write_json(paths["agent_outputs"] / f"harness_results_cycle_{cycle}.json", harness_results)
+
+        try:
+            eval_out = run_code_evaluator(
+                config=config,
+                ctx=ctx,
+                schema_path=schema_path,
+                project_root=root,
+                paths=paths,
+                selected_specs_csv=selected_specs_csv,
+                spec_outputs=spec_outputs,
+                harness_results=harness_results,
+                appendix_content=execute_batch_kwargs.get("appendix_text", "") or "",
+            )
+        except Exception as exc:
+            _report_implement_phase("Evaluate", "warning", f"evaluator agent error: {exc}; continuing")
+            return None
+        last_eval = eval_out
+        _write_json(paths["agent_outputs"] / f"code_eval_cycle_{cycle}.json", eval_out)
+
+        if bool(eval_out.get("passed")):
+            _report_implement_phase("Evaluate", "ok", f"cycle {cycle}: passed")
+            return None
+
+        failed_specs = eval_out.get("failed_specs") or []
+        rerun_ids = collect_failed_spec_ids_above_threshold(failed_specs, threshold)
+        if not rerun_ids or cycle == max_cycles:
+            break
+
+        affected_briefs = [
+            b for b in briefs
+            if any(sid in rerun_ids for sid in (b.get("spec_ids") or []))
+        ]
+        if not affected_briefs:
+            break
+
+        feedback = build_evaluator_feedback(eval_out, rerun_ids)
+        _report_implement_phase(
+            "Evaluate",
+            "running",
+            f"cycle {cycle}: re-running {len(affected_briefs)} batch(es)",
+        )
+        for brief in affected_briefs:
+            try:
+                rerun_result = _execute_batch(
+                    execute_batch_kwargs["config"],
+                    execute_batch_kwargs["ctx"],
+                    execute_batch_kwargs["impl"],
+                    execute_batch_kwargs["schema_path"],
+                    execute_batch_kwargs["root"],
+                    execute_batch_kwargs["context_text"],
+                    execute_batch_kwargs["paths"],
+                    execute_batch_kwargs["design_headers"],
+                    brief,
+                    completed_stages=completed_stages_so_far,
+                    local_workspace_override=execute_batch_kwargs.get("shared_local_workspace"),
+                    appendix_content=execute_batch_kwargs.get("appendix_text", "") or "",
+                    semantic_retry_context_override=feedback,
+                )
+            except Exception as exc:
+                _report_implement_phase("Evaluate", "warning", f"re-run failed for {brief['batch_id']}: {exc}")
+                continue
+            if rerun_result.get("status") != ImplementStatus.COMPLETED:
+                _report_implement_phase(
+                    "Evaluate",
+                    "warning",
+                    f"re-run not completed for {brief['batch_id']}: {rerun_result.get('reason', 'unknown')}",
+                )
+                continue
+            spec_outputs.update(rerun_result.get("spec_outputs", {}))
+
+    if bool(last_eval.get("passed")):
+        return None
+
+    failed_specs = last_eval.get("failed_specs") or []
+    if fail_action == "block":
+        items = eval_failures_to_resolution_items(failed_specs)
+        if items:
+            _manual_block(
+                None,
+                paths["manual"],
+                "code_evaluation",
+                run_dir=paths["run"],
+                command="implement",
+                run_id=ctx.run_id,
+                completed_stages=completed_stages_so_far,
+                items=items,
+            )
+            _update_run_meta_state(
+                run_meta_path,
+                completed_stages=completed_stages_so_far,
+                failed_at_stage="evaluate_implementation",
+            )
+            _write_json(
+                paths["run"] / "summary.json",
+                {
+                    "status": ImplementStatus.BLOCKED,
+                    "reason": "code_evaluation_failed",
+                    "blocking_items": len(items),
+                },
+            )
+            _report_implement_phase("Evaluate", "blocked", f"{len(items)} items require resolution")
+            return {
+                "command": "implement",
+                "status": ImplementStatus.BLOCKED,
+                "reason": "code_evaluation_failed",
+                "blocking_items": len(items),
+            }
+    _report_implement_phase(
+        "Evaluate",
+        "warning",
+        f"failed_specs={len(failed_specs)}; fail_action={fail_action}; continuing",
+    )
+    return None
+
+
+def _resolve_prompt_schemas(config: dict[str, Any], impl: dict[str, Any]) -> dict[str, Path]:
+    """Resolve schema paths for unified planner, implementer, and code evaluator prompts."""
+    registry = load_prompt_registry(config)
+    schemas: dict[str, Path] = {
         "unified_planner": registry.get_schema_path(impl["unified_planner_prompt_name"]),
         "implementer": registry.get_schema_path(impl["prompt_name"]),
     }
+    try:
+        schemas["code_evaluator"] = registry.get_schema_path("code_evaluator")
+    except Exception:
+        pass
+    return schemas
 
 
 def _project_context(config: dict[str, Any], root: Path, ctx: RuntimeContext) -> str:

@@ -586,6 +586,52 @@
               "minimum": 0,
               "maximum": 1,
               "description": "During batch briefs planning, items with confidence below this value are appended to manual_resolution_items and block downstream code generation until resolved. Project config overrides pika config (default 0.7). Set to 0 to disable."
+            },
+            "evaluator": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Code evaluator sub-agent run after batch execution. Scores applied diffs against per-spec acceptance_criteria and consumes deterministic harness gate results.",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "description": "When true, run the code_evaluator stage after batch execution. Default false."
+                },
+                "max_eval_cycles": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Maximum number of evaluator re-run cycles after the initial pass. 0 disables re-runs. Default 1."
+                },
+                "fail_action": {
+                  "type": "string",
+                  "enum": ["block", "warn"],
+                  "description": "Action when evaluator returns passed=false after exhausting cycles. block writes manual_resolution; warn logs and continues. Default warn."
+                },
+                "rerun_severity_threshold": {
+                  "type": "string",
+                  "enum": ["major", "blocker"],
+                  "description": "Minimum severity for failed_specs entries to trigger a targeted batch re-run. Default blocker."
+                },
+                "harnesses": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "syntax_check",
+                      "import_smoke",
+                      "unresolved_symbol",
+                      "forbidden_path_violation",
+                      "anchor_preservation",
+                      "diff_size_sanity"
+                    ]
+                  },
+                  "description": "Deterministic harness gates to run before each evaluator invocation. Default: all six."
+                },
+                "diff_size_sanity_max_lines": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Threshold above which a single spec-attributed diff is flagged as runaway by diff_size_sanity. Default 2000."
+                }
+              }
             }
           }
         },

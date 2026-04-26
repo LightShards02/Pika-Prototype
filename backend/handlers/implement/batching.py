@@ -534,6 +534,7 @@ def _build_briefs(
         briefs.append(
             {
                 "batch_id": batch["batch_id"],
+                "depends_on_batches": batch.get("depends_on_batches", []),
                 "spec_rows": [by_spec[sid] for sid in spec_ids if sid in by_spec],
                 "planned_anchors": planned_anchors,
                 "shared_contracts": relevant_contracts,

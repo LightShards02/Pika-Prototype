@@ -89,10 +89,12 @@ This document summarizes the input, translation, and output mechanism of each co
 |-------|---------|
 | **Input** | CLI `--design-spec` or `commands.implement.inputs.design_spec_path` or `project.state.design_spec_path` → Formatted SADS; `--project-context` → project context file (fallback: project root / `inputs.project_context_filename`) |
 | **Preprocessing** | Deterministic workset selection, module catalog build, unified planner run (with semantic retry), unified plan validation, batch planning, batch-plan validation, and brief generation |
-| **Agent output** | Unified planner output (`unified_plan.json` with `module_plans`, `spec_dependencies`, `shared_contracts`) and per-batch spec-keyed implement outputs (`{spec_id}.diffs`, mappings); or `manual_resolution_items` only (blocking) |
-| **Schema** | `schemas/agent_outputs/implement_unified_planner_output.schema.json`, `schemas/agent_outputs/implement_output.schema.json` |
+| **Agent output** | Unified planner output (`unified_plan.json` with `module_plans`, `spec_dependencies`, `shared_contracts`) and per-batch spec-keyed implement outputs (`{spec_id}.diffs`, mappings); optional `code_evaluator` output scoring applied diffs against per-spec `acceptance_criteria`; or `manual_resolution_items` only (blocking) |
+| **Schema** | `schemas/agent_outputs/implement_unified_planner_output.schema.json`, `schemas/agent_outputs/implement_output.schema.json`, `schemas/agent_outputs/code_eval_output.schema.json` |
 | **Translation** | Applies validated diffs to code; updates `mapped_code_symbols`/`mapped_test_cases`; writes trace and verification artifacts |
-| **Output** | Code changes; Design Spec mapping updates; test spec updates; run artifacts (`unified_plan`, `batch_plan`, `batch_plan_validation`, `batch_briefs`) |
+| **Output** | Code changes; Design Spec mapping updates; test spec updates; run artifacts (`unified_plan`, `batch_plan`, `batch_plan_validation`, `batch_briefs`, and — when `evaluator.enabled` — `code_eval_cycle_{N}.json` + `harness_results_cycle_{N}.json`) |
+
+**Code evaluator (optional):** When `commands.implement.evaluator.enabled: true`, after batch execution a deterministic harness suite (`syntax_check`, `import_smoke`, `unresolved_symbol`, `forbidden_path_violation`, `anchor_preservation`, `diff_size_sanity`) runs against touched files and the `code_evaluator` agent scores applied diffs against each spec's `acceptance_criteria` + `evidence_type`. Failed specs at or above `rerun_severity_threshold` trigger targeted batch re-runs up to `max_eval_cycles`; remaining failures either block (`fail_action: block`, writes `manual_resolution/code_evaluation.json`) or log and continue (`fail_action: warn`). Skipped entirely in dry-run.
 
 **Output paths:** Run workspace → `out/agent_runs/implement/{run_id}/`; artifacts → `out/agent_artifacts/implement/{run_id}/`; test spec (optional) → `out/state/test_spec.csv`.
 

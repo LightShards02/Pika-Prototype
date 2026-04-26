@@ -1543,6 +1543,7 @@ def _execute_batch(
     local_workspace_override: Path | None = None,
     patch_apply_lock: threading.Lock | None = None,
     appendix_content: str = "",
+    semantic_retry_context_override: str = "",
 ) -> dict[str, Any]:
     """Execute implementer for one batch, apply/verify patches, and append trace records."""
     steps = impl.get("steps", {}) if isinstance(impl.get("steps", {}), dict) else {}
@@ -1629,7 +1630,7 @@ def _execute_batch(
             batch_path_contract.get("forbidden_path_prefixes", []),
             indent=2,
         ),
-        "semantic_retry_context": "",
+        "semantic_retry_context": semantic_retry_context_override or "",
         "appendix_content": appendix_content,
     }
     template_vars["resolved_decisions"] = getattr(ctx, "resolved_decisions", None) or ""

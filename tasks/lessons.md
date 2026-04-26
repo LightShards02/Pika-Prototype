@@ -53,3 +53,9 @@
   Rule: In SADS rows, keep ownership at the module or workflow-subunit level only. Never include function names, class names, method names, or code-like dotted identifiers in `title`, `requirement`, or `acceptance_criteria`.
 - Pattern: Changes around local agent invocation (Loca bridge, lifecycle `invoke_agent_*`, provider config, streaming/schema paths) were treated as done after unit tests alone, while real providers behaved differently (e.g. Codex streaming vs completed payload).
   Rule: Whenever you touch code that affects model invocation, run at least one real PIKA command end-to-end against a workspace (any command that exercises the path—`refine`, `map`, `format` smoke, etc.) before you call the edit finished. Mocks and static review are not a substitute for that run.
+- Pattern: A project-level positioning summary described PIKA as only a CLI platform and omitted the existing desktop app surface.
+  Rule: When describing PIKA at the product/platform level, verify whether the point is backend-only or product-level. If product-level, include both the CLI orchestration layer and the desktop-app surface when present.
+- Pattern: A deck-outline document stayed at presenter-note level when the user needed slide-authoring detail.
+  Rule: When asked to draft deck contents, include proposed on-slide text and explicit instructions for where and how visuals should appear, not just high-level slide summaries.
+- Pattern: A user-modified derived presentation file was regenerated from source without first preserving the current derived file state.
+  Rule: Before running any script that rewrites a presentation or document artifact that already exists, always back up the exact target file first, even if the script also backs up an upstream source file.
