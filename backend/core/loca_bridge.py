@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import logging
-import logging
 import os
 import sys
 from pathlib import Path
@@ -31,106 +30,6 @@ from loca.tools import build_default_registry
 
 from core.agent_invoker import extract_json_from_text
 from core.pika_config import get_pika_config
-
-# Loca ``model.provider`` values Pika may select via workspace / pika.yaml.
-_VALID_LOCAL_PROVIDER_SUB = frozenset({"openai", "openai-codex", "anthropic"})
-
-_RUN_LOG = logging.getLogger("agent_cli.run")
-_LOCA_SCHEMA_DEBUG_MAX_CHARS = 14_000
-
-
-def _last_assistant_text_from_messages(messages: list[dict]) -> str:
-    """Extract plain text from the last assistant message (Anthropic-style blocks)."""
-    for msg in reversed(messages):
-        if msg.get("role") != "assistant":
-            continue
-        content = msg.get("content")
-        if isinstance(content, str):
-            return content.strip()
-        if isinstance(content, list):
-            parts: list[str] = []
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    parts.append(str(block.get("text", "")))
-            return " ".join(parts).strip()
-    return ""
-
-
-def _try_recover_json_from_result(result: AgentResult) -> dict[str, Any] | None:
-    """Try to extract parseable JSON from a Loca result that failed schema validation.
-
-    Returns a dict when JSON is recoverable (PIKA's filter+validate can handle
-    extra-property stripping), or None when no valid JSON is available.
-    """
-    # Loca may have parsed the output even though schema validation failed.
-    if result.json_output is not None and isinstance(result.json_output, dict):
-        return result.json_output
-    # Fall back to text extraction from the last assistant message.
-    last_text = _last_assistant_text_from_messages(result.messages)
-    if not last_text.strip():
-        return None
-    try:
-        return extract_json_from_text(last_text)
-    except (ValueError, json.JSONDecodeError):
-        return None
-
-
-def _emit_loca_schema_failure_debug(result: AgentResult) -> None:
-    """When Loca's in-loop schema check fails, log always; stderr only if text is extractable."""
-    excerpt = _last_assistant_text_from_messages(result.messages)
-    if excerpt.strip():
-        preview = excerpt[:_LOCA_SCHEMA_DEBUG_MAX_CHARS]
-        if len(excerpt) > _LOCA_SCHEMA_DEBUG_MAX_CHARS:
-            preview += (
-                f"\n... [truncated, {len(excerpt) - _LOCA_SCHEMA_DEBUG_MAX_CHARS} more chars]"
-            )
-        try:
-            sys.stderr.write(
-                "[PIKA] Loca schema validation failed (before PIKA post-check).\n"
-                "[PIKA] Last assistant message text (raw model output, may be truncated):\n"
-                + preview
-                + "\n"
-            )
-            sys.stderr.flush()
-        except OSError:
-            pass
-        _RUN_LOG.warning(
-            "Loca schema validation failed: %s | assistant excerpt (truncated): %s",
-            result.error,
-            excerpt[:4000],
-        )
-    else:
-        # Capture raw assistant message structure for diagnostics.
-        raw_content_info = ""
-        for msg in reversed(result.messages):
-            if msg.get("role") != "assistant":
-                continue
-            content = msg.get("content")
-            if isinstance(content, list):
-                raw_content_info = (
-                    f"assistant content blocks: {len(content)}, "
-                    f"types: {[b.get('type', '?') for b in content if isinstance(b, dict)]}"
-                )
-            elif isinstance(content, str):
-                raw_content_info = f"assistant content is str, len={len(content)}"
-            else:
-                raw_content_info = f"assistant content type: {type(content).__name__}"
-            break
-        if not raw_content_info:
-            raw_content_info = f"no assistant message found ({len(result.messages)} messages total)"
-        try:
-            sys.stderr.write(
-                f"[PIKA] Loca schema validation failed (no extractable text). "
-                f"Diagnostic: {raw_content_info} | error: {result.error}\n"
-            )
-            sys.stderr.flush()
-        except OSError:
-            pass
-        _RUN_LOG.warning(
-            "Loca schema validation failed (no extractable assistant text in history): %s | diagnostic: %s",
-            result.error,
-            raw_content_info,
-        )
 
 # Loca ``model.provider`` values Pika may select via workspace / pika.yaml.
 _VALID_LOCAL_PROVIDER_SUB = frozenset({"openai", "openai-codex", "anthropic"})
@@ -284,7 +183,6 @@ class _UsageTrackingLLM(LLMClient):
 
 def _get_local_provider_sub(config: dict[str, Any]) -> str:
     """Return Loca provider sub-type: 'openai', 'openai-codex', or 'anthropic'.
-    """Return Loca provider sub-type: 'openai', 'openai-codex', or 'anthropic'.
 
     Resolution: workspace ``agent.provider_sub`` -> pika ``local.provider_sub`` -> 'openai-codex'.
     """
@@ -296,7 +194,6 @@ def _get_local_provider_sub(config: dict[str, Any]) -> str:
 
     pika_local = get_pika_config().get("local", {})
     val = pika_local.get("provider_sub")
-    if isinstance(val, str) and val in _VALID_LOCAL_PROVIDER_SUB:
     if isinstance(val, str) and val in _VALID_LOCAL_PROVIDER_SUB:
         return val
     return "openai-codex"
@@ -683,26 +580,9 @@ def run_loca_agent(
                 f"Loca schema validation failed: {result.error or 'unknown'}"
             )
     elif result.json_output is not None:
-        _emit_loca_schema_failure_debug(result)
-        # Attempt recovery: Loca rejects extra properties that PIKA's
-        # _filter_output_to_schema_properties would strip.  If we can
-        # extract parseable JSON, return it and let PIKA filter+validate.
-        recovered = _try_recover_json_from_result(result)
-        if recovered is not None:
-            _RUN_LOG.info(
-                "Loca schema validation failed but JSON was recoverable; "
-                "deferring to PIKA filter+validate pipeline."
-            )
-            json_output = recovered
-        else:
-            raise ValueError(
-                f"Loca schema validation failed: {result.error or 'unknown'}"
-            )
-    elif result.json_output is not None:
         json_output = result.json_output
     else:
         # Fall back to extracting JSON from last text block
-        last_text = _last_assistant_text_from_messages(result.messages)
         last_text = _last_assistant_text_from_messages(result.messages)
         if not last_text.strip():
             raise ValueError("Loca agent produced no output")
