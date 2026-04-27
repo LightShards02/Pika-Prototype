@@ -225,6 +225,15 @@ prompts:
       - WARNING issues → add as spec_issues[] items alongside the normal plan.
       - No issues found → leave spec_issues as an empty array.
 
+      ID rules for spec_issues entries:
+      - affected_spec_ids: ONLY spec IDs from the design spec (pattern
+        `^[A-Za-z][0-9]+$`, e.g. A2030, A2050). At least one is required.
+      - affected_appendix_ids: optional. Use this for appendix entry IDs
+        (pattern `^APX[0-9]+$`, e.g. APX055) when the issue's source is an
+        appendix row (error code, DTO definition, source contract, etc.).
+        NEVER place APX-prefixed IDs in affected_spec_ids — that field rejects
+        them.
+
       You receive the FULL design spec and module catalog. Your job is to produce three things:
 
       1. **module_plans** — For each module, plan the files and symbols that will be created

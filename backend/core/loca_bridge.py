@@ -244,23 +244,6 @@ def _get_local_base_url(config: dict[str, Any], prompt_name: str) -> str | None:
     return None
 
 
-def _get_local_base_url(config: dict[str, Any], prompt_name: str) -> str | None:
-    """Return base_url for the effective local agent profile.
-
-    Resolution is delegated to lifecycle's merged agent-profile helper.
-    Returns ``None`` when the provider default should be used.
-
-    Used for ``openai`` (OpenAI-compatible root) and ``anthropic`` (Messages API
-    base). Ignored for ``openai-codex`` (Codex uses the official endpoint).
-    """
-    from core.lifecycle import _get_effective_local_agent_profile
-
-    value = _get_effective_local_agent_profile(config, prompt_name).get("base_url")
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    return None
-
-
 def _map_reasoning_effort(effort: str) -> str | None:
     """Map Pika reasoning_effort to Loca's accepted values.
 
@@ -269,45 +252,6 @@ def _map_reasoning_effort(effort: str) -> str | None:
     """
     mapping = {"low": "low", "medium": "medium", "high": "high", "xhigh": "high"}
     return mapping.get(effort)
-
-
-def _resolve_openai_compatible_api_key() -> str:
-    """Return the API key for Loca's ``openai`` provider.
-
-    Loca only backfills from ``OPENAI_API_KEY`` when ``api_key`` is omitted; Pika
-    passes ``api_key`` explicitly, so an empty string would otherwise skip
-    Moonshot's documented ``MOONSHOT_API_KEY`` and yield 401s.
-
-    Precedence: ``OPENAI_API_KEY``, then ``MOONSHOT_API_KEY``. Values are
-    stripped of leading/trailing whitespace.
-
-    Returns:
-        Non-empty key string, or empty when neither variable yields a value.
-    """
-    for var in ("OPENAI_API_KEY", "MOONSHOT_API_KEY"):
-        raw = os.environ.get(var, "")
-        if isinstance(raw, str):
-            stripped = raw.strip()
-            if stripped:
-                return stripped
-    return ""
-
-
-def _resolve_anthropic_api_key() -> str:
-    """Return the API key for Loca's ``anthropic`` provider.
-
-    Loca backfills from ``ANTHROPIC_API_KEY`` when ``api_key`` is omitted; Pika
-    passes ``api_key`` explicitly so we mirror the openai env resolution here.
-
-    Returns:
-        Non-empty key string, or empty when the variable is unset or blank.
-    """
-    raw = os.environ.get("ANTHROPIC_API_KEY", "")
-    if isinstance(raw, str):
-        stripped = raw.strip()
-        if stripped:
-            return stripped
-    return ""
 
 
 def _resolve_openai_compatible_api_key() -> str:

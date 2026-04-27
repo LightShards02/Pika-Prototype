@@ -162,7 +162,7 @@
     a. For each shared contract in the brief whose `planned_file_path` exists under the worktree root, load the JSON Schema file.
     b. Assert that every declared `properties` key is listed in `required`.
     c. Assert that fields with `nullable: true` in the brief allow null in their schema type; fields with `nullable: false` do not.
-    d. Produces: `contract_schema_conformance_{batch_id}.json` (in the batch run directory).
+    d. Produces: `contract_schema_conformance_{batch_id}.json` (in the run directory).
 
 26. `[v0.0.0][deterministic]` **Run Verification Commands** (`implement.verification_execution.enabled`): Run verification commands and fail batch on non-zero exits.
     a. Execute resolved verification commands after patch application.
@@ -181,6 +181,22 @@
     d. On remaining failures: `fail_action=block` converts failed specs into `manual_resolution_items` and blocks the lifecycle; `fail_action=warn` logs and continues.
     e. Skipped when `evaluator.enabled=false` or in dry-run mode.
     f. Produces: `agent_outputs/code_eval_cycle_{N}.json`, `agent_outputs/harness_results_cycle_{N}.json`, and (on block) `manual_resolution/code_evaluation.json`.
+
+28. `[v0.0.0][deterministic]` **Update Design + Test Spec** (`implement.translate`): After successful batch execution and evaluation, project per-spec implementer outputs back into the workset CSVs.
+    a. Append `mapped_code_symbols` / `mapped_test_cases` columns to the design spec CSV when missing, then write each spec's `mapped_classes_functions[].qualified_name` into `mapped_code_symbols`.
+    b. Maintain a deduplicated `test_spec.csv` keyed by `(framework, test_file, test_case)`, allocating `test_id`s as new tuples appear and writing the resolved test IDs back into `mapped_test_cases` per spec.
+    c. On failure, mark `failed_at_stage: translate` in `run_meta.json` and record `translate_failed` in `summary.json`.
+    d. Produces: updated design-spec CSV at `design_spec_path`, updated `test_spec_path` CSV.
+
+## Resume Flow
+
+When invoked with `--resume <run_id>`, the implement command picks one of two resume modes from `run_meta.json` state and reuses cached artifacts where possible.
+
+- **`resolution_status: resolved`** (after `pika resolve` cleared a block): mode `after_resolve`. Re-runs validation/batching from the previously cached planner output (`unified_plan.json`) and re-executes only batches whose `execute_{batch_id}` stage is **not** in `completed_stages`; cached batch outputs in `agent_outputs/implement_{batch_id}.json` are reused without re-invoking the implementer.
+- **`failed_at_stage: <stage>`** with at least one completed agent stage (`unified_planner` or any `execute_*`): mode `after_failure`. Same artifact reuse rules as `after_resolve`. The runtime warns when `config_hash` or `appendix_content_hash` differ from the original run, since cached agent output may be stale.
+- **No completed agent stages**: resume is rejected with an error directing the user to start a fresh run.
+
+> **Prerequisite (resolved branch):** Resume after a block requires `resolution_status: resolved`. If not resolved, the command fails with a message directing the user to run `pika resolve --run <run_id>` first.
 
 ## Planning-Only Harness Engineering Loops
 

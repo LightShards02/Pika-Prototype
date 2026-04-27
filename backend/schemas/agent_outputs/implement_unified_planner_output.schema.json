@@ -168,6 +168,10 @@
           "minItems": 1,
           "items": { "type": "string", "pattern": "^[A-Za-z][0-9]+$" }
         },
+        "affected_appendix_ids": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^APX[0-9]+$" }
+        },
         "description": { "type": "string", "minLength": 1 },
         "resolution_hint": { "type": "string" }
       }
