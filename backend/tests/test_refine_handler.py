@@ -650,7 +650,12 @@ class SchemaValidationTests(unittest.TestCase):
         self._validate(schema, {"manual_resolution_items": [], "enrichments": []})
 
     def test_testability_enricher_schema_accepts_valid_enrichment(self) -> None:
-        """Full-mode output with an enrichment entry for a clear requirement."""
+        """Full-mode output with an enrichment entry for a clear requirement.
+
+        P6: test_plan is required on enrichment_item; an empty
+        planned_test_cases is allowed for evidence_type='NA' or non-testable
+        specs but the field must be present.
+        """
         schema = self._load_schema("spec_testability_enricher_output")
         self._validate(schema, {
             "enrichments": [
@@ -658,6 +663,7 @@ class SchemaValidationTests(unittest.TestCase):
                     "spec_id": "S1",
                     "acceptance_criteria": "Given valid input, when processed, the system returns 200.",
                     "evidence_type": "test_execution_record",
+                    "test_plan": {"planned_test_cases": []},
                 }
             ],
             "manual_resolution_items": [],

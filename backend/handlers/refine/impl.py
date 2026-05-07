@@ -214,6 +214,16 @@ def _resolve_output_csv_path(config: dict[str, Any], project_root: Path) -> Path
     return project_root / "out" / "state" / "REFINED-SPEC.csv"
 
 
+def _resolve_test_plans_dir(project_root: Path) -> Path:
+    """Resolve workspace-wide test_plans directory.
+
+    Per-spec test_plan side-files (one JSON per spec_id) live here. Path is
+    fixed at out/state/test_plans/ for v1; downstream consumers (implement)
+    look here without config indirection.
+    """
+    return project_root / "out" / "state" / "test_plans"
+
+
 def _write_resolution_block(
     items: list[dict[str, Any]],
     manual_dir: Path,
@@ -451,6 +461,27 @@ def _run_refine_agents(
                     break
 
     _write_json(run_dir / "enrichments.json", {"enrichments": enrichments})
+
+    # Persist per-spec test_plan side-files (P2).
+    # Structured nested data lives outside the CSV; downstream consumers
+    # (implement command, reviewer) load these by spec_id from a fixed path.
+    if enrichments and not ctx.dry_run:
+        test_plans_dir = _resolve_test_plans_dir(project_root)
+        test_plans_dir.mkdir(parents=True, exist_ok=True)
+        for entry in enrichments:
+            sid = str(entry.get("spec_id", "")).strip()
+            if not sid:
+                continue
+            test_plan = entry.get("test_plan")
+            criteria = entry.get("criteria")
+            if not isinstance(test_plan, dict) and not isinstance(criteria, list):
+                continue
+            payload: dict[str, Any] = {"spec_id": sid}
+            if isinstance(criteria, list):
+                payload["criteria"] = criteria
+            if isinstance(test_plan, dict):
+                payload["test_plan"] = test_plan
+            _write_json(test_plans_dir / f"{sid}.json", payload)
 
     all_items = _merge_all_items([], ambiguity_items, testability_items)
 

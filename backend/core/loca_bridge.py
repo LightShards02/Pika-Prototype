@@ -323,16 +323,11 @@ def build_loca_config(
     temperature = _get_local_temperature(pika_config, prompt_name)
     top_p = _get_local_top_p(pika_config, prompt_name)
     base_url = _get_local_base_url(pika_config, prompt_name)
-    base_url = _get_local_base_url(pika_config, prompt_name)
     timeout = get_local_exec_timeout_sec(pika_config)
 
     # Resolve API key (Codex uses OAuth internally)
-    # Resolve API key (Codex uses OAuth internally)
     api_key = ""
     if provider_sub == "openai":
-        api_key = _resolve_openai_compatible_api_key()
-    elif provider_sub == "anthropic":
-        api_key = _resolve_anthropic_api_key()
         api_key = _resolve_openai_compatible_api_key()
     elif provider_sub == "anthropic":
         api_key = _resolve_anthropic_api_key()
@@ -351,7 +346,6 @@ def build_loca_config(
             "temperature": temperature,
             "top_p": top_p,
             "reasoning_effort": reasoning_effort,
-            "base_url": base_url,
             "base_url": base_url,
         },
         "agent": {
@@ -383,7 +377,6 @@ def check_loca_available(provider_sub: str | None = None) -> bool:
 
     Args:
         provider_sub: 'openai', 'anthropic', or 'openai-codex'. Defaults to 'openai-codex'.
-        provider_sub: 'openai', 'anthropic', or 'openai-codex'. Defaults to 'openai-codex'.
 
     Returns:
         True if credentials are available, False otherwise.
@@ -391,10 +384,6 @@ def check_loca_available(provider_sub: str | None = None) -> bool:
     provider_sub = provider_sub or "openai-codex"
 
     if provider_sub == "openai":
-        return bool(_resolve_openai_compatible_api_key())
-
-    if provider_sub == "anthropic":
-        return bool(_resolve_anthropic_api_key())
         return bool(_resolve_openai_compatible_api_key())
 
     if provider_sub == "anthropic":

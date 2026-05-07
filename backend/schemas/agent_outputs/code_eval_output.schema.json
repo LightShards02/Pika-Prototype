@@ -1,7 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "CodeEvaluatorOutput",
-  "description": "Output of the implement-stage code_evaluator: per-spec acceptance-criteria assessment plus optional rerun guidance.",
+  "deprecated": true,
+  "description": "DEPRECATED (P6): superseded by reviewer_output.schema.json. The legacy code_evaluator path remains callable behind implement.evaluator.enabled for one release; the reviewer-loop path (implement.reviewer.enabled) is the supported successor. Scheduled for removal in the next release. Output of the implement-stage code_evaluator: per-spec acceptance-criteria assessment plus optional rerun guidance.",
   "type": "object",
   "additionalProperties": false,
   "required": [

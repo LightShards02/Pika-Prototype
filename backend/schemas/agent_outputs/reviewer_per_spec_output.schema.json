@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReviewerPerSpecOutput",
+  "description": "Per-spec output of the reviewer_per_spec agent (P4). One LLM call per spec_id; results are aggregated and demoted/decided in deterministic Python synthesis. Each call returns axis_findings (one per axis), optional minor_findings, and an optional block_recommendation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["spec_id", "axis_findings"],
+  "properties": {
+    "spec_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "spec_id this review covers; matches the spec_id passed in template_vars."
+    },
+    "axis_findings": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "description": "Exactly one entry per axis: code, test_plan, test_code, test_evidence. Synthesis aggregates these across specs into the batch-level reviewer_output.axis_findings.",
+      "items": { "$ref": "#/$defs/per_spec_axis_finding" }
+    },
+    "minor_findings": {
+      "type": "array",
+      "description": "Less-satisfactory-but-non-fatal observations the reviewer wants to surface for this spec. Synthesis merges these (plus axis-3/4 demotions) into the batch-level reviewer_output.minor_findings.",
+      "items": { "$ref": "#/$defs/per_spec_minor_finding" }
+    },
+    "block_recommendation": {
+      "$ref": "#/$defs/block_recommendation",
+      "description": "Set when this spec/AC is internally contradictory (kind=ambiguity) or scope-conflicts with another spec (kind=scope_conflict). Synthesis honors per-spec block recommendations when deciding response_kind."
+    }
+  },
+  "$defs": {
+    "axis_name": {
+      "type": "string",
+      "enum": ["code", "test_plan", "test_code", "test_evidence"]
+    },
+    "axis_status": {
+      "type": "string",
+      "enum": ["pass", "fail", "insufficient_evidence"]
+    },
+    "criterion_id": {
+      "type": "string",
+      "pattern": "^AC[0-9]+$"
+    },
+    "per_spec_axis_finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["axis", "status", "summary"],
+      "properties": {
+        "axis": { "$ref": "#/$defs/axis_name" },
+        "status": { "$ref": "#/$defs/axis_status" },
+        "summary": { "type": "string", "minLength": 1 },
+        "offending_criterion_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/criterion_id" },
+          "description": "When status is fail or insufficient_evidence, the criterion_ids that prompted the finding. Empty when status is pass."
+        }
+      }
+    },
+    "per_spec_minor_finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["axis", "summary"],
+      "properties": {
+        "axis": { "$ref": "#/$defs/axis_name" },
+        "criterion_id": { "$ref": "#/$defs/criterion_id" },
+        "summary": { "type": "string", "minLength": 1 },
+        "suggested_improvement": { "type": "string", "minLength": 1 }
+      }
+    },
+    "block_recommendation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "reason"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["ambiguity", "scope_conflict"],
+          "description": "ambiguity: spec/AC is internally contradictory or under-specified. scope_conflict: satisfying this spec's criteria would violate another spec's criteria."
+        },
+        "reason": { "type": "string", "minLength": 1 },
+        "conflicting_spec_ids": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "When kind=scope_conflict, the other spec_ids implicated. Synthesis matches scope_conflict pairs by mutual reference."
+        }
+      }
+    }
+  }
+}

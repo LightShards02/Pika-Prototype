@@ -7,6 +7,7 @@ import difflib
 import json
 import re
 import shlex
+import time
 import shutil
 import subprocess
 import threading
@@ -1156,8 +1157,17 @@ def _apply_and_verify(
     brief: dict[str, Any] | None = None,
     conformance_out_dir: Path | None = None,
     run_verification_commands: bool = True,
+    verification_timeout_seconds: int | None = None,
+    demote_verification_failures_to_evidence: bool = False,
 ) -> dict[str, Any]:
-    """Apply patch files and run verification commands in a detached git worktree."""
+    """Apply patch files and run verification commands in a detached git worktree.
+
+    P4: when ``demote_verification_failures_to_evidence`` is true (set by
+    impl.py when ``reviewer.enabled``), verification command failures and
+    timeouts are captured as evidence in records[] without failing the
+    batch. The reviewer reads the same records via verification_evidence_json
+    and decides escalate-vs-amend per-spec.
+    """
     records: list[dict[str, Any]] = []
     if not patch_files:
         return {"success": True, "records": records, "applied_patch_files": []}
@@ -1360,22 +1370,67 @@ def _apply_and_verify(
         if run_verification_commands:
             for idx, command in enumerate(commands, start=1):
                 argv = shlex.split(command) if isinstance(command, str) else list(command)
-                proc = subprocess.run(
-                    argv,
-                    cwd=str(worktree_project_root),
-                    capture_output=True,
-                    text=True,
-                    shell=False,
-                    check=False,
-                )
                 log = verification_dir / f"{batch_id}_verify_{idx}.log"
-                log.write_text(
-                    f"$ {command}\n\nSTDOUT:\n{proc.stdout}\n\nSTDERR:\n{proc.stderr}\n",
-                    encoding="utf-8",
+                effective_timeout = (
+                    verification_timeout_seconds
+                    if isinstance(verification_timeout_seconds, int) and verification_timeout_seconds > 0
+                    else None
                 )
-                records.append({"command": command, "exit_code": proc.returncode, "log_ref": str(log)})
-                if proc.returncode != 0:
-                    return {"success": False, "records": records, "applied_patch_files": []}
+                start_t = time.monotonic()
+                try:
+                    proc = subprocess.run(
+                        argv,
+                        cwd=str(worktree_project_root),
+                        capture_output=True,
+                        text=True,
+                        shell=False,
+                        check=False,
+                        timeout=effective_timeout,
+                    )
+                    duration_s = time.monotonic() - start_t
+                    log.write_text(
+                        f"$ {command}\n\nSTDOUT:\n{proc.stdout}\n\nSTDERR:\n{proc.stderr}\n",
+                        encoding="utf-8",
+                    )
+                    record: dict[str, Any] = {
+                        "command": command,
+                        "exit_code": proc.returncode,
+                        "log_ref": str(log),
+                        "status": "exit",
+                        "duration_seconds": round(duration_s, 3),
+                    }
+                    records.append(record)
+                    if proc.returncode != 0 and not demote_verification_failures_to_evidence:
+                        return {"success": False, "records": records, "applied_patch_files": []}
+                except subprocess.TimeoutExpired as exc:
+                    duration_s = time.monotonic() - start_t
+                    out_chunk = exc.stdout.decode("utf-8", errors="replace") if isinstance(exc.stdout, (bytes, bytearray)) else (exc.stdout or "")
+                    err_chunk = exc.stderr.decode("utf-8", errors="replace") if isinstance(exc.stderr, (bytes, bytearray)) else (exc.stderr or "")
+                    log.write_text(
+                        (
+                            f"$ {command}\n\n"
+                            f"[verification command timed out after {effective_timeout}s]\n\n"
+                            f"STDOUT (partial):\n{out_chunk}\n\n"
+                            f"STDERR (partial):\n{err_chunk}\n"
+                        ),
+                        encoding="utf-8",
+                    )
+                    record_timeout: dict[str, Any] = {
+                        "command": command,
+                        "exit_code": None,
+                        "log_ref": str(log),
+                        "status": "timeout",
+                        "duration_seconds": round(duration_s, 3),
+                        "timeout_seconds": effective_timeout,
+                    }
+                    records.append(record_timeout)
+                    if not demote_verification_failures_to_evidence:
+                        return {
+                            "success": False,
+                            "records": records,
+                            "applied_patch_files": [],
+                            "reason": f"verification_timeout_{batch_id}",
+                        }
 
         patch_apply_args: dict[str, list[str]] = {}
         patch_apply_ignore_space: dict[str, bool] = {}
@@ -1544,8 +1599,23 @@ def _execute_batch(
     patch_apply_lock: threading.Lock | None = None,
     appendix_content: str = "",
     semantic_retry_context_override: str = "",
+    iteration_index: int = 1,
+    mode: str = "full",
+    amendment_packet: dict[str, Any] | None = None,
+    prior_diff_plan: list[dict[str, Any]] | None = None,
+    prior_authored_tests_by_spec: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
-    """Execute implementer for one batch, apply/verify patches, and append trace records."""
+    """Execute implementer for one batch, apply/verify patches, and append trace records.
+
+    P5 additions:
+    - ``iteration_index`` (1-based) drives versioned ``implement_{batch_id}_iter{n}.json``
+      output. The latest iteration is also copied to ``implement_{batch_id}.json`` so
+      existing readers (spec_update.py, resume cache) keep working.
+    - ``mode`` selects the implementer prompt: ``"full"`` uses ``impl["prompt_name"]``
+      (Phase 3); ``"amendment_only"`` uses ``impl["amend_prompt_name"]`` and threads
+      ``amendment_packet_json`` / ``prior_diff_plan_json`` / ``prior_authored_tests_json``
+      template_vars.
+    """
     steps = impl.get("steps", {}) if isinstance(impl.get("steps", {}), dict) else {}
 
     def _step_enabled(step_name: str) -> bool:
@@ -1609,6 +1679,14 @@ def _execute_batch(
             },
         )
 
+    ac_for_batch = brief.get("acceptance_criteria_for_batch") or {}
+    tp_for_batch = brief.get("test_plan_for_batch") or {}
+    author_tests_enabled = bool(impl.get("author_tests", False))
+    test_authoring_kinds = impl.get(
+        "test_authoring_required_for_evidence_kinds",
+        ["unit_test", "integration_test"],
+    )
+
     template_vars: dict[str, Any] = {
         "output_schema_file": str(schema_path),
         "project_context": context_text,
@@ -1632,7 +1710,25 @@ def _execute_batch(
         ),
         "semantic_retry_context": semantic_retry_context_override or "",
         "appendix_content": appendix_content,
+        "acceptance_criteria_json": json.dumps(ac_for_batch, indent=2),
+        "test_plan_json": json.dumps(tp_for_batch, indent=2),
+        "mode": mode,
+        "author_tests": "true" if author_tests_enabled else "false",
+        "test_authoring_required_for_evidence_kinds_json": json.dumps(
+            list(test_authoring_kinds)
+        ),
+        "iteration_index": str(iteration_index),
     }
+    if mode == "amendment_only":
+        template_vars["amendment_packet_json"] = json.dumps(
+            amendment_packet or {}, indent=2
+        )
+        template_vars["prior_diff_plan_json"] = json.dumps(
+            prior_diff_plan or [], indent=2
+        )
+        template_vars["prior_authored_tests_json"] = json.dumps(
+            prior_authored_tests_by_spec or {}, indent=2
+        )
     template_vars["resolved_decisions"] = getattr(ctx, "resolved_decisions", None) or ""
 
     def _prepare_semantic_attempt(attempt: int, render_vars: dict[str, Any]) -> None:
@@ -1670,8 +1766,13 @@ def _execute_batch(
                 "step": "implement_semantic_validation",
             },
         )
+    selected_prompt_name = (
+        impl.get("amend_prompt_name") or impl["prompt_name"]
+        if mode == "amendment_only"
+        else impl["prompt_name"]
+    )
     output = invoke_with_semantic_retry(
-        prompt_name=impl["prompt_name"],
+        prompt_name=selected_prompt_name,
         template_vars=template_vars,
         schema_path=schema_path,
         config=config,
@@ -1707,6 +1808,67 @@ def _execute_batch(
             if _step_enabled("patch_normalization")
             else None
         ),
+    )
+    # P5 amendment-only: merge iteration N's delta into iteration N-1's
+    # snapshot so the worktree (which is rebuilt from HEAD per iteration)
+    # applies the cumulative diff_plan, not just the delta. Per-spec
+    # results for non-target specs are also carried forward so trace +
+    # translate stages see the complete picture.
+    if mode == "amendment_only" and prior_diff_plan is not None:
+        new_diff_ids: set[str] = set()
+        merged_diff_plan: list[dict[str, Any]] = []
+        for entry in output.get("diff_plan") or []:
+            if not isinstance(entry, dict):
+                continue
+            did = str(entry.get("diff_id", "")).strip()
+            if not did or did in new_diff_ids:
+                continue
+            new_diff_ids.add(did)
+            merged_diff_plan.append(entry)
+        for entry in prior_diff_plan or []:
+            if not isinstance(entry, dict):
+                continue
+            did = str(entry.get("diff_id", "")).strip()
+            if did and did not in new_diff_ids:
+                new_diff_ids.add(did)
+                merged_diff_plan.append(entry)
+        output["diff_plan"] = merged_diff_plan
+
+        target_specs: set[str] = set()
+        if isinstance(amendment_packet, dict):
+            for s in amendment_packet.get("target_spec_ids") or []:
+                s_clean = str(s).strip()
+                if s_clean:
+                    target_specs.add(s_clean)
+        prior_output_path = (
+            paths["agent_outputs"]
+            / f"implement_{brief['batch_id']}_iter{iteration_index - 1}.json"
+        )
+        if prior_output_path.exists():
+            try:
+                prior_output = json.loads(prior_output_path.read_text(encoding="utf-8"))
+            except Exception:
+                prior_output = {}
+            if isinstance(prior_output, dict):
+                for sid, payload in prior_output.items():
+                    if not isinstance(payload, dict):
+                        continue
+                    if sid in {"run_summary", "diff_plan", "manual_resolution_items"}:
+                        continue
+                    if not re.fullmatch(r"[A-Za-z][0-9]+", str(sid)):
+                        continue
+                    if sid in target_specs:
+                        continue
+                    if sid in output:
+                        continue
+                    output[sid] = payload
+
+    # P5: versioned per-iteration write + latest-pointer copy. Existing readers
+    # (spec_update.py, resume cache) keep reading implement_{batch_id}.json
+    # which always reflects the most recent iteration.
+    _write_json(
+        paths["agent_outputs"] / f"implement_{brief['batch_id']}_iter{iteration_index}.json",
+        output,
     )
     _write_json(paths["agent_outputs"] / f"implement_{brief['batch_id']}.json", output)
     if _step_enabled("planner_manual_resolution_gate"):
@@ -1771,6 +1933,12 @@ def _execute_batch(
     _apply_lock: contextlib.AbstractContextManager[Any] = (
         patch_apply_lock if patch_apply_lock is not None else contextlib.nullcontext()
     )
+    reviewer_cfg = impl.get("reviewer") if isinstance(impl.get("reviewer"), dict) else {}
+    reviewer_enabled = bool(reviewer_cfg.get("enabled", False))
+    demote_verification = reviewer_enabled and bool(
+        reviewer_cfg.get("demote_verification_to_evidence", True)
+    )
+    verification_timeout = impl.get("verification_timeout_seconds", 300)
     with _apply_lock:
         verify = _apply_and_verify(
             root,
@@ -1785,9 +1953,24 @@ def _execute_batch(
             brief=brief,
             conformance_out_dir=paths["run"],
             run_verification_commands=_step_enabled("verification_execution"),
+            verification_timeout_seconds=(
+                int(verification_timeout)
+                if isinstance(verification_timeout, int) and verification_timeout > 0
+                else None
+            ),
+            demote_verification_failures_to_evidence=demote_verification,
         )
+        # Persist the verification evidence so downstream reviewer call can read it.
+        try:
+            _write_json(
+                paths["run"] / f"verification_evidence_{brief['batch_id']}.json",
+                {"records": verify.get("records", [])},
+            )
+        except Exception:
+            pass
         if not verify["success"]:
-            return {"status": ImplementStatus.FAILED, "reason": f"verification_failed_{brief['batch_id']}"}
+            reason = verify.get("reason") or f"verification_failed_{brief['batch_id']}"
+            return {"status": ImplementStatus.FAILED, "reason": reason}
 
         applied_patch_paths = [str(p) for p in verify.get("applied_patch_files", [])]
         after = _hashes(root, touched_files)

@@ -106,6 +106,26 @@
               "test_case": { "type": "string", "minLength": 1 }
             }
           }
+        },
+        "authored_test_cases": {
+          "type": "array",
+          "description": "P3: tests the implementer authored or modified in this batch. Each entry references a diff_plan.diff_id and the criterion_ids it covers. Optional in P3 (gated by implement.implementer.author_tests); promoted in later phases.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["framework", "test_file", "test_case", "covers_criteria_ids", "diff_id"],
+            "properties": {
+              "framework": { "type": "string", "minLength": 1 },
+              "test_file": { "type": "string", "minLength": 1 },
+              "test_case": { "type": "string", "minLength": 1 },
+              "covers_criteria_ids": {
+                "type": "array",
+                "minItems": 1,
+                "items": { "type": "string", "pattern": "^AC[0-9]+$" }
+              },
+              "diff_id": { "type": "string", "minLength": 1 }
+            }
+          }
         }
       }
     },
@@ -131,7 +151,18 @@
         "recommended_option_id": { "type": "string" },
         "required": { "type": "boolean", "const": true },
         "blocking_reason": { "type": "string", "minLength": 1 },
-        "evidence_refs": { "type": "array", "items": { "type": "string" } }
+        "evidence_refs": { "type": "array", "items": { "type": "string" } },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "generic",
+            "code_eval_failure",
+            "loop_limit_exceeded",
+            "ambiguity",
+            "scope_conflict",
+            "amendment_unsatisfiable"
+          ]
+        }
       }
     }
   }

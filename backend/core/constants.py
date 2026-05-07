@@ -43,3 +43,18 @@ class ContractKind(StrEnum):
     FILE_FORMAT = "file_format"
     EXTERNAL_API = "external_api"
     TEST_SUITE = "test_suite"
+
+
+class EscalationKind(StrEnum):
+    """Typed taxonomy for manual_resolution_item escalations.
+
+    Set on the optional `kind` field of each item; aggregated into
+    run_meta.escalation_kinds[] when _manual_block writes the block.
+    """
+
+    GENERIC = "generic"
+    CODE_EVAL_FAILURE = "code_eval_failure"
+    LOOP_LIMIT_EXCEEDED = "loop_limit_exceeded"
+    AMBIGUITY = "ambiguity"
+    SCOPE_CONFLICT = "scope_conflict"
+    AMENDMENT_UNSATISFIABLE = "amendment_unsatisfiable"

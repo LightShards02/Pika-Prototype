@@ -12,11 +12,19 @@
       "Bash(C:/Users/night/miniconda3/envs/Local/python.exe -c \":*)",
       "Bash(find /c/Users/night/Work/Echelondx/Pika/desktop-app/src -type f -name *.ts -o -name *.tsx -o -name *.js -o -name *.jsx)",
       "Bash(npm run:*)",
-      "Bash(npm install:*)"
+      "Bash(npm install:*)",
+      "Bash(claude --version)",
+      "Bash(claude-code --version)",
+      "Bash(npm view:*)",
+      "Bash(npx skills *)",
+      "Bash(xargs -n1 basename)",
+      "Read(//c/Users/night/.claude/skills/**)",
+      "Read(//c/Users/night/.claude/plugins/**)",
+      "Bash(xargs wc *)"
     ]
   },
+  "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
     "playwright"
-  ],
-  "enableAllProjectMcpServers": true
+  ]
 }

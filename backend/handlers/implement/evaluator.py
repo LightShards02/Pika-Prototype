@@ -1,4 +1,12 @@
-"""Code evaluator sub-agent for the implement command.
+"""Code evaluator sub-agent for the implement command — DEPRECATED (P6).
+
+Superseded by ``handlers/implement/reviewer.py`` and the reviewer-loop
+orchestrator wired through ``_maybe_run_reviewer`` in
+``handlers/implement/impl.py``. The legacy evaluator path remains callable
+behind ``implement.evaluator.enabled`` for one release so existing
+workspaces can opt back in if the reviewer loop misbehaves; new
+deployments should set ``implement.reviewer.enabled = true`` instead.
+Scheduled for removal in the next release.
 
 Wraps the ``code_evaluator`` prompt: builds template variables from a finished
 batch's spec_outputs + harness results, invokes the agent through the standard
@@ -12,6 +20,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from core.constants import EscalationKind
 from core.context import RuntimeContext
 from core.lifecycle import (
     invoke_agent_with_schema_retry,
@@ -129,6 +138,7 @@ def eval_failures_to_resolution_items(
                 "required": True,
                 "blocking_reason": reason,
                 "evidence_refs": evidence_refs,
+                "kind": EscalationKind.CODE_EVAL_FAILURE.value,
             }
         )
     return items

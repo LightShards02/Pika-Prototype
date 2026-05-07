@@ -433,10 +433,82 @@ def _get_impl_cfg(config: dict[str, Any]) -> dict[str, Any]:
     except (TypeError, ValueError):
         max_appendix_chars = 0
 
+    author_tests_raw = implementer_agent_cfg.get("author_tests", False)
+    author_tests = bool(author_tests_raw) if isinstance(author_tests_raw, bool) else False
+    _DEFAULT_TEST_AUTHORING_KINDS = ("unit_test", "integration_test")
+    test_authoring_kinds_raw = implementer_agent_cfg.get(
+        "test_authoring_required_for_evidence_kinds", list(_DEFAULT_TEST_AUTHORING_KINDS)
+    )
+    if not isinstance(test_authoring_kinds_raw, list):
+        test_authoring_kinds_raw = list(_DEFAULT_TEST_AUTHORING_KINDS)
+    test_authoring_required_for_evidence_kinds = sorted(
+        {
+            str(k).strip()
+            for k in test_authoring_kinds_raw
+            if str(k).strip()
+            in {
+                "static_check",
+                "unit_test",
+                "integration_test",
+                "runtime_log",
+                "manual_review",
+            }
+        }
+    ) or list(_DEFAULT_TEST_AUTHORING_KINDS)
+
+    # P4: reviewer config
+    reviewer_agent_cfg = _agent_cfg(impl, "reviewer")
+
+    def _bool(value: Any, default: bool) -> bool:
+        return value if isinstance(value, bool) else default
+
+    def _pos_int(value: Any, default: int, *, min_value: int = 1) -> int:
+        if isinstance(value, bool):
+            return default
+        if isinstance(value, int) and value >= min_value:
+            return value
+        return default
+
+    reviewer_enabled = _bool(reviewer_agent_cfg.get("enabled"), False)
+    reviewer_max_iterations = _pos_int(reviewer_agent_cfg.get("max_iterations"), 2)
+    reviewer_max_parallel_per_spec = _pos_int(
+        reviewer_agent_cfg.get("max_parallel_per_spec"), 4
+    )
+    reviewer_per_spec_max_total_seconds = _pos_int(
+        reviewer_agent_cfg.get("per_spec_max_total_seconds"), 180
+    )
+    reviewer_escalate_on_axes_insufficient_evidence = _bool(
+        reviewer_agent_cfg.get("escalate_on_axes_insufficient_evidence"), True
+    )
+    reviewer_demote_verification_to_evidence = _bool(
+        reviewer_agent_cfg.get("demote_verification_to_evidence"), True
+    )
+
+    # P4: verification.timeout_seconds (per-command timeout for verification commands)
+    verification_cfg_raw = impl.get("verification")
+    verification_cfg = (
+        verification_cfg_raw if isinstance(verification_cfg_raw, dict) else {}
+    )
+    verification_timeout_seconds = _pos_int(
+        verification_cfg.get("timeout_seconds"), 300
+    )
+
     from core.pika_config import get_prompt_name
     provider = get_agent_provider(config)
+
+    # Phase 5: amendment-only implementer prompt; falls back to full-mode prompt
+    # when pika.yaml hasn't registered the amend variant (e.g., older pika.yaml).
+    try:
+        amend_prompt_name = get_prompt_name(
+            "implement", "implementer_amend", provider=provider
+        )
+    except Exception:
+        amend_prompt_name = get_prompt_name(
+            "implement", "implementer", provider=provider
+        )
     return {
         "prompt_name": get_prompt_name("implement", "implementer", provider=provider),
+        "amend_prompt_name": amend_prompt_name,
         "unified_planner_prompt_name": get_prompt_name("implement", "unified_planner"),
         "type_placement_path": str(
             impl.get("type_placement_path", _DEFAULT_TYPE_PLACEMENT)
@@ -457,4 +529,17 @@ def _get_impl_cfg(config: dict[str, Any]) -> dict[str, Any]:
         "semantic_validation_retries": planner_semantic_validation_retries,
         "steps": steps,
         "max_appendix_chars": max_appendix_chars,
+        "author_tests": author_tests,
+        "test_authoring_required_for_evidence_kinds": test_authoring_required_for_evidence_kinds,
+        "reviewer": {
+            "enabled": reviewer_enabled,
+            "max_iterations": reviewer_max_iterations,
+            "max_parallel_per_spec": reviewer_max_parallel_per_spec,
+            "per_spec_max_total_seconds": reviewer_per_spec_max_total_seconds,
+            "escalate_on_axes_insufficient_evidence":
+                reviewer_escalate_on_axes_insufficient_evidence,
+            "demote_verification_to_evidence":
+                reviewer_demote_verification_to_evidence,
+        },
+        "verification_timeout_seconds": verification_timeout_seconds,
     }

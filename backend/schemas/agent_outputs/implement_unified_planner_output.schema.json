@@ -187,7 +187,18 @@
         "options": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/manual_option" } },
         "recommended_option_id": { "type": "string" },
         "blocking_reason": { "type": "string", "minLength": 1 },
-        "evidence_refs": { "type": "array", "items": { "type": "string" } }
+        "evidence_refs": { "type": "array", "items": { "type": "string" } },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "generic",
+            "code_eval_failure",
+            "loop_limit_exceeded",
+            "ambiguity",
+            "scope_conflict",
+            "amendment_unsatisfiable"
+          ]
+        }
       }
     }
   }

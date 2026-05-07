@@ -241,3 +241,7 @@ out
 vscode-plugin/
 
 decks/
+
+.playwright-mcp/
+
+tasks/webapp-designs/

@@ -30,6 +30,11 @@ from core.errors import (
 from core.resolution import RESOLUTION_SOURCE_VALIDATION, load_resolution_file
 from core.context import RuntimeContext
 from core.format_sads import load_sads_csv_or_xlsx, rows_to_csv
+from core.spec_acceptance import (
+    filter_to_spec_ids,
+    load_spec_acceptance_criteria,
+    load_spec_test_plans,
+)
 from core.lifecycle import (
     cleanup_local_agent_temp_workspace,
     create_local_agent_shared_workspace,
@@ -56,6 +61,7 @@ from handlers.implement.config import (
     _get_impl_cfg,
 )
 from handlers.implement.evaluator import (
+    build_applied_diffs_summary,
     build_evaluator_feedback,
     collect_failed_spec_ids_above_threshold,
     eval_failures_to_resolution_items,
@@ -64,6 +70,13 @@ from handlers.implement.evaluator import (
 )
 from handlers.implement.evidence_harnesses import collect_harness_results
 from handlers.implement.execution import _collect_spec_output, _execute_batch
+from handlers.implement.reviewer import (
+    amendment_ids_in_packet,
+    is_stagnant,
+    out_of_scope_diff_ids,
+    run_reviewer_for_batch,
+    synthesize_reviewer_output,
+)
 from handlers.implement.helpers import (
     _find_col,
     _manual_block,
@@ -458,6 +471,24 @@ def _run_implement_inner(config: dict[str, Any], ctx: RuntimeContext) -> dict[st
                 "No agent work to recover. Start a fresh run instead."
             )
 
+        # P5: planner cache invalidation on AC-level resolutions.
+        # When the previous run blocked with kind ∈ {ambiguity, scope_conflict},
+        # the user likely edited AC via `pika resolve`; the cached planner
+        # output is stale against the new AC and must be regenerated.
+        prior_kinds = {
+            str(k).strip()
+            for k in existing_run_meta.get("escalation_kinds", [])
+            if isinstance(k, str)
+        }
+        ac_kinds = {"ambiguity", "scope_conflict"}
+        if resume_mode == "after_resolve" and prior_kinds & ac_kinds:
+            _invalidate_planner_cache_after_ac_resolve(
+                run_dir=resolve_agent_runs_dir_for_command(
+                    config, root, "implement", ctx.run_id
+                ),
+                completed_stages_set=completed_stages_set,
+            )
+
     run_meta_payload = dict(existing_run_meta)
     run_meta_payload.update(
         {
@@ -475,6 +506,7 @@ def _run_implement_inner(config: dict[str, Any], ctx: RuntimeContext) -> dict[st
         run_meta_payload.pop("blocked_at_stage", None)
         run_meta_payload.pop("resolution_status", None)
         run_meta_payload.pop("failed_at_stage", None)
+        run_meta_payload.pop("escalation_kinds", None)
     elif resume_mode == "after_failure":
         run_meta_payload.pop("failed_at_stage", None)
         # Config hash warning for stale cache
@@ -1087,6 +1119,35 @@ def _run_implement_inner(config: dict[str, Any], ctx: RuntimeContext) -> dict[st
     n_batches = len(batch_plan.get("batches", []))
     _report_implement_phase("Batch plan", "ok", f"{n_batches} batches")
 
+    # --- Load AC + test_plan side-files for the batch's specs (P3) ---
+    selected_spec_ids = {row["spec_id"] for row in selected}
+    full_ac_map = load_spec_acceptance_criteria(design_path)
+    acceptance_criteria_map: dict[str, dict[str, Any]] = dict(
+        filter_to_spec_ids(full_ac_map, selected_spec_ids)
+    )
+    test_plan_map_full = load_spec_test_plans(root, spec_ids=selected_spec_ids)
+    # Merge structured criteria from test_plan side-files into AC map.
+    for sid, payload in test_plan_map_full.items():
+        criteria = payload.get("criteria") if isinstance(payload, dict) else None
+        if isinstance(criteria, list) and criteria:
+            entry = dict(acceptance_criteria_map.get(sid, {}))
+            entry["criteria"] = criteria
+            acceptance_criteria_map[sid] = entry
+    test_plan_map: dict[str, dict[str, Any]] = {
+        sid: {"planned_test_cases": payload["test_plan"]["planned_test_cases"]}
+        for sid, payload in test_plan_map_full.items()
+        if isinstance(payload, dict)
+        and isinstance(payload.get("test_plan"), dict)
+        and isinstance(payload["test_plan"].get("planned_test_cases"), list)
+    }
+    if acceptance_criteria_map or test_plan_map:
+        _report_implement_phase(
+            "AC/test_plan",
+            "ok",
+            f"AC for {len(acceptance_criteria_map)} spec(s); "
+            f"test_plan for {len(test_plan_map)} spec(s)",
+        )
+
     # --- Build briefs ---
     if _step_enabled(impl, "batch_brief_build"):
         briefs = _build_briefs(
@@ -1097,6 +1158,8 @@ def _run_implement_inner(config: dict[str, Any], ctx: RuntimeContext) -> dict[st
             batch_plan,
             impl,
             appendix_entries=appendix_entries if appendix_entries else None,
+            acceptance_criteria_map=acceptance_criteria_map,
+            test_plan_map=test_plan_map,
         )
     else:
         _report_implement_phase(
@@ -1129,6 +1192,16 @@ def _run_implement_inner(config: dict[str, Any], ctx: RuntimeContext) -> dict[st
                     "budgets_applied": impl["budgets"],
                     "verification_commands": impl["verification_commands"],
                     "traceability_rules": {"require_spec_ids_per_diff": True},
+                },
+                "acceptance_criteria_for_batch": {
+                    sid: acceptance_criteria_map[sid]
+                    for sid in spec_ids
+                    if sid in acceptance_criteria_map
+                },
+                "test_plan_for_batch": {
+                    sid: test_plan_map[sid]
+                    for sid in spec_ids
+                    if sid in test_plan_map
                 },
             }
             briefs.append(brief)
@@ -1432,8 +1505,48 @@ def _run_implement_inner(config: dict[str, Any], ctx: RuntimeContext) -> dict[st
     skip_eval_resumed = (
         resume_mode != "none" and eval_stage_name in completed_stages_set
     )
+    reviewer_cfg = impl.get("reviewer") or {}
+    reviewer_enabled = bool(reviewer_cfg.get("enabled", False))
+    legacy_eval_enabled = evaluator_config(impl)["enabled"]
+    if reviewer_enabled and legacy_eval_enabled:
+        _report_implement_phase(
+            "Evaluate", "warning",
+            "both reviewer.enabled and evaluator.enabled — evaluator path is deprecated; "
+            "reviewer takes precedence",
+        )
     if skip_eval_resumed:
         _report_implement_phase("Evaluate", "skipped", "resume: cached")
+    elif reviewer_enabled:
+        reviewer_outcome = _maybe_run_reviewer(
+            config=config,
+            ctx=ctx,
+            impl=impl,
+            schemas=schemas,
+            root=root,
+            paths=paths,
+            headers=headers,
+            selected=selected,
+            briefs=briefs,
+            module_plans=module_plans,
+            spec_outputs=spec_outputs,
+            completed_stages_so_far=base_stages + [f"execute_{b['batch_id']}" for b in briefs],
+            run_meta_path=run_meta_path,
+            execute_batch_kwargs={
+                "config": config,
+                "ctx": ctx,
+                "impl": impl,
+                "schema_path": schemas["implementer"],
+                "root": root,
+                "context_text": context_text,
+                "paths": paths,
+                "design_headers": headers,
+                "shared_local_workspace": shared_local_workspace,
+                "appendix_text": appendix_text,
+            },
+        )
+        if isinstance(reviewer_outcome, dict) and reviewer_outcome.get("status") is not None:
+            _cleanup_shared_local_workspace()
+            return reviewer_outcome
     else:
         eval_outcome = _maybe_run_code_evaluator(
             config=config,
@@ -1468,7 +1581,7 @@ def _run_implement_inner(config: dict[str, Any], ctx: RuntimeContext) -> dict[st
 
     eval_completed_stages = (
         [eval_stage_name]
-        if (skip_eval_resumed or evaluator_config(impl)["enabled"])
+        if (skip_eval_resumed or reviewer_enabled or legacy_eval_enabled)
         else []
     )
 
@@ -1518,6 +1631,31 @@ def _run_implement_inner(config: dict[str, Any], ctx: RuntimeContext) -> dict[st
     )
     _cleanup_shared_local_workspace()
     return {"command": "implement", "status": ImplementStatus.COMPLETED, "dry_run": False}
+
+
+def _invalidate_planner_cache_after_ac_resolve(
+    run_dir: Path,
+    completed_stages_set: set[str],
+) -> None:
+    """Move the cached unified_plan aside and drop it from completed_stages.
+
+    P5: when resume detects a prior block with kind ∈ {ambiguity, scope_conflict},
+    the user edited AC via `pika resolve`; the cached planner output is stale.
+    Forces the planner to re-run against the corrected AC. Idempotent.
+    """
+    cached = run_dir / "unified_plan.json"
+    if cached.exists():
+        archived = run_dir / "unified_plan_pre_resolve.json"
+        try:
+            cached.replace(archived)
+        except Exception:
+            try:
+                cached.unlink(missing_ok=True)
+            except Exception:
+                pass
+    completed_stages_set.discard("unified_planner")
+    completed_stages_set.discard("plan_validation")
+    completed_stages_set.discard("contract_field_consistency")
 
 
 def _build_spec_to_module_tag(module_plans: list[dict[str, Any]]) -> dict[str, str]:
@@ -1576,6 +1714,13 @@ def _maybe_run_code_evaluator(
     eval_cfg = evaluator_config(impl)
     if not eval_cfg["enabled"]:
         return None
+    # P6: legacy evaluator path is deprecated; reviewer-loop is the supported successor.
+    _report_implement_phase(
+        "Evaluate", "warning",
+        "DEPRECATED (P6): implement.evaluator.* is the legacy code-evaluator path "
+        "and is scheduled for removal in the next release. Set "
+        "implement.reviewer.enabled=true to use the reviewer-loop replacement.",
+    )
     schema_path = schemas.get("code_evaluator")
     if schema_path is None:
         _report_implement_phase("Evaluate", "warning", "code_evaluator schema unavailable; skipping")
@@ -1728,8 +1873,600 @@ def _maybe_run_code_evaluator(
     return None
 
 
+def _maybe_run_reviewer(
+    *,
+    config: dict[str, Any],
+    ctx: RuntimeContext,
+    impl: dict[str, Any],
+    schemas: dict[str, Path],
+    root: Path,
+    paths: dict[str, Path],
+    headers: list[str],
+    selected: list[dict[str, Any]],
+    briefs: list[dict[str, Any]],
+    module_plans: list[dict[str, Any]],
+    spec_outputs: dict[str, dict[str, Any]],
+    completed_stages_so_far: list[str],
+    run_meta_path: Path,
+    execute_batch_kwargs: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Run the P5 bounded review loop when ``implement.reviewer.enabled`` is true.
+
+    Per-batch loop:
+      Iteration 1: implementer already ran upstream in full mode; this
+      function runs harness + reviewer on the existing artifacts.
+      Iteration N (>1): when iteration N-1 returned ``amend``, re-invoke
+      ``_execute_batch`` in amendment-only mode with the prior packet,
+      then re-run harness + reviewer.
+
+    Loop terminates per response_kind:
+      - ``approve`` → exit success, lifecycle continues.
+      - ``manual_block`` → escalate via ``_manual_block`` with reviewer's kind.
+      - ``amend`` AND iteration >= max_iterations → ``loop_limit_exceeded``.
+      - ``amend`` AND amendment_ids unchanged from prior iteration →
+        ``amendment_unsatisfiable`` (stagnation).
+      - amendment-only output touches a non-target spec_id → revert and
+        ``amendment_unsatisfiable`` (partial-spec lock-in).
+      - per-spec reviewer wall-clock budget exhausted → batch fails with
+        ``reviewer_per_spec_timeout``.
+
+    Each iteration's loop log is persisted to
+    ``agent_outputs/review_loop_{batch_id}.json`` for resume + audit.
+    """
+    if ctx.dry_run:
+        return None
+    reviewer_cfg = impl.get("reviewer") or {}
+    if not reviewer_cfg.get("enabled", False):
+        return None
+    schema_path = schemas.get("reviewer_per_spec")
+    if schema_path is None:
+        _report_implement_phase(
+            "Review", "warning", "reviewer_per_spec schema unavailable; skipping",
+        )
+        return None
+
+    forbidden_paths = list(impl.get("forbidden_paths") or [])
+    eval_cfg = evaluator_config(impl)
+    harness_kinds = eval_cfg.get("harnesses") or [
+        "syntax_check",
+        "import_smoke",
+        "unresolved_symbol",
+        "forbidden_path_violation",
+        "anchor_preservation",
+        "diff_size_sanity",
+    ]
+    anchor_plans_by_module = _build_anchor_plans_by_module(module_plans)
+    spec_to_module_tag = _build_spec_to_module_tag(module_plans)
+    selected_specs_csv = rows_to_csv(headers, selected)
+    directory_tree_snapshot = build_directory_tree_snapshot(root.resolve())
+
+    max_parallel = int(reviewer_cfg.get("max_parallel_per_spec", 4) or 4)
+    per_spec_budget = int(reviewer_cfg.get("per_spec_max_total_seconds", 180) or 180)
+    escalate_on_insufficient = bool(
+        reviewer_cfg.get("escalate_on_axes_insufficient_evidence", True)
+    )
+    max_iterations = max(1, int(reviewer_cfg.get("max_iterations", 2) or 2))
+
+    review_iterations_state: dict[str, int] = {}
+
+    def _build_criteria_text_lookup(b: dict[str, Any]) -> dict[str, dict[str, str]]:
+        out_lookup: dict[str, dict[str, str]] = {}
+        ac_block = b.get("acceptance_criteria_for_batch") or {}
+        for s_id, payload in ac_block.items():
+            if not isinstance(payload, dict):
+                continue
+            crit = payload.get("criteria")
+            if not isinstance(crit, list):
+                continue
+            out_lookup[s_id] = {
+                str(c.get("criterion_id", "")).strip(): str(c.get("statement", "")).strip()
+                for c in crit
+                if isinstance(c, dict) and str(c.get("criterion_id", "")).strip()
+            }
+        return out_lookup
+
+    def _emit_amendment_unsatisfiable(
+        batch_id_local: str,
+        offending_amendments: list[dict[str, Any]],
+        reason_label: str,
+    ) -> dict[str, Any]:
+        items = [
+            {
+                "item_id": (
+                    f"reviewer_unsat_{batch_id_local}_"
+                    f"{(amd.get('amendment_id') or 'item').replace('::', '_')}"
+                ),
+                "title": (
+                    f"Amendment unsatisfiable: "
+                    f"{amd.get('amendment_id', 'unknown')}"
+                ),
+                "question": (
+                    f"The implementer could not satisfy amendment "
+                    f"{amd.get('amendment_id', '?')} ({reason_label}). "
+                    "How should the run proceed?"
+                ),
+                "options": [
+                    {
+                        "option_id": "manual_edit",
+                        "label": "Apply a manual edit and resume",
+                        "effect": "Edit the worktree directly, then resume the run.",
+                    },
+                    {
+                        "option_id": "skip_amendment",
+                        "label": "Skip this amendment and continue",
+                        "effect": (
+                            "Drop the amendment; downstream review may surface "
+                            "minor findings instead."
+                        ),
+                    },
+                ],
+                "blocking_reason": (
+                    amd.get("defect_summary")
+                    or f"Amendment {amd.get('amendment_id', '?')} could not be applied."
+                ),
+                "kind": "amendment_unsatisfiable",
+            }
+            for amd in offending_amendments
+        ]
+        if not items:
+            items = [
+                {
+                    "item_id": f"reviewer_unsat_{batch_id_local}",
+                    "title": f"Amendment unsatisfiable for {batch_id_local}",
+                    "question": "How should the run proceed?",
+                    "options": [
+                        {
+                            "option_id": "manual_edit",
+                            "label": "Apply a manual edit and resume",
+                            "effect": "Edit the worktree directly, then resume the run.",
+                        },
+                    ],
+                    "blocking_reason": reason_label,
+                    "kind": "amendment_unsatisfiable",
+                }
+            ]
+        _manual_block(
+            None,
+            paths["manual"],
+            f"reviewer_unsat_{batch_id_local}",
+            run_dir=paths["run"],
+            command="implement",
+            run_id=ctx.run_id,
+            completed_stages=completed_stages_so_far,
+            items=items,
+        )
+        _report_implement_phase(
+            "Review", "blocked",
+            f"{batch_id_local}: {len(items)} amendment_unsatisfiable item(s) ({reason_label})",
+        )
+        return {
+            "command": "implement",
+            "status": ImplementStatus.BLOCKED,
+            "reason": "amendment_unsatisfiable",
+            "blocking_items": len(items),
+        }
+
+    def _persist_loop_log(batch_id_local: str, log_entries: list[dict[str, Any]]) -> None:
+        try:
+            _write_json(
+                paths["agent_outputs"] / f"review_loop_{batch_id_local}.json",
+                {"batch_id": batch_id_local, "iterations": log_entries},
+            )
+        except Exception:
+            pass
+
+    for brief in briefs:
+        batch_id = str(brief.get("batch_id", "")).strip() or "B0"
+        spec_ids = sorted(
+            {
+                str(row.get("spec_id", "")).strip()
+                for row in (brief.get("spec_rows") or [])
+                if isinstance(row, dict) and str(row.get("spec_id", "")).strip()
+            }
+        )
+        if not spec_ids:
+            continue
+
+        criteria_text_lookup = _build_criteria_text_lookup(brief)
+        loop_log: list[dict[str, Any]] = []
+        prior_amendment_ids: set[str] = set()
+        prior_amendment_packet: dict[str, Any] | None = None
+        last_reviewer_output: dict[str, Any] | None = None
+
+        for iteration in range(1, max_iterations + 1):
+            iteration_started_amend = (iteration > 1 and prior_amendment_packet is not None)
+            # --- Iterations 2..N: re-execute implementer in amendment-only mode ---
+            if iteration_started_amend:
+                if execute_batch_kwargs is None:
+                    _report_implement_phase(
+                        "Review", "warning",
+                        f"{batch_id}: amend response_kind but no execute_batch_kwargs; "
+                        "loop cannot advance",
+                    )
+                    break
+                target_spec_ids = list(
+                    (prior_amendment_packet or {}).get("target_spec_ids") or spec_ids
+                )
+                prior_iter_path = (
+                    paths["agent_outputs"]
+                    / f"implement_{batch_id}_iter{iteration - 1}.json"
+                )
+                prior_iter_output: dict[str, Any] = {}
+                if prior_iter_path.exists():
+                    try:
+                        prior_iter_output = json.loads(
+                            prior_iter_path.read_text(encoding="utf-8")
+                        )
+                    except Exception:
+                        prior_iter_output = {}
+                prior_diff_plan = list(prior_iter_output.get("diff_plan") or [])
+                prior_authored_tests_by_spec: dict[str, list[dict[str, Any]]] = {}
+                for sid_iter in spec_ids:
+                    payload_iter = prior_iter_output.get(sid_iter)
+                    if isinstance(payload_iter, dict):
+                        authored = payload_iter.get("authored_test_cases") or []
+                        if authored:
+                            prior_authored_tests_by_spec[sid_iter] = list(authored)
+
+                _report_implement_phase(
+                    "Review", "running",
+                    f"{batch_id}: iteration {iteration} amendment-only "
+                    f"(targets={','.join(target_spec_ids)})",
+                )
+                try:
+                    rerun_result = _execute_batch(
+                        execute_batch_kwargs["config"],
+                        execute_batch_kwargs["ctx"],
+                        execute_batch_kwargs["impl"],
+                        execute_batch_kwargs["schema_path"],
+                        execute_batch_kwargs["root"],
+                        execute_batch_kwargs["context_text"],
+                        execute_batch_kwargs["paths"],
+                        execute_batch_kwargs["design_headers"],
+                        brief,
+                        completed_stages=completed_stages_so_far,
+                        local_workspace_override=execute_batch_kwargs.get("shared_local_workspace"),
+                        appendix_content=execute_batch_kwargs.get("appendix_text", "") or "",
+                        iteration_index=iteration,
+                        mode="amendment_only",
+                        amendment_packet=prior_amendment_packet,
+                        prior_diff_plan=prior_diff_plan,
+                        prior_authored_tests_by_spec=prior_authored_tests_by_spec,
+                    )
+                except Exception as exc:
+                    return _emit_amendment_unsatisfiable(
+                        batch_id,
+                        list((prior_amendment_packet or {}).get("amendments") or []),
+                        reason_label=f"execute_batch_exception: {exc}",
+                    )
+                if rerun_result.get("status") != ImplementStatus.COMPLETED:
+                    return _emit_amendment_unsatisfiable(
+                        batch_id,
+                        list((prior_amendment_packet or {}).get("amendments") or []),
+                        reason_label=(
+                            f"amendment_only_execute_failed: "
+                            f"{rerun_result.get('reason', 'unknown')}"
+                        ),
+                    )
+                spec_outputs.update(rerun_result.get("spec_outputs", {}))
+
+                # Partial-spec lock-in: scan iteration N's diff_plan for non-target ownership
+                current_iter_path = (
+                    paths["agent_outputs"]
+                    / f"implement_{batch_id}_iter{iteration}.json"
+                )
+                current_iter_output: dict[str, Any] = {}
+                if current_iter_path.exists():
+                    try:
+                        current_iter_output = json.loads(
+                            current_iter_path.read_text(encoding="utf-8")
+                        )
+                    except Exception:
+                        current_iter_output = {}
+                current_diff_plan = list(current_iter_output.get("diff_plan") or [])
+                offenders = out_of_scope_diff_ids(
+                    current_diff_plan, target_spec_ids, prior_diff_plan,
+                )
+                if offenders:
+                    return _emit_amendment_unsatisfiable(
+                        batch_id,
+                        list((prior_amendment_packet or {}).get("amendments") or []),
+                        reason_label=(
+                            "partial_spec_lock_in_violation: out-of-target diff(s) "
+                            + ",".join(
+                                str(o.get("diff_id", "?")) for o in offenders[:3]
+                            )
+                        ),
+                    )
+
+            # --- Run harness + verification evidence + reviewer for this iteration ---
+            try:
+                harness_results = collect_harness_results(
+                    enabled_harnesses=harness_kinds,
+                    project_root=root,
+                    spec_outputs=spec_outputs,
+                    forbidden_path_prefixes=forbidden_paths,
+                    anchor_plans_by_module=anchor_plans_by_module,
+                    spec_to_module_tag=spec_to_module_tag,
+                    diff_size_max_lines=int(eval_cfg.get("diff_size_sanity_max_lines", 2000)),
+                )
+            except Exception as exc:
+                harness_results = [
+                    {
+                        "harness_id": "collect_harness_results",
+                        "spec_id": None,
+                        "passed": False,
+                        "details": f"harness collection error: {exc}",
+                        "duration_ms": 0,
+                    }
+                ]
+            _write_json(
+                paths["agent_outputs"]
+                / f"reviewer_harness_{batch_id}_iter{iteration}.json",
+                harness_results,
+            )
+
+            verification_evidence: list[dict[str, Any]] = []
+            evidence_file = paths["run"] / f"verification_evidence_{batch_id}.json"
+            if evidence_file.exists():
+                try:
+                    payload = json.loads(evidence_file.read_text(encoding="utf-8"))
+                    if isinstance(payload, dict):
+                        verification_evidence = list(payload.get("records") or [])
+                except Exception:
+                    pass
+
+            applied_diffs_summary = build_applied_diffs_summary(spec_outputs)
+            authored_test_cases_by_spec: dict[str, list[dict[str, Any]]] = {
+                sid: list(payload.get("authored_test_cases") or [])
+                for sid, payload in spec_outputs.items()
+                if isinstance(payload, dict) and payload.get("authored_test_cases")
+            }
+
+            _report_implement_phase(
+                "Review", "running",
+                f"{batch_id}: iteration {iteration}/{max_iterations} "
+                f"({len(spec_ids)} spec(s) in parallel)",
+            )
+            per_spec_results, timeout_spec = run_reviewer_for_batch(
+                config=config,
+                ctx=ctx,
+                schema_path=schema_path,
+                brief=brief,
+                harness_results=harness_results,
+                applied_diffs_summary=applied_diffs_summary,
+                authored_test_cases_by_spec=authored_test_cases_by_spec,
+                verification_evidence=verification_evidence,
+                directory_tree_snapshot=directory_tree_snapshot,
+                selected_specs_csv=selected_specs_csv,
+                iteration_index=iteration,
+                max_parallel_per_spec=max_parallel,
+                per_spec_max_total_seconds=per_spec_budget,
+            )
+            if per_spec_results is None:
+                failure_spec = timeout_spec or "unknown"
+                _update_run_meta_state(
+                    run_meta_path,
+                    completed_stages=completed_stages_so_far,
+                    failed_at_stage=f"reviewer_per_spec_{failure_spec}",
+                )
+                _report_implement_phase(
+                    "Review", "failed",
+                    f"{batch_id}: per-spec reviewer timeout for {failure_spec}",
+                )
+                _write_json(
+                    paths["run"] / "summary.json",
+                    {
+                        "status": ImplementStatus.FAILED,
+                        "reason": "reviewer_per_spec_timeout",
+                        "details": f"spec_id={failure_spec}",
+                    },
+                )
+                return {
+                    "command": "implement",
+                    "status": ImplementStatus.FAILED,
+                    "reason": "reviewer_per_spec_timeout",
+                    "details": f"spec_id={failure_spec}",
+                }
+
+            reviewer_output = synthesize_reviewer_output(
+                per_spec_results,
+                iteration_index=iteration,
+                batch_id=batch_id,
+                escalate_on_axes_insufficient_evidence=escalate_on_insufficient,
+                criteria_text_lookup=criteria_text_lookup or None,
+            )
+            last_reviewer_output = reviewer_output
+            _write_json(
+                paths["agent_outputs"]
+                / f"reviewer_output_{batch_id}_iter{iteration}.json",
+                reviewer_output,
+            )
+            # Latest-pointer copy so external readers always see the most
+            # recent reviewer pass without iteration index awareness.
+            _write_json(
+                paths["agent_outputs"] / f"reviewer_output_{batch_id}.json",
+                reviewer_output,
+            )
+
+            current_amendment_packet = reviewer_output.get("amendment_packet")
+            current_amendment_ids = amendment_ids_in_packet(current_amendment_packet)
+            loop_log.append({
+                "iteration_index": iteration,
+                "mode": "full" if iteration == 1 else "amendment_only",
+                "response_kind": reviewer_output.get("response_kind"),
+                "amendment_fingerprints": sorted(current_amendment_ids),
+                "amendment_packet": current_amendment_packet,
+                "implementer_output_ref": (
+                    f"agent_outputs/implement_{batch_id}_iter{iteration}.json"
+                ),
+                "reviewer_output_ref": (
+                    f"agent_outputs/reviewer_output_{batch_id}_iter{iteration}.json"
+                ),
+            })
+            review_iterations_state[batch_id] = iteration
+            _persist_loop_log(batch_id, loop_log)
+
+            rk = reviewer_output.get("response_kind")
+
+            if rk == "manual_block":
+                items = list(reviewer_output.get("manual_resolution_items") or [])
+                _manual_block(
+                    None,
+                    paths["manual"],
+                    f"reviewer_block_{batch_id}",
+                    run_dir=paths["run"],
+                    command="implement",
+                    run_id=ctx.run_id,
+                    completed_stages=completed_stages_so_far,
+                    items=items,
+                )
+                _report_implement_phase(
+                    "Review", "blocked",
+                    f"{batch_id}: {len(items)} item(s) require resolution "
+                    f"(iteration {iteration})",
+                )
+                return {
+                    "command": "implement",
+                    "status": ImplementStatus.BLOCKED,
+                    "reason": "reviewer_manual_block",
+                    "blocking_items": len(items),
+                }
+
+            if rk == "approve":
+                n_minor = len(reviewer_output.get("minor_findings") or [])
+                detail = f"{batch_id}: approve at iteration {iteration}"
+                if n_minor:
+                    detail += f" with {n_minor} minor finding(s)"
+                _report_implement_phase("Review", "ok", detail)
+                break
+
+            if rk == "amend":
+                if iteration > 1 and is_stagnant(
+                    current_amendment_packet, prior_amendment_ids
+                ):
+                    return _emit_amendment_unsatisfiable(
+                        batch_id,
+                        list((current_amendment_packet or {}).get("amendments") or []),
+                        reason_label="stagnation: amendment_ids unchanged from prior iteration",
+                    )
+                if iteration >= max_iterations:
+                    items = [
+                        {
+                            "item_id": (
+                                f"reviewer_loop_limit_{batch_id}_"
+                                f"{amd.get('amendment_id', f'a{idx}').replace('::', '_')}"
+                            ),
+                            "title": (
+                                f"Loop limit exceeded: {amd.get('amendment_id', '?')}"
+                            ),
+                            "question": (
+                                f"Reviewer reached max_iterations={max_iterations} "
+                                f"without approving. How should the run proceed?"
+                            ),
+                            "options": [
+                                {
+                                    "option_id": "raise_max_iterations",
+                                    "label": "Raise max_iterations and resume",
+                                    "effect": (
+                                        "Increase reviewer.max_iterations in config "
+                                        "and resume the run."
+                                    ),
+                                },
+                                {
+                                    "option_id": "manual_edit",
+                                    "label": "Apply a manual edit and resume",
+                                    "effect": (
+                                        "Edit the worktree directly, then resume."
+                                    ),
+                                },
+                            ],
+                            "blocking_reason": (
+                                amd.get("defect_summary")
+                                or "Loop reached max_iterations without convergence."
+                            ),
+                            "kind": "loop_limit_exceeded",
+                        }
+                        for idx, amd in enumerate(
+                            (current_amendment_packet or {}).get("amendments") or []
+                        )
+                    ]
+                    if not items:
+                        items = [
+                            {
+                                "item_id": f"reviewer_loop_limit_{batch_id}",
+                                "title": f"Loop limit exceeded for {batch_id}",
+                                "question": (
+                                    f"Reviewer reached max_iterations={max_iterations} "
+                                    "without approving."
+                                ),
+                                "options": [
+                                    {
+                                        "option_id": "raise_max_iterations",
+                                        "label": "Raise max_iterations and resume",
+                                        "effect": (
+                                            "Increase reviewer.max_iterations in config."
+                                        ),
+                                    },
+                                ],
+                                "blocking_reason": (
+                                    "Loop reached max_iterations without convergence."
+                                ),
+                                "kind": "loop_limit_exceeded",
+                            }
+                        ]
+                    _manual_block(
+                        None,
+                        paths["manual"],
+                        f"reviewer_loop_limit_{batch_id}",
+                        run_dir=paths["run"],
+                        command="implement",
+                        run_id=ctx.run_id,
+                        completed_stages=completed_stages_so_far,
+                        items=items,
+                    )
+                    _report_implement_phase(
+                        "Review", "blocked",
+                        f"{batch_id}: loop_limit_exceeded after {max_iterations} iteration(s)",
+                    )
+                    return {
+                        "command": "implement",
+                        "status": ImplementStatus.BLOCKED,
+                        "reason": "loop_limit_exceeded",
+                        "blocking_items": len(items),
+                    }
+                # Advance to next iteration with the new amendment_packet.
+                prior_amendment_packet = current_amendment_packet
+                prior_amendment_ids = current_amendment_ids
+                continue
+
+            _report_implement_phase(
+                "Review", "warning",
+                f"{batch_id}: unexpected response_kind {rk!r} at iteration {iteration}",
+            )
+            break
+
+        # Track per-batch iteration counts in run_meta for resume + audit.
+        if review_iterations_state:
+            try:
+                run_meta_payload: dict[str, Any] = {}
+                if run_meta_path.exists():
+                    run_meta_payload = json.loads(
+                        run_meta_path.read_text(encoding="utf-8")
+                    )
+                run_meta_payload["review_iterations"] = dict(review_iterations_state)
+                _write_json(run_meta_path, run_meta_payload)
+            except Exception:
+                pass
+
+        # last_reviewer_output is preserved per-iteration in artifacts; the
+        # in-loop break paths already reported their state.
+        _ = last_reviewer_output
+    return None
+
+
 def _resolve_prompt_schemas(config: dict[str, Any], impl: dict[str, Any]) -> dict[str, Path]:
-    """Resolve schema paths for unified planner, implementer, and code evaluator prompts."""
+    """Resolve schema paths for unified planner, implementer, code evaluator (legacy), and reviewer prompts."""
     registry = load_prompt_registry(config)
     schemas: dict[str, Path] = {
         "unified_planner": registry.get_schema_path(impl["unified_planner_prompt_name"]),
@@ -1737,6 +2474,10 @@ def _resolve_prompt_schemas(config: dict[str, Any], impl: dict[str, Any]) -> dic
     }
     try:
         schemas["code_evaluator"] = registry.get_schema_path("code_evaluator")
+    except Exception:
+        pass
+    try:
+        schemas["reviewer_per_spec"] = registry.get_schema_path("reviewer_per_spec")
     except Exception:
         pass
     return schemas
@@ -1790,4 +2531,5 @@ def _update_run_meta_state(
         run_meta.pop("failed_at_stage", None)
     run_meta.pop("blocked_at_stage", None)
     run_meta.pop("resolution_status", None)
+    run_meta.pop("escalation_kinds", None)
     _write_json(run_meta_path, run_meta)

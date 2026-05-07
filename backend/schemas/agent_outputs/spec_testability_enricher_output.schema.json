@@ -21,7 +21,7 @@
     "enrichment_item": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["spec_id", "acceptance_criteria", "evidence_type"],
+      "required": ["spec_id", "acceptance_criteria", "evidence_type", "test_plan"],
       "properties": {
         "spec_id": {
           "type": "string",
@@ -51,6 +51,92 @@
             "NA"
           ],
           "description": "Most appropriate evidence type for verifying this requirement, or NA when no evidence type applies."
+        },
+        "criteria": {
+          "type": "array",
+          "description": "Structured per-criterion breakdown of acceptance_criteria. Optional (still allowed empty for evidence_type='NA' specs). When non-empty and test_plan.planned_test_cases is non-empty, every planned_test_cases[].criteria_ids[] entry must reference a criterion_id from this array (prompt-enforced).",
+          "items": { "$ref": "#/$defs/structured_criterion" }
+        },
+        "test_plan": {
+          "$ref": "#/$defs/test_plan",
+          "description": "Per-spec planned test cases. P6: promoted to required. planned_test_cases may be empty when evidence_type is 'NA' or criteria is empty."
+        }
+      }
+    },
+    "structured_criterion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["criterion_id", "statement", "observable_signal", "evidence_kind"],
+      "properties": {
+        "criterion_id": {
+          "type": "string",
+          "pattern": "^AC[0-9]+$",
+          "description": "Stable identifier within this spec's criteria, e.g. 'AC1', 'AC2'. Referenced by test_plan.planned_test_cases[].criteria_ids[] and downstream by amendment_packet entries."
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Given/When/Then or equivalent statement of this single criterion."
+        },
+        "observable_signal": {
+          "type": "string",
+          "minLength": 1,
+          "description": "What an automated check or human inspector would observe to confirm the criterion is satisfied (specific value, status, log line, screen element, etc.)."
+        },
+        "evidence_kind": {
+          "type": "string",
+          "enum": ["static_check", "unit_test", "integration_test", "runtime_log", "manual_review"],
+          "description": "Category of evidence required to verify this criterion. Drives downstream review-axis demotion rules."
+        }
+      }
+    },
+    "test_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["planned_test_cases"],
+      "properties": {
+        "planned_test_cases": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/planned_test_case" },
+          "description": "Test cases the implementer should author. Coverage rule (prompt-enforced): every criterion_id from criteria[] whose evidence_kind is unit_test or integration_test must appear in at least one planned_test_case.criteria_ids[]."
+        }
+      }
+    },
+    "planned_test_case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["test_id", "framework", "target_file", "target_case", "criteria_ids", "rationale"],
+      "properties": {
+        "test_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable identifier within this spec's test_plan, e.g. 'T1', 'T2'."
+        },
+        "framework": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Test framework (e.g. pytest, jest, junit)."
+        },
+        "target_file": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Codebase-relative path to the test file the implementer should author or extend."
+        },
+        "target_case": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Specific test function/method/case identifier inside target_file."
+        },
+        "criteria_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "pattern": "^AC[0-9]+$" },
+          "description": "criterion_ids from this enrichment's criteria[] that this test case is intended to cover."
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Why this test case satisfies the listed criteria. May explicitly note when a criterion's evidence_kind is manual_review or runtime_log and the test serves only as a structural anchor."
         }
       }
     },

@@ -52,12 +52,13 @@
    b. Keep only items where the `spec_id` count >= `consensus_min_votes` (default 3, clamped to `<= agent_replicas`).
    c. For each surviving `spec_id`, pick the representative item from the first instance that flagged it.
    d. Produces: `ambiguity_output.json`, `testability_output.json` (consensus-filtered), `consensus_meta.json`.
-8c. `[v0.1.0][deterministic]` **Apply Testability Enrichments** (`refine.enrichment_apply`): Write per-spec `acceptance_criteria` + `evidence_type` from instance 0's `enrichments[]` onto the working rows.
+8c. `[v0.1.0][deterministic]` **Apply Testability Enrichments** (`refine.enrichment_apply`): Write per-spec `acceptance_criteria` + `evidence_type` from instance 0's `enrichments[]` onto the working rows; persist structured `criteria[]` + `test_plan` per-spec side-files.
   a. Read `enrichments[]` from instance 0's testability output (full mode only).
    b. Skip any enrichment whose `spec_id` also appears in the consensus-filtered testability `manual_resolution_items` (manual resolution takes priority).
    c. Add `acceptance_criteria` / `evidence_type` columns to headers if missing, then write enrichment values onto the matching rows in-memory (deferred to step 10's CSV write).
-   d. Skipped under `--dry-run`.
-   e. Produces: `enrichments.json`.
+   d. For each enrichment carrying `criteria` and/or `test_plan` (P2 — both currently optional in the schema), write a side-file at `<project_root>/out/state/test_plans/<spec_id>.json` with payload `{spec_id, criteria?, test_plan?}`. Downstream consumers (implement) load by spec_id via `core.spec_acceptance.load_spec_test_plans`.
+   e. Skipped under `--dry-run`.
+   f. Produces: `enrichments.json`, plus per-spec `out/state/test_plans/<spec_id>.json` files when structured criteria/test_plan are present.
 9. `[v0.0.0][deterministic]` **Merge Manual Resolution Items** (`refine.item_merge`): Combine consensus-filtered items into a unified blocking list.
   a. Group ambiguity + testability items by `spec_id`. When both agents flag the same `spec_id`, emit a single **compound** item with `concerns[]` (one per agent type) and item-level `options` (`accept_ambiguity`, `accept_testability`, `accept_both_improvements`, `let_agent_edit`, `skip`).
    b. When only one agent flags a `spec_id`, emit a single non-compound item carrying that agent's original `options`.

@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from core.constants import EscalationKind
 from core.resolution import (
     RESOLUTION_SOURCE_AGENT,
     RESOLUTION_SOURCE_VALIDATION,
@@ -78,6 +79,17 @@ def _manual_block(
         shared_contracts=shared_contracts,
     )
 
+    kinds_set: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        raw_kind = item.get("kind")
+        if isinstance(raw_kind, str) and raw_kind.strip():
+            kinds_set.add(raw_kind.strip())
+        else:
+            kinds_set.add(EscalationKind.GENERIC.value)
+    escalation_kinds = sorted(kinds_set)
+
     run_meta_path = run_dir / "run_meta.json"
     run_meta: dict[str, Any] = {}
     if run_meta_path.exists():
@@ -88,6 +100,7 @@ def _manual_block(
     run_meta["blocked_at_stage"] = stage
     run_meta["completed_stages"] = completed_stages
     run_meta["resolution_status"] = "pending"
+    run_meta["escalation_kinds"] = escalation_kinds
     _write_json(run_meta_path, run_meta)
 
     return True

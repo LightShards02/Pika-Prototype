@@ -456,8 +456,17 @@ def _build_briefs(
     impl: dict[str, Any],
     *,
     appendix_entries: list[Any] | None = None,
+    acceptance_criteria_map: dict[str, dict[str, Any]] | None = None,
+    test_plan_map: dict[str, dict[str, Any]] | None = None,
 ) -> list[BatchBrief]:
-    """Build batch briefs from selected rows and unified planner artifacts."""
+    """Build batch briefs from selected rows and unified planner artifacts.
+
+    P3: when provided, ``acceptance_criteria_map`` and ``test_plan_map`` are
+    sliced per-batch and attached to each brief. Slicing happens once here
+    so the implementer prompt receives only the AC/test_plan entries for
+    its own batch's specs (avoids re-loading per-attempt and keeps prompt
+    payload bounded).
+    """
     by_spec = {row["spec_id"]: row for row in rows}
 
     spec_dep_graph = _build_spec_dependency_graph(spec_dependencies)
@@ -531,6 +540,19 @@ def _build_briefs(
                 if entry.module_tag is None or entry.module_tag in batch_modules:
                     batch_appendix.append(asdict(entry))
 
+        ac_for_batch: dict[str, dict[str, Any]] = {}
+        if acceptance_criteria_map:
+            ac_for_batch = {
+                sid: acceptance_criteria_map[sid]
+                for sid in spec_ids
+                if sid in acceptance_criteria_map
+            }
+        tp_for_batch: dict[str, dict[str, Any]] = {}
+        if test_plan_map:
+            tp_for_batch = {
+                sid: test_plan_map[sid] for sid in spec_ids if sid in test_plan_map
+            }
+
         briefs.append(
             {
                 "batch_id": batch["batch_id"],
@@ -541,6 +563,8 @@ def _build_briefs(
                 "spec_dependency_context": dep_context,
                 "constraints": constraints,
                 "appendix_entries": batch_appendix,
+                "acceptance_criteria_for_batch": ac_for_batch,
+                "test_plan_for_batch": tp_for_batch,
             }
         )
     return briefs

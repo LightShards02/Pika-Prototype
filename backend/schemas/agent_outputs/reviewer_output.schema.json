@@ -1,0 +1,219 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReviewerOutput",
+  "description": "Final reviewer output for one batch (P4). Built deterministically by the synthesis pass from per-spec reviewer LLM calls. Discriminated by response_kind. axis_findings (batch-level aggregate) and minor_findings (optional) are always allowed regardless of response_kind.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["response_kind", "axis_findings"],
+  "properties": {
+    "response_kind": {
+      "type": "string",
+      "enum": ["approve", "amend", "manual_block"]
+    },
+    "axis_findings": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "description": "Exactly four entries — one per axis (code, test_plan, test_code, test_evidence). status is the worst across specs after demotion; summary describes the worst case.",
+      "items": { "$ref": "#/$defs/axis_finding" }
+    },
+    "minor_findings": {
+      "type": "array",
+      "description": "Less-satisfactory-but-non-fatal observations from per-spec reviewers, plus axis-3/4 findings demoted under the Phase-4 rule (when axis 1 passes for the same spec).",
+      "items": { "$ref": "#/$defs/minor_finding" }
+    },
+    "criteria_assessment": {
+      "type": "array",
+      "description": "Set on response_kind=approve. Per-spec/per-criterion satisfied flag with evidence summary.",
+      "items": { "$ref": "#/$defs/criteria_assessment_entry" }
+    },
+    "amendment_packet": {
+      "$ref": "#/$defs/amendment_packet",
+      "description": "Set on response_kind=amend. One amendment per non-demoted (spec_id, criterion_id, axis) failure, with deterministic amendment_id."
+    },
+    "manual_resolution_items": {
+      "type": "array",
+      "description": "Set on response_kind=manual_block. Each item carries a typed kind (Phase-1 enum); typically ambiguity or scope_conflict.",
+      "items": { "$ref": "#/$defs/manual_resolution_item" }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "response_kind": { "const": "approve" } } },
+      "then": {
+        "required": ["criteria_assessment"],
+        "not": {
+          "anyOf": [
+            { "required": ["amendment_packet"] },
+            { "required": ["manual_resolution_items"] }
+          ]
+        }
+      }
+    },
+    {
+      "if": { "properties": { "response_kind": { "const": "amend" } } },
+      "then": {
+        "required": ["amendment_packet"],
+        "not": {
+          "anyOf": [
+            { "required": ["criteria_assessment"] },
+            { "required": ["manual_resolution_items"] }
+          ]
+        }
+      }
+    },
+    {
+      "if": { "properties": { "response_kind": { "const": "manual_block" } } },
+      "then": {
+        "required": ["manual_resolution_items"],
+        "not": {
+          "anyOf": [
+            { "required": ["criteria_assessment"] },
+            { "required": ["amendment_packet"] }
+          ]
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "axis_name": {
+      "type": "string",
+      "enum": ["code", "test_plan", "test_code", "test_evidence"]
+    },
+    "axis_status": {
+      "type": "string",
+      "enum": ["pass", "fail", "insufficient_evidence"]
+    },
+    "criterion_id": {
+      "type": "string",
+      "pattern": "^AC[0-9]+$"
+    },
+    "axis_finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["axis", "status", "summary"],
+      "properties": {
+        "axis": { "$ref": "#/$defs/axis_name" },
+        "status": { "$ref": "#/$defs/axis_status" },
+        "summary": { "type": "string", "minLength": 1 }
+      }
+    },
+    "minor_finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["spec_id", "axis", "summary"],
+      "properties": {
+        "spec_id": { "type": "string", "minLength": 1 },
+        "axis": { "$ref": "#/$defs/axis_name" },
+        "criterion_id": { "$ref": "#/$defs/criterion_id" },
+        "summary": { "type": "string", "minLength": 1 },
+        "suggested_improvement": { "type": "string", "minLength": 1 }
+      }
+    },
+    "criteria_assessment_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["spec_id", "criterion_id", "satisfied", "evidence_summary"],
+      "properties": {
+        "spec_id": { "type": "string", "minLength": 1 },
+        "criterion_id": { "$ref": "#/$defs/criterion_id" },
+        "satisfied": { "type": "boolean" },
+        "evidence_summary": { "type": "string", "minLength": 1 },
+        "evidence_type_considered": { "type": "string", "minLength": 1 }
+      }
+    },
+    "amendment_packet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["packet_id", "target_spec_ids", "amendments"],
+      "properties": {
+        "packet_id": { "type": "string", "minLength": 1 },
+        "target_spec_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "amendments": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/amendment" }
+        }
+      }
+    },
+    "amendment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "amendment_id",
+        "spec_id",
+        "criterion_id",
+        "axis",
+        "defect_summary",
+        "required_change"
+      ],
+      "properties": {
+        "amendment_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_]+::AC[0-9]+::(code|test_plan|test_code|test_evidence)$",
+          "description": "Deterministic identity: f\"{spec_id}::{criterion_id}::{axis}\". Stable across iterations."
+        },
+        "spec_id": { "type": "string", "minLength": 1 },
+        "criterion_id": { "$ref": "#/$defs/criterion_id" },
+        "axis": { "$ref": "#/$defs/axis_name" },
+        "defect_summary": { "type": "string", "minLength": 1 },
+        "required_change": { "type": "string", "minLength": 1 },
+        "scope_hint": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "files": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+            "symbols": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+          }
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "manual_resolution_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["item_id", "title", "question", "options", "blocking_reason"],
+      "properties": {
+        "item_id": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "question": { "type": "string", "minLength": 1 },
+        "options": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/manual_option" }
+        },
+        "recommended_option_id": { "type": "string" },
+        "blocking_reason": { "type": "string", "minLength": 1 },
+        "evidence_refs": { "type": "array", "items": { "type": "string" } },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "generic",
+            "code_eval_failure",
+            "loop_limit_exceeded",
+            "ambiguity",
+            "scope_conflict",
+            "amendment_unsatisfiable"
+          ]
+        }
+      }
+    },
+    "manual_option": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["option_id", "label", "effect"],
+      "properties": {
+        "option_id": { "type": "string", "minLength": 1 },
+        "label": { "type": "string", "minLength": 1 },
+        "effect": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}
