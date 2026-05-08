@@ -435,26 +435,46 @@ def _get_impl_cfg(config: dict[str, Any]) -> dict[str, Any]:
 
     author_tests_raw = implementer_agent_cfg.get("author_tests", False)
     author_tests = bool(author_tests_raw) if isinstance(author_tests_raw, bool) else False
-    _DEFAULT_TEST_AUTHORING_KINDS = ("unit_test", "integration_test")
-    test_authoring_kinds_raw = implementer_agent_cfg.get(
-        "test_authoring_required_for_evidence_kinds", list(_DEFAULT_TEST_AUTHORING_KINDS)
+    _DEFAULT_TEST_AUTHORING_EVIDENCE_TYPES = (
+        "unit_test_execution_record",
+        "integration_test_execution_record",
     )
-    if not isinstance(test_authoring_kinds_raw, list):
-        test_authoring_kinds_raw = list(_DEFAULT_TEST_AUTHORING_KINDS)
-    test_authoring_required_for_evidence_kinds = sorted(
+    _VALID_EVIDENCE_TYPES = {
+        "unit_test_execution_record",
+        "integration_test_execution_record",
+        "static_analysis_report",
+        "audit_trail",
+        "system_log",
+        "defect_report",
+        "build_version_record",
+        "ui_screenshot",
+        "screen_recording",
+        "serial_debug_log",
+        "network_packet_capture",
+        "database_export",
+        "api_response_log",
+        "performance_profiler_output",
+    }
+    # Accept the canonical key plus historical aliases. New key wins when set.
+    test_authoring_raw = implementer_agent_cfg.get(
+        "test_authoring_required_for_evidence_types",
+        implementer_agent_cfg.get(
+            "test_authoring_required_for_verification_activities",
+            implementer_agent_cfg.get(
+                "test_authoring_required_for_evidence_kinds",
+                list(_DEFAULT_TEST_AUTHORING_EVIDENCE_TYPES),
+            ),
+        ),
+    )
+    if not isinstance(test_authoring_raw, list):
+        test_authoring_raw = list(_DEFAULT_TEST_AUTHORING_EVIDENCE_TYPES)
+    test_authoring_required_for_evidence_types = sorted(
         {
             str(k).strip()
-            for k in test_authoring_kinds_raw
-            if str(k).strip()
-            in {
-                "static_check",
-                "unit_test",
-                "integration_test",
-                "runtime_log",
-                "manual_review",
-            }
+            for k in test_authoring_raw
+            if str(k).strip() in _VALID_EVIDENCE_TYPES
         }
-    ) or list(_DEFAULT_TEST_AUTHORING_KINDS)
+    ) or list(_DEFAULT_TEST_AUTHORING_EVIDENCE_TYPES)
 
     # P4: reviewer config
     reviewer_agent_cfg = _agent_cfg(impl, "reviewer")
@@ -530,7 +550,7 @@ def _get_impl_cfg(config: dict[str, Any]) -> dict[str, Any]:
         "steps": steps,
         "max_appendix_chars": max_appendix_chars,
         "author_tests": author_tests,
-        "test_authoring_required_for_evidence_kinds": test_authoring_required_for_evidence_kinds,
+        "test_authoring_required_for_evidence_types": test_authoring_required_for_evidence_types,
         "reviewer": {
             "enabled": reviewer_enabled,
             "max_iterations": reviewer_max_iterations,

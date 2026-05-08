@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from core.appendix_loader import load_appendix_files
+from core.appendix_loader import AppendixEntry, format_appendix_for_agent, load_appendix_files
 
 
 class AppendixLoaderCsvOverflowTests(unittest.TestCase):
@@ -58,6 +58,59 @@ class AppendixLoaderCsvOverflowTests(unittest.TestCase):
                 entries[0].source_path,
                 str(appendix_path),
             )
+
+
+class FormatAppendixForAgentTests(unittest.TestCase):
+    """``format_appendix_for_agent`` sectioning and ordering."""
+
+    def test_interleaved_same_source_preserves_global_entry_order(self) -> None:
+        """Non-adjacent rows from the same file must not be merged ahead of others."""
+        a = Path("/proj/appendix_a.csv")
+        b = Path("/proj/appendix_b.csv")
+        entries = [
+            AppendixEntry(
+                appendix_id="APX001",
+                title="a1",
+                content="CONTENT_A1",
+                source_path=str(a),
+            ),
+            AppendixEntry(
+                appendix_id="APX002",
+                title="b1",
+                content="CONTENT_B1",
+                source_path=str(b),
+            ),
+            AppendixEntry(
+                appendix_id="APX003",
+                title="a2",
+                content="CONTENT_A2",
+                source_path=str(a),
+            ),
+        ]
+        text = format_appendix_for_agent(entries)
+        self.assertLess(text.index("CONTENT_A1"), text.index("CONTENT_B1"))
+        self.assertLess(text.index("CONTENT_B1"), text.index("CONTENT_A2"))
+        self.assertEqual(text.count("appendix_a.csv"), 2)
+
+    def test_contiguous_same_source_single_section(self) -> None:
+        p = Path("/proj/one.csv")
+        entries = [
+            AppendixEntry(
+                appendix_id="APX001",
+                title="r1",
+                content="C1",
+                source_path=str(p),
+            ),
+            AppendixEntry(
+                appendix_id="APX002",
+                title="r2",
+                content="C2",
+                source_path=str(p),
+            ),
+        ]
+        text = format_appendix_for_agent(entries)
+        self.assertEqual(text.count("one.csv"), 1)
+        self.assertIn("(2 entries", text)
 
 
 if __name__ == "__main__":

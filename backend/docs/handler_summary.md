@@ -40,14 +40,14 @@ This document summarizes the input, translation, and output mechanism of each co
 |-------|---------|
 | **Input** | CLI `--design-spec` or `commands.format.inputs.design_spec_path` → Raw SADS CSV/XLSX content (relative to project root or absolute). No further fallback. |
 | **Preprocessing** | 1. If SADS format (SADS ID column + D\\d+\\.\\d+ rows): flatten (forward-fill SRS ID/SRS, filter to SADS rows), derive title/requirement from SADS ID/SADS<br>2. Keyword replacement (many-to-one: replacement → [keywords], or legacy keyword → replacement)<br>3. Append missing contract columns per csv_contracts<br>4. Assign deterministic spec_ids via ID registry (SADS fingerprint or standard) |
-| **Agent output** | Optional `design_doc_enricher` (when `commands.format.enrichment.enabled: true`): fills `module_role` only (one per unique `module_tag`). **Does NOT write `acceptance_criteria` or `evidence_type`.** |
+| **Agent output** | Optional `design_doc_enricher` (when `commands.format.enrichment.enabled: true`): fills `module_role` only (one per unique `module_tag`). **Does NOT write `acceptance_criteria`** (the SADS CSV no longer carries an `evidence_type` column; per-criterion `evidence_type` lives in per-spec test_plan side-files written by `refine`). |
 | **Schema** | `schemas.enrich_output` → `design_doc_enrich_output.schema.json` (modules[] only) |
 | **Translation** | Writes Draft Formatted SADS to `commands.format.outputs.design_spec_path`; backs up existing file to `outputs.backups_dir/format/` if `copy_before_write`; copies to `project.state.design_spec_path` after writing; when SADS format, writes ID mapping to `out/state/sads_id_mapping.json` then copies to `project.state.sads_id_mapping_path` |
-| **Output** | Draft Formatted SADS (CSV) with `module_role` populated; `acceptance_criteria` and `evidence_type` remain empty — filled by `refine`. |
+| **Output** | Draft Formatted SADS (CSV) with `module_role` populated; `acceptance_criteria` is empty — filled by `refine`. (Per-criterion `evidence_type` is written into per-spec test_plan side-files by `refine`, not into the SADS CSV.) |
 
 **Skipped when:** No input path via CLI or config, or file missing.
 
-**Pipeline ordering note:** `acceptance_criteria` and `evidence_type` are populated by the `spec_testability_enricher` agent during the `refine` stage. Run `pika agent refine` after `format` to get full SADS output. If `refine` is blocked by MR items (vague requirements), resolve them and re-run `pika agent refine --resume` to generate AC for the resolved specs.
+**Pipeline ordering note:** `acceptance_criteria` is populated by the `spec_quality_auditor` agent (instance 0, full mode) during the `refine` stage; per-criterion `evidence_type` lives in per-spec test_plan side-files at `out/state/test_plans/<spec_id>.json`. Run `pika agent refine` after `format` to get full SADS output. If `refine` is blocked by MR items (vague requirements, untestable outcomes, etc.), resolve them and re-run `pika agent refine --resume` to generate AC for the resolved specs.
 
 ---
 

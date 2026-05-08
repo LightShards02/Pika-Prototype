@@ -259,7 +259,7 @@ def _validate_required_config(cfg: dict[str, Any]) -> None:
         refine_pn = refine_cmd.get("prompt_names")
         _require(isinstance(refine_pn, dict), "commands.refine.prompt_names", missing)
         if isinstance(refine_pn, dict):
-            for sub in ("ambiguity_detector", "testability_enricher", "spec_editor"):
+            for sub in ("quality_auditor", "spec_editor"):
                 _require_non_empty_string(refine_pn.get(sub), f"commands.refine.prompt_names.{sub}", missing)
 
     _require(isinstance(cfg.get("id_generation"), dict), "id_generation", missing)

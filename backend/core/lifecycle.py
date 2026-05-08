@@ -1853,26 +1853,28 @@ def invoke_agent_stub(
     storage_file = template_vars.get("run_summary_file") or "-"
     if not isinstance(storage_file, str) or not storage_file.strip():
         storage_file = "-"
-    # spec_testability_enricher (full mode) — return enrichments + empty MR items
+    # spec_quality_auditor (full mode) — enrichments + MR items + appendix recommendations
+    if prompt_name in ("spec_quality_auditor",) and template_vars.get("enrich_mode") == "full":
+        return {
+            "enrichments": [],
+            "manual_resolution_items": [],
+            "appendix_recommendations": [],
+        }
+    # spec_quality_auditor (triage mode) — MR items only (replicas don't author AC)
+    if prompt_name in ("spec_quality_auditor",) and template_vars.get("enrich_mode") == "triage":
+        return {
+            "manual_resolution_items": [],
+        }
+    # Legacy: spec_testability_enricher (full/triage). Retained while the legacy prompt
+    # blocks remain on disk; not invoked by the active refine pipeline.
     if prompt_name in ("spec_testability_enricher",) and template_vars.get("enrich_mode") == "full":
         return {
             "enrichments": [],
             "manual_resolution_items": [],
         }
-    # spec_testability_enricher (triage mode) or spec_testability_triage_output — MR items only
     if prompt_name in ("spec_testability_enricher",) and template_vars.get("enrich_mode") == "triage":
         return {
             "manual_resolution_items": [],
-        }
-    # spec_change_merger — return a field-level requirement edit (stub text)
-    if prompt_name in ("spec_change_merger",):
-        spec_id_val = template_vars.get("spec_id", "UNKNOWN")
-        return {
-            "edit_type": "field",
-            "spec_id": spec_id_val,
-            "field": "requirement",
-            "new_text": f"Stub merged requirement for {spec_id_val}.",
-            "rationale": "Stub: merged ambiguity and testability suggestions.",
         }
     # design_doc_enricher — modules only (no specs array)
     if prompt_name in ("design_doc_enricher",):

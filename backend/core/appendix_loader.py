@@ -309,6 +309,16 @@ def format_appendix_for_agent(
 ) -> str:
     """Format appendix entries as a readable text block for prompt injection.
 
+    Entries are split into sections by **contiguous runs** of the same
+    ``source_path`` (with a section header per run) so the agent can match a
+    spec's filename reference (e.g. ``appendix_error_codes.csv``) against the
+    actual source attribution in the bundle, while preserving the **global
+    order** of entries as given in *entries*. Without sectioning, a
+    CSV-row-per-entry appendix reads as a flat list with no file provenance,
+    which leads the agent to mistakenly conclude that an explicitly cited file
+    is "not provided" when in fact it was loaded. Interleaved rows from the
+    same file produce multiple sections so reading order matches *entries*.
+
     Args:
         entries: List of AppendixEntry with IDs assigned.
         max_chars: Maximum total characters allowed. 0 = no limit.
@@ -322,13 +332,50 @@ def format_appendix_for_agent(
     if not entries:
         return ""
 
-    parts: list[str] = []
-    for e in entries:
-        scope = f"module={e.module_tag}" if e.module_tag else "general"
-        header = f"[{e.appendix_id}] {e.title} ({scope})"
-        parts.append(f"{header}\n{e.content}")
+    def _format_section(src_path: str, group: list[AppendixEntry]) -> str:
+        modules = sorted({e.module_tag for e in group if e.module_tag})
+        scope_summary = (
+            f"module={'/'.join(modules)}" if modules else "general"
+        )
+        if src_path:
+            file_name = Path(src_path).name
+            section_header = (
+                f"=== {file_name} ({len(group)} "
+                f"{'entry' if len(group) == 1 else 'entries'}, {scope_summary}) ==="
+            )
+        else:
+            section_header = (
+                f"=== (unattributed appendix, {len(group)} "
+                f"{'entry' if len(group) == 1 else 'entries'}, {scope_summary}) ==="
+            )
 
-    text = "\n\n---\n\n".join(parts)
+        item_blocks: list[str] = []
+        for e in group:
+            scope = f"module={e.module_tag}" if e.module_tag else "general"
+            header = f"[{e.appendix_id}] {e.title} ({scope})"
+            item_blocks.append(f"{header}\n{e.content}")
+
+        return section_header + "\n\n" + "\n\n".join(item_blocks)
+
+    # One section per contiguous run of the same source_path (preserves global
+    # entry order; non-adjacent rows from the same file get multiple headers).
+    sections: list[str] = []
+    run_key: str | None = None
+    run: list[AppendixEntry] = []
+    for e in entries:
+        key = e.source_path or ""
+        if run_key is None:
+            run_key = key
+            run = [e]
+        elif key == run_key:
+            run.append(e)
+        else:
+            sections.append(_format_section(run_key, run))
+            run_key = key
+            run = [e]
+    sections.append(_format_section(run_key, run))
+
+    text = "\n\n---\n\n".join(sections)
 
     if max_chars > 0 and len(text) > max_chars:
         raise AppendixSizeLimitError(

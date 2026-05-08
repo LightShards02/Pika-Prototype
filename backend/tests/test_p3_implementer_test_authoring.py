@@ -201,52 +201,78 @@ class ImplementCfgTestAuthoringTests(unittest.TestCase):
         impl = _get_impl_cfg(self._cfg())
         self.assertFalse(impl["author_tests"])
         self.assertEqual(
-            impl["test_authoring_required_for_evidence_kinds"],
-            ["integration_test", "unit_test"],
+            impl["test_authoring_required_for_evidence_types"],
+            ["integration_test_execution_record", "unit_test_execution_record"],
         )
 
     def test_author_tests_true_from_implementer_block(self) -> None:
         impl = _get_impl_cfg(self._cfg({"author_tests": True}))
         self.assertTrue(impl["author_tests"])
 
-    def test_test_authoring_kinds_filters_bogus_values(self) -> None:
+    def test_test_authoring_evidence_types_filters_bogus_values(self) -> None:
         impl = _get_impl_cfg(
             self._cfg(
                 {
-                    "test_authoring_required_for_evidence_kinds": [
-                        "unit_test",
+                    "test_authoring_required_for_evidence_types": [
+                        "unit_test_execution_record",
                         "bogus_kind",
-                        "manual_review",
+                        "ui_screenshot",
                     ]
                 }
             )
         )
-        # Bogus filtered out; valid kinds preserved (sorted).
+        # Bogus filtered out; valid evidence_types preserved (sorted).
         self.assertEqual(
-            impl["test_authoring_required_for_evidence_kinds"],
-            ["manual_review", "unit_test"],
+            impl["test_authoring_required_for_evidence_types"],
+            ["ui_screenshot", "unit_test_execution_record"],
         )
 
-    def test_test_authoring_kinds_empty_falls_back_to_default(self) -> None:
+    def test_test_authoring_evidence_types_empty_falls_back_to_default(self) -> None:
         impl = _get_impl_cfg(
             self._cfg(
-                {"test_authoring_required_for_evidence_kinds": ["bogus_only"]}
+                {"test_authoring_required_for_evidence_types": ["bogus_only"]}
             )
         )
         # Default tuple order is preserved when fallback fires after empty set.
         self.assertEqual(
-            impl["test_authoring_required_for_evidence_kinds"],
-            ["unit_test", "integration_test"],
+            impl["test_authoring_required_for_evidence_types"],
+            ["unit_test_execution_record", "integration_test_execution_record"],
         )
 
-    def test_test_authoring_kinds_non_list_falls_back_to_default(self) -> None:
+    def test_test_authoring_evidence_types_non_list_falls_back_to_default(self) -> None:
         impl = _get_impl_cfg(
-            self._cfg({"test_authoring_required_for_evidence_kinds": "unit_test"})
+            self._cfg({"test_authoring_required_for_evidence_types": "unit_test_execution_record"})
         )
-        # Non-list raw → reset to default tuple → sorted.
+        # Non-list raw -> reset to default tuple -> sorted.
         self.assertEqual(
-            impl["test_authoring_required_for_evidence_kinds"],
-            ["integration_test", "unit_test"],
+            impl["test_authoring_required_for_evidence_types"],
+            ["integration_test_execution_record", "unit_test_execution_record"],
+        )
+
+    def test_legacy_evidence_kinds_key_still_accepted(self) -> None:
+        """Workspace configs with the legacy evidence_kinds key continue to work as a fallback only when populated with values that are still valid evidence_types."""
+        # Old verification_activity values like "unit_test" are no longer in the enum;
+        # the legacy key path filters them out and falls back to the default.
+        impl = _get_impl_cfg(
+            self._cfg({"test_authoring_required_for_evidence_kinds": ["unit_test_execution_record"]})
+        )
+        self.assertEqual(
+            impl["test_authoring_required_for_evidence_types"],
+            ["unit_test_execution_record"],
+        )
+
+    def test_new_key_wins_over_legacy_when_both_present(self) -> None:
+        impl = _get_impl_cfg(
+            self._cfg(
+                {
+                    "test_authoring_required_for_evidence_types": ["ui_screenshot"],
+                    "test_authoring_required_for_evidence_kinds": ["unit_test_execution_record"],
+                }
+            )
+        )
+        self.assertEqual(
+            impl["test_authoring_required_for_evidence_types"],
+            ["ui_screenshot"],
         )
 
 

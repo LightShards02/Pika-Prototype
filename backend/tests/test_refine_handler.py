@@ -22,8 +22,10 @@ from handlers.refine.impl import (
     _REQUIRED_COLUMNS,
     _filter_by_consensus,
     _find_col,
-    _merge_all_items,
+    _format_severity_breakdown,
     _resume_refine,
+    _synthesize_untestable_reason,
+    _translate_v3_item_to_v2_legacy,
     _validate_required_columns,
     run_refine,
 )
@@ -112,52 +114,82 @@ def _write_project_context(root: Path) -> None:
     (root / "PROJECT_CONTEXT.md").write_text("# Test project context", encoding="utf-8")
 
 
-def _empty_agent_output() -> dict[str, Any]:
-    """Empty output for the merged testability enricher (full mode)."""
-    return {"manual_resolution_items": [], "enrichments": []}
+_STD_OPTIONS = [
+    {"option_id": "accept_suggestion", "label": "Accept", "effect": "Apply"},
+    {"option_id": "let_agent_edit", "label": "Let agent edit", "effect": "Call spec_editor"},
+    {"option_id": "skip", "label": "Skip", "effect": "Keep original"},
+]
 
 
-def _ambiguity_items_output() -> dict[str, Any]:
+def _empty_full_output() -> dict[str, Any]:
+    """Empty full-mode output from the unified spec_quality_auditor."""
     return {
-        "manual_resolution_items": [
-            {
-                "item_id": "AMB-001",
-                "title": "Vague requirement",
-                "spec_id": "S1",
-                "field": "requirement",
-                "vague_phrases": ["appropriately"],
-                "suggested_improvement": "The system shall validate that input length <= 255 chars.",
-                "options": [
-                    {"option_id": "accept_suggestion", "label": "Accept", "effect": "Apply"},
-                    {"option_id": "let_agent_edit", "label": "Let agent edit", "effect": "Call spec_editor"},
-                    {"option_id": "skip", "label": "Skip", "effect": "Keep original"},
-                ],
-            }
-        ]
-    }
-
-
-def _testability_items_output() -> dict[str, Any]:
-    """Output for the merged testability enricher — MR items target requirement only."""
-    return {
-        "manual_resolution_items": [
-            {
-                "item_id": "TEST-001",
-                "title": "Requirement too vague for testable AC",
-                "spec_id": "S2",
-                "field": "requirement",
-                "untestable_reason": "Requirement uses vague language that cannot produce a measurable AC.",
-                "suggested_improvement": "The system shall return results within 200ms under normal load.",
-                "suggested_test_type": "integration",
-                "options": [
-                    {"option_id": "accept_suggestion", "label": "Accept", "effect": "Apply"},
-                    {"option_id": "let_agent_edit", "label": "Let agent edit", "effect": "Call spec_editor"},
-                    {"option_id": "skip", "label": "Skip", "effect": "Keep original"},
-                ],
-            }
-        ],
+        "manual_resolution_items": [],
         "enrichments": [],
+        "appendix_recommendations": [],
     }
+
+
+def _empty_triage_output() -> dict[str, Any]:
+    """Empty triage-mode output from the unified spec_quality_auditor (replicas)."""
+    return {"manual_resolution_items": []}
+
+
+def _vague_item(spec_id: str = "S1", item_id: str = "QA-001") -> dict[str, Any]:
+    """v3 quality_item flagged for vague_language."""
+    return {
+        "item_id": item_id,
+        "title": "Vague requirement",
+        "spec_id": spec_id,
+        "field": "requirement",
+        "concern_kinds": ["vague_language"],
+        "consequence_class": "functional_defect",
+        "worst_case": "user input passes when it should be rejected",
+        "vague_phrases": ["appropriately"],
+        "suggested_improvement": "The system shall validate that input length <= 255 chars.",
+        "options": list(_STD_OPTIONS),
+    }
+
+
+def _untestable_item(spec_id: str = "S2", item_id: str = "QA-002") -> dict[str, Any]:
+    """v3 quality_item flagged for untestable_outcome."""
+    return {
+        "item_id": item_id,
+        "title": "Requirement clear but not testable",
+        "spec_id": spec_id,
+        "field": "requirement",
+        "concern_kinds": ["untestable_outcome"],
+        "consequence_class": "data_integrity",
+        "worst_case": "results returned past SLA without observable error",
+        "untestable_reason": "No measurable threshold for 'quickly'.",
+        "suggested_test_type": "integration",
+        "suggested_improvement": "The system shall return results within 200ms under normal load.",
+        "options": list(_STD_OPTIONS),
+    }
+
+
+def _mock_auditor(full_output: dict[str, Any], triage_output: dict[str, Any] | None = None):
+    """Patch invoke_agent_with_schema_retry to return auditor outputs by enrich_mode.
+
+    full_output is returned to instance 0 (full mode). triage_output is returned to
+    replicas (triage mode). When triage_output is None it is derived from full_output's
+    manual_resolution_items[] so consensus passes for any items present in full_output.
+    """
+    if triage_output is None:
+        triage_output = {
+            "manual_resolution_items": list(full_output.get("manual_resolution_items", []))
+        }
+
+    def fake_invoke(prompt_name: str = "", template_vars: dict | None = None, **_kwargs: Any) -> dict:
+        mode = (template_vars or {}).get("enrich_mode", "full")
+        if mode == "full":
+            return full_output
+        return triage_output
+
+    return patch(
+        "handlers.refine.impl.invoke_agent_with_schema_retry",
+        side_effect=fake_invoke,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -170,10 +202,11 @@ class RefineConfigTests(unittest.TestCase):
     def test_defaults_all_returned(self) -> None:
         cfg = _get_refine_cfg({})
         self.assertTrue(cfg["enabled"])
-        self.assertEqual(cfg["ambiguity_detector_prompt_name"], "spec_ambiguity_detector")
-        self.assertEqual(cfg["testability_enricher_prompt_name"], "spec_testability_enricher")
+        self.assertEqual(cfg["quality_auditor_prompt_name"], "spec_quality_auditor")
         self.assertEqual(cfg["spec_editor_prompt_name"], "spec_editor")
-        self.assertIn("spec_change_merger_prompt_name", cfg)
+        self.assertNotIn("ambiguity_detector_prompt_name", cfg)
+        self.assertNotIn("testability_enricher_prompt_name", cfg)
+        self.assertNotIn("spec_change_merger_prompt_name", cfg)
         self.assertTrue(cfg["decomposition_enabled"])
         self.assertFalse(cfg["decomposition_blocking"])
         self.assertAlmostEqual(cfg["similarity_threshold"], 0.85)
@@ -307,110 +340,6 @@ class RequiredColumnValidationTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Group D: Item merging
-# ---------------------------------------------------------------------------
-
-class MergeAllItemsTests(unittest.TestCase):
-    """Tests for _merge_all_items()."""
-
-    def _make_amb(self, spec_id: str, item_id: str = "AMB-001") -> dict:
-        return {
-            "item_id": item_id,
-            "spec_id": spec_id,
-            "title": "Vague requirement",
-            "field": "requirement",
-            "vague_phrases": ["should be fast"],
-            "suggested_improvement": "rewrite",
-            "options": [
-                {"option_id": "accept_suggestion", "label": "Accept", "effect": "Apply"},
-                {"option_id": "let_agent_edit", "label": "Agent", "effect": "Agent edits"},
-                {"option_id": "skip", "label": "Skip", "effect": "No change"},
-            ],
-        }
-
-    def _make_test(self, spec_id: str, item_id: str = "TEST-001") -> dict:
-        return {
-            "item_id": item_id,
-            "spec_id": spec_id,
-            "title": "Untestable criteria",
-            "field": "acceptance_criteria",
-            "untestable_reason": "No threshold",
-            "suggested_improvement": "rewrite ac",
-            "suggested_test_type": "integration",
-            "options": [
-                {"option_id": "accept_suggestion", "label": "Accept", "effect": "Apply"},
-                {"option_id": "let_agent_edit", "label": "Agent", "effect": "Agent edits"},
-                {"option_id": "skip", "label": "Skip", "effect": "No change"},
-            ],
-        }
-
-    def test_all_empty_returns_empty(self) -> None:
-        self.assertEqual(_merge_all_items([], [], []), [])
-
-    def test_single_ambiguity_item_wraps_in_envelope(self) -> None:
-        result = _merge_all_items([], [self._make_amb("A1001")], [])
-        self.assertEqual(len(result), 1)
-        item = result[0]
-        self.assertFalse(item["is_compound"])
-        self.assertEqual(item["spec_id"], "A1001")
-        self.assertEqual(len(item["concerns"]), 1)
-        self.assertEqual(item["concerns"][0]["agent_type"], "ambiguity")
-
-    def test_same_spec_id_creates_compound(self) -> None:
-        amb = [self._make_amb("A1001")]
-        test = [self._make_test("A1001")]
-        result = _merge_all_items([], amb, test)
-        self.assertEqual(len(result), 1)
-        item = result[0]
-        self.assertTrue(item["is_compound"])
-        self.assertEqual(item["item_id"], "merged_A1001")
-        self.assertEqual(len(item["concerns"]), 2)
-        types = {c["agent_type"] for c in item["concerns"]}
-        self.assertEqual(types, {"ambiguity", "testability"})
-        # Compound options should be item-level and include accept_both_improvements
-        option_ids = {o["option_id"] for o in item["options"]}
-        self.assertIn("accept_ambiguity", option_ids)
-        self.assertIn("accept_testability", option_ids)
-        self.assertIn("accept_both_improvements", option_ids)
-        self.assertIn("let_agent_edit", option_ids)
-        self.assertIn("skip", option_ids)
-
-    def test_different_spec_ids_stay_separate(self) -> None:
-        amb = [self._make_amb("A1001")]
-        test = [self._make_test("A1002")]
-        result = _merge_all_items([], amb, test)
-        self.assertEqual(len(result), 2)
-        self.assertFalse(result[0]["is_compound"])
-        self.assertFalse(result[1]["is_compound"])
-
-    def test_decomp_items_prepended_unchanged(self) -> None:
-        decomp = [{"item_id": "DECOMP-001", "spec_id": "A1001"}]
-        amb = [self._make_amb("A1002")]
-        result = _merge_all_items(decomp, amb, [])
-        self.assertEqual(len(result), 2)
-        self.assertEqual(result[0]["item_id"], "DECOMP-001")
-        # Decomp item is not wrapped in concerns envelope
-        self.assertNotIn("concerns", result[0])
-
-    def test_sorted_by_spec_id(self) -> None:
-        amb = [self._make_amb("B2000"), self._make_amb("A1001", "AMB-002")]
-        result = _merge_all_items([], amb, [])
-        spec_ids = [r["spec_id"] for r in result]
-        self.assertEqual(spec_ids, ["A1001", "B2000"])
-
-    def test_concerns_preserve_fields(self) -> None:
-        amb = [self._make_amb("A1001")]
-        test = [self._make_test("A1001")]
-        result = _merge_all_items([], amb, test)
-        item = result[0]
-        amb_concern = next(c for c in item["concerns"] if c["agent_type"] == "ambiguity")
-        test_concern = next(c for c in item["concerns"] if c["agent_type"] == "testability")
-        self.assertEqual(amb_concern["vague_phrases"], ["should be fast"])
-        self.assertEqual(test_concern["untestable_reason"], "No threshold")
-        self.assertEqual(test_concern["suggested_test_type"], "integration")
-
-
-# ---------------------------------------------------------------------------
 # Group E: run_refine integration (stub/mocked agents)
 # ---------------------------------------------------------------------------
 
@@ -436,18 +365,12 @@ class RunRefineIntegrationTests(unittest.TestCase):
     def _ctx(self, run_id: str = "test-run") -> RuntimeContext:
         return _make_ctx(self.tmp, run_id)
 
-    def _mock_both_agents(self, ambiguity_output: dict, testability_output: dict):
-        """Context manager that mocks all parallel agent calls (N replicas each)."""
-
-        def fake_invoke(prompt_name: str = "", **_kwargs: Any) -> dict:
-            if "ambiguity" in prompt_name:
-                return ambiguity_output
-            return testability_output
-
-        return patch(
-            "handlers.refine.impl.invoke_agent_with_schema_retry",
-            side_effect=fake_invoke,
-        )
+    def _full_with_items(self, items: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "manual_resolution_items": items,
+            "enrichments": [],
+            "appendix_recommendations": [],
+        }
 
     # --- skipped / failed early exits ---
 
@@ -482,7 +405,7 @@ class RunRefineIntegrationTests(unittest.TestCase):
     # --- 0 items → completed ---
 
     def test_zero_items_returns_completed(self) -> None:
-        with self._mock_both_agents(_empty_agent_output(), _empty_agent_output()):
+        with _mock_auditor(_empty_full_output(), _empty_triage_output()):
             result = run_refine(self._config(), self._ctx())
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["command"], "refine")
@@ -490,14 +413,14 @@ class RunRefineIntegrationTests(unittest.TestCase):
 
     def test_zero_items_writes_output_csv(self) -> None:
         output_path = Path(self.tmp) / "out" / "REFINED-SPEC.csv"
-        with self._mock_both_agents(_empty_agent_output(), _empty_agent_output()):
+        with _mock_auditor(_empty_full_output(), _empty_triage_output()):
             run_refine(self._config(), self._ctx())
         self.assertTrue(output_path.exists())
 
     def test_zero_items_output_csv_contains_required_columns(self) -> None:
         """When 0 MR items, output CSV is written (may add AC/evidence_type columns)."""
         output_path = Path(self.tmp) / "out" / "REFINED-SPEC.csv"
-        with self._mock_both_agents(_empty_agent_output(), _empty_agent_output()):
+        with _mock_auditor(_empty_full_output(), _empty_triage_output()):
             run_refine(self._config(), self._ctx())
         content = output_path.read_text(encoding="utf-8")
         self.assertIn("spec_id", content.splitlines()[0])
@@ -505,34 +428,57 @@ class RunRefineIntegrationTests(unittest.TestCase):
     # --- N items → blocked ---
 
     def test_items_returns_blocked(self) -> None:
-        with self._mock_both_agents(_ambiguity_items_output(), _testability_items_output()):
+        full = self._full_with_items([_vague_item(), _untestable_item()])
+        with _mock_auditor(full):
             result = run_refine(self._config(), self._ctx())
         self.assertEqual(result["status"], "blocked")
         self.assertEqual(result["blocking_items"], 2)
 
     def test_items_writes_stage_json(self) -> None:
         run_dir = Path(self.tmp) / "out" / "agent_runs" / "refine" / "test-run"
-        with self._mock_both_agents(_ambiguity_items_output(), _testability_items_output()):
+        full = self._full_with_items([_vague_item(), _untestable_item()])
+        with _mock_auditor(full):
             run_refine(self._config(), self._ctx())
         stage_file = run_dir / "manual_resolution" / "agent_review.json"
         self.assertTrue(stage_file.exists())
         data = json.loads(stage_file.read_text(encoding="utf-8"))
         self.assertEqual(len(data["items"]), 2)
+        # v2 translation: vague_language item carries vague_phrases, untestable carries untestable_reason
+        items_by_spec = {it["spec_id"]: it for it in data["items"]}
+        self.assertIn("vague_phrases", items_by_spec["S1"])
+        self.assertIn("untestable_reason", items_by_spec["S2"])
 
     def test_items_writes_resolutions_yaml(self) -> None:
         run_dir = Path(self.tmp) / "out" / "agent_runs" / "refine" / "test-run"
-        with self._mock_both_agents(_ambiguity_items_output(), _testability_items_output()):
+        full = self._full_with_items([_vague_item(), _untestable_item()])
+        with _mock_auditor(full):
             run_refine(self._config(), self._ctx())
         resolutions_file = run_dir / "manual_resolution" / "resolutions.yaml"
         self.assertTrue(resolutions_file.exists())
 
     def test_items_writes_run_meta_with_command(self) -> None:
         run_dir = Path(self.tmp) / "out" / "agent_runs" / "refine" / "test-run"
-        with self._mock_both_agents(_ambiguity_items_output(), _testability_items_output()):
+        full = self._full_with_items([_vague_item(), _untestable_item()])
+        with _mock_auditor(full):
             run_refine(self._config(), self._ctx())
         run_meta = json.loads((run_dir / "run_meta.json").read_text(encoding="utf-8"))
         self.assertEqual(run_meta["command"], "refine")
         self.assertEqual(run_meta["run_id"], "test-run")
+
+    def test_auditor_output_persists_v3_metadata(self) -> None:
+        """auditor_output.json keeps v3 fields (concern_kinds, consequence_class) intact."""
+        run_dir = Path(self.tmp) / "out" / "agent_runs" / "refine" / "test-run"
+        full = self._full_with_items([_vague_item(), _untestable_item()])
+        with _mock_auditor(full):
+            run_refine(self._config(), self._ctx())
+        auditor_path = run_dir / "auditor_output.json"
+        self.assertTrue(auditor_path.exists())
+        data = json.loads(auditor_path.read_text(encoding="utf-8"))
+        items_by_spec = {it["spec_id"]: it for it in data["manual_resolution_items"]}
+        self.assertEqual(items_by_spec["S1"]["concern_kinds"], ["vague_language"])
+        self.assertEqual(items_by_spec["S1"]["consequence_class"], "functional_defect")
+        self.assertEqual(items_by_spec["S2"]["concern_kinds"], ["untestable_outcome"])
+        self.assertEqual(items_by_spec["S2"]["consequence_class"], "data_integrity")
 
     def test_decomposition_flags_json_written(self) -> None:
         """Decomposition check writes decomposition_flags.json when enabled."""
@@ -540,7 +486,7 @@ class RunRefineIntegrationTests(unittest.TestCase):
         cfg["commands"]["refine"]["decomposition"]["enabled"] = True
         run_dir = Path(self.tmp) / "out" / "agent_runs" / "refine" / "test-run"
 
-        with self._mock_both_agents(_empty_agent_output(), _empty_agent_output()):
+        with _mock_auditor(_empty_full_output(), _empty_triage_output()):
             run_refine(cfg, self._ctx())
 
         flags_file = run_dir / "decomposition_flags.json"
@@ -559,7 +505,7 @@ class RunRefineIntegrationTests(unittest.TestCase):
             project_root=self.tmp,
             config_path="config/config.yaml",
         )
-        with self._mock_both_agents(_empty_agent_output(), _empty_agent_output()):
+        with _mock_auditor(_empty_full_output(), _empty_triage_output()):
             result = run_refine(self._config(), ctx)
         self.assertEqual(result["status"], "completed")
         self.assertFalse(output_path.exists())
@@ -812,28 +758,48 @@ class RefineEnrichmentApplicationTests(unittest.TestCase):
         return _make_ctx(self.tmp, run_id)
 
     def _mock_with_enrichment(self, enrichments: list[dict]) -> Any:
-        """Mock agents: ambiguity returns empty, testability instance 0 returns enrichments."""
-        call_count: dict[str, int] = {"testability": 0}
-
-        def fake_invoke(prompt_name: str = "", template_vars: dict | None = None, **_kwargs: Any) -> dict:
-            if "ambiguity" in prompt_name:
-                return {"manual_resolution_items": []}
-            call_count["testability"] += 1
-            enrich_mode = (template_vars or {}).get("enrich_mode", "triage")
-            if enrich_mode == "full":
-                return {"enrichments": enrichments, "manual_resolution_items": []}
-            return {"manual_resolution_items": []}
-
-        return patch(
-            "handlers.refine.impl.invoke_agent_with_schema_retry",
-            side_effect=fake_invoke,
-        )
+        """Mock the unified auditor: full mode returns enrichments; triage returns no MR items."""
+        full = {
+            "enrichments": enrichments,
+            "manual_resolution_items": [],
+            "appendix_recommendations": [],
+        }
+        triage = {"manual_resolution_items": []}
+        return _mock_auditor(full, triage)
 
     def test_enrichments_applied_to_output_csv(self) -> None:
-        """When testability instance 0 returns enrichments, AC and evidence_type are written."""
+        """Instance 0's enrichments[] writes acceptance_criteria into the CSV.
+
+        evidence_type is now per-criterion (lives in the per-spec test_plan
+        side-file) and no longer occupies a SADS CSV column.
+        """
         enrichments = [
-            {"spec_id": "S1", "acceptance_criteria": "Given valid input, returns 200.", "evidence_type": "test_execution_record"},
-            {"spec_id": "S2", "acceptance_criteria": "Given load test, returns within 200ms.", "evidence_type": "test_execution_record"},
+            {
+                "spec_id": "S1",
+                "acceptance_criteria": "Given valid input, returns 200.",
+                "criteria": [
+                    {
+                        "criterion_id": "AC1",
+                        "statement": "Given valid input, when handled, then returns 200.",
+                        "observable_signal": "API response 200.",
+                        "evidence_type": "integration_test_execution_record",
+                    }
+                ],
+                "test_plan": {"planned_test_cases": []},
+            },
+            {
+                "spec_id": "S2",
+                "acceptance_criteria": "Given load test, returns within 200ms.",
+                "criteria": [
+                    {
+                        "criterion_id": "AC1",
+                        "statement": "Given load, when handled, then returns within 200ms.",
+                        "observable_signal": "Latency under 200ms in performance log.",
+                        "evidence_type": "performance_profiler_output",
+                    }
+                ],
+                "test_plan": {"planned_test_cases": []},
+            },
         ]
         output_path = Path(self.tmp) / "out" / "REFINED-SPEC.csv"
         with self._mock_with_enrichment(enrichments):
@@ -842,62 +808,36 @@ class RefineEnrichmentApplicationTests(unittest.TestCase):
         content = output_path.read_text(encoding="utf-8")
         self.assertIn("returns 200", content)
         self.assertIn("200ms", content)
-        self.assertIn("test_execution_record", content)
+        # CSV no longer carries evidence_type — verify the column is NOT present.
+        self.assertNotIn("evidence_type", content.splitlines()[0])
 
     def test_enrichment_skipped_for_flagged_specs(self) -> None:
-        """Specs that appear in MR items are not enriched (MR takes priority)."""
-        from handlers.refine.impl import _run_refine_agents
-        from pathlib import Path as _P
-
-        # Simulate: instance 0 returns both enrichment AND MR for same spec_id
-        # Handler guard should suppress the enrichment
+        """Specs appearing in MR items are not enriched (MR takes priority)."""
         flagged_spec = "S1"
-
-        def fake_invoke(prompt_name: str = "", template_vars: dict | None = None, **_kwargs: Any) -> dict:
-            if "ambiguity" in prompt_name:
-                return {"manual_resolution_items": []}
-            enrich_mode = (template_vars or {}).get("enrich_mode", "triage")
-            if enrich_mode == "full":
-                return {
-                    "enrichments": [{"spec_id": flagged_spec, "acceptance_criteria": "Should NOT appear.", "evidence_type": "test_execution_record"}],
-                    "manual_resolution_items": [
-                        {
-                            "item_id": "TEST-001",
-                            "title": "Vague",
-                            "spec_id": flagged_spec,
-                            "field": "requirement",
-                            "untestable_reason": "Too vague.",
-                            "suggested_improvement": "Improved requirement.",
-                            "suggested_test_type": "unit",
-                            "options": [{"option_id": "skip", "label": "Skip", "effect": "No change"}],
-                        }
-                    ],
-                }
-            return {"manual_resolution_items": [
+        full = {
+            "enrichments": [
                 {
-                    "item_id": "TEST-001",
-                    "title": "Vague",
                     "spec_id": flagged_spec,
-                    "field": "requirement",
-                    "untestable_reason": "Too vague.",
-                    "suggested_improvement": "Improved requirement.",
-                    "suggested_test_type": "unit",
-                    "options": [{"option_id": "skip", "label": "Skip", "effect": "No change"}],
+                    "acceptance_criteria": "Should NOT appear.",
+                    "evidence_type": "test_execution_record",
+                    "test_plan": {"planned_test_cases": []},
                 }
-            ]}
+            ],
+            "manual_resolution_items": [_untestable_item(spec_id=flagged_spec, item_id="QA-X")],
+            "appendix_recommendations": [],
+        }
+        triage = {"manual_resolution_items": [_untestable_item(spec_id=flagged_spec, item_id="QA-X")]}
 
-        with patch("handlers.refine.impl.invoke_agent_with_schema_retry", side_effect=fake_invoke):
+        with _mock_auditor(full, triage):
             result = run_refine(self._config(), self._ctx())
 
         self.assertEqual(result["status"], "blocked")
-        # Run enrichments.json and check flagged spec was not enriched
-        run_dir = _P(self.tmp) / "out" / "agent_runs" / "refine" / "enrich-run"
+        run_dir = Path(self.tmp) / "out" / "agent_runs" / "refine" / "enrich-run"
         enrichments_file = run_dir / "enrichments.json"
-        if enrichments_file.exists():
-            import json as _json
-            data = _json.loads(enrichments_file.read_text())
-            enriched_spec_ids = {e["spec_id"] for e in data.get("enrichments", [])}
-            self.assertNotIn(flagged_spec, enriched_spec_ids, "Flagged spec must not appear in enrichments")
+        self.assertTrue(enrichments_file.exists())
+        data = json.loads(enrichments_file.read_text(encoding="utf-8"))
+        enriched_spec_ids = {e["spec_id"] for e in data.get("enrichments", [])}
+        self.assertNotIn(flagged_spec, enriched_spec_ids)
 
 
 class RefineCompoundResolutionTests(unittest.TestCase):
@@ -981,33 +921,6 @@ class RefineCompoundResolutionTests(unittest.TestCase):
         changes, updated_rows = _apply_compound_resolution(item, rows, headers, 0, [])
         self.assertEqual(changes, 0)
         self.assertEqual(updated_rows[0]["requirement"], original_req)
-
-
-class RefineMergerFailureTests(unittest.TestCase):
-    """Group G4 — merger agent failure in interactive loop returns gracefully."""
-
-    def test_invoke_spec_change_merger_returns_none_on_error(self) -> None:
-        """When merger agent raises, _invoke_spec_change_merger returns None."""
-        import tempfile as _tf
-        from handlers.resolve import _invoke_spec_change_merger
-
-        with _tf.TemporaryDirectory() as tmp:
-            run_dir = Path(tmp) / "run"
-            run_dir.mkdir()
-
-            item = {
-                "item_id": "merged_S1",
-                "spec_id": "S1",
-                "is_compound": True,
-                "concerns": [],
-            }
-            config = {"agent": {"provider": "stub", "schema_validation_retries": 0}}
-            ctx = _make_ctx(tmp)
-
-            with patch("handlers.resolve.invoke_agent_with_schema_retry", side_effect=RuntimeError("agent failed")):
-                result = _invoke_spec_change_merger(item, config, ctx, run_dir)
-
-            self.assertIsNone(result)
 
 
 class RefineResumeTests(unittest.TestCase):
@@ -1166,10 +1079,7 @@ class RefineResumeTests(unittest.TestCase):
             }
             ctx = _make_ctx(tmp, run_id=run_id)
 
-            with patch(
-                "handlers.refine.impl.invoke_agent_with_schema_retry",
-                return_value=_empty_agent_output(),
-            ):
+            with _mock_auditor(_empty_full_output(), _empty_triage_output()):
                 result = _resume_refine(config, ctx, Path(tmp), run_id)
 
             # Agents found no issues → completed, output CSV copied
@@ -1200,10 +1110,12 @@ class RefineResumeTests(unittest.TestCase):
             config = _make_config(tmp, design_csv_path=str(restructured))
             ctx = _make_ctx(tmp, run_id=run_id)
 
-            with patch(
-                "handlers.refine.impl.invoke_agent_with_schema_retry",
-                return_value=_ambiguity_items_output(),
-            ):
+            full = {
+                "manual_resolution_items": [_vague_item()],
+                "enrichments": [],
+                "appendix_recommendations": [],
+            }
+            with _mock_auditor(full):
                 result = _resume_refine(config, ctx, Path(tmp), run_id)
 
             self.assertEqual(result["status"], "blocked")
@@ -1370,17 +1282,19 @@ class RefineConsensusIntegrationTests(unittest.TestCase):
 
     def test_low_agreement_items_filtered_out(self) -> None:
         """Items flagged by fewer than consensus_min_votes instances are dropped."""
-        call_count = {"ambiguity": 0, "testability": 0}
+        call_count = {"n": 0}
 
-        def fake_invoke(prompt_name: str = "", **_kwargs: Any) -> dict:
-            if "ambiguity" in prompt_name:
-                call_count["ambiguity"] += 1
-                # Only first instance flags S1
-                if call_count["ambiguity"] == 1:
-                    return _ambiguity_items_output()
-                return _empty_agent_output()
-            call_count["testability"] += 1
-            return _empty_agent_output()
+        def fake_invoke(prompt_name: str = "", template_vars: dict | None = None, **_kwargs: Any) -> dict:
+            call_count["n"] += 1
+            mode = (template_vars or {}).get("enrich_mode", "full")
+            # Only the first invocation (instance 0, full mode) flags S1.
+            if call_count["n"] == 1 and mode == "full":
+                return {
+                    "manual_resolution_items": [_vague_item()],
+                    "enrichments": [],
+                    "appendix_recommendations": [],
+                }
+            return _empty_full_output() if mode == "full" else _empty_triage_output()
 
         with patch(
             "handlers.refine.impl.invoke_agent_with_schema_retry",
@@ -1388,22 +1302,27 @@ class RefineConsensusIntegrationTests(unittest.TestCase):
         ):
             result = run_refine(self._config(), self._ctx())
 
-        # S1 only flagged by 1/4 instances (< 3), so filtered out
+        # S1 only flagged by 1/4 replicas (< 3), so filtered out
         self.assertEqual(result["status"], "completed")
         self.assertIn("specs_enriched", result)
 
     def test_high_agreement_items_kept(self) -> None:
         """Items flagged by >= consensus_min_votes instances are kept."""
-        call_count = {"ambiguity": 0}
+        call_count = {"n": 0}
 
-        def fake_invoke(prompt_name: str = "", **_kwargs: Any) -> dict:
-            if "ambiguity" in prompt_name:
-                call_count["ambiguity"] = call_count.get("ambiguity", 0) + 1
-                # First 3 instances flag S1 (meets threshold of 3)
-                if call_count["ambiguity"] <= 3:
-                    return _ambiguity_items_output()
-                return _empty_agent_output()
-            return _empty_agent_output()
+        def fake_invoke(prompt_name: str = "", template_vars: dict | None = None, **_kwargs: Any) -> dict:
+            call_count["n"] += 1
+            mode = (template_vars or {}).get("enrich_mode", "full")
+            # First 3 invocations flag S1 (meets threshold of 3 across replicas).
+            if call_count["n"] <= 3:
+                if mode == "full":
+                    return {
+                        "manual_resolution_items": [_vague_item()],
+                        "enrichments": [],
+                        "appendix_recommendations": [],
+                    }
+                return {"manual_resolution_items": [_vague_item()]}
+            return _empty_full_output() if mode == "full" else _empty_triage_output()
 
         with patch(
             "handlers.refine.impl.invoke_agent_with_schema_retry",
@@ -1415,17 +1334,16 @@ class RefineConsensusIntegrationTests(unittest.TestCase):
         self.assertEqual(result["blocking_items"], 1)
 
     def test_consensus_meta_json_written(self) -> None:
-        """consensus_meta.json is written with pre/post counts."""
-        def fake_invoke(prompt_name: str = "", **_kwargs: Any) -> dict:
-            if "ambiguity" in prompt_name:
-                return _ambiguity_items_output()
-            return _empty_agent_output()
+        """consensus_meta.json is written with pre/post counts after consensus filter."""
+        full = {
+            "manual_resolution_items": [_vague_item()],
+            "enrichments": [],
+            "appendix_recommendations": [],
+        }
+        triage = {"manual_resolution_items": [_vague_item()]}
 
         run_dir = Path(self.tmp) / "out" / "agent_runs" / "refine" / "test-run"
-        with patch(
-            "handlers.refine.impl.invoke_agent_with_schema_retry",
-            side_effect=fake_invoke,
-        ):
+        with _mock_auditor(full, triage):
             run_refine(self._config(), self._ctx())
 
         meta_path = run_dir / "consensus_meta.json"
@@ -1433,25 +1351,18 @@ class RefineConsensusIntegrationTests(unittest.TestCase):
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
         self.assertEqual(meta["agent_replicas"], 4)
         self.assertEqual(meta["consensus_min_votes"], 3)
-        # 4 instances each return 1 ambiguity item
-        self.assertEqual(meta["ambiguity_pre_consensus"], 4)
-        self.assertEqual(meta["ambiguity_post_consensus"], 1)
+        # 4 replicas each return 1 item flagging S1 → 4 pre-consensus, 1 representative post.
+        self.assertEqual(meta["items_pre_consensus"], 4)
+        self.assertEqual(meta["items_post_consensus"], 1)
 
     def test_per_instance_output_files_written(self) -> None:
-        """Individual per-instance output files are written."""
-        def fake_invoke(prompt_name: str = "", **_kwargs: Any) -> dict:
-            return _empty_agent_output()
-
+        """Per-replica auditor outputs are written under their indexed filenames."""
         run_dir = Path(self.tmp) / "out" / "agent_runs" / "refine" / "test-run"
-        with patch(
-            "handlers.refine.impl.invoke_agent_with_schema_retry",
-            side_effect=fake_invoke,
-        ):
+        with _mock_auditor(_empty_full_output(), _empty_triage_output()):
             run_refine(self._config(), self._ctx())
 
         for i in range(4):
-            self.assertTrue((run_dir / f"ambiguity_output_{i}.json").exists())
-            self.assertTrue((run_dir / f"testability_output_{i}.json").exists())
+            self.assertTrue((run_dir / f"auditor_output_{i}.json").exists())
 
 
 # ---------------------------------------------------------------------------
@@ -1493,7 +1404,7 @@ class PhaseOnlyModeTests(unittest.TestCase):
     def _mock_agents(self, output: dict[str, Any] | None = None):
         return patch(
             "handlers.refine.impl.invoke_agent_with_schema_retry",
-            return_value=output or _empty_agent_output(),
+            return_value=output or _empty_full_output(),
         )
 
     # -------------------------------------------------------------------
@@ -1636,25 +1547,30 @@ class PhaseOnlyModeTests(unittest.TestCase):
     # -------------------------------------------------------------------
 
     def test_agents_only_no_issues_returns_completed(self) -> None:
-        with self._mock_agents(_empty_agent_output()):
+        with self._mock_agents(_empty_full_output()):
             result = run_refine(self._config(), self._ctx("agents_only"))
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["command"], "refine")
 
     def test_agents_only_with_items_returns_blocked(self) -> None:
-        with self._mock_agents(_ambiguity_items_output()):
+        full = {
+            "manual_resolution_items": [_vague_item()],
+            "enrichments": [],
+            "appendix_recommendations": [],
+        }
+        with self._mock_agents(full):
             result = run_refine(self._config(), self._ctx("agents_only"))
         self.assertEqual(result["status"], "blocked")
 
     def test_agents_only_skips_decomposition_even_when_enabled_in_config(self) -> None:
         with patch("handlers.refine.impl.run_decomposition_check") as mock_decomp:
-            with self._mock_agents(_empty_agent_output()):
+            with self._mock_agents(_empty_full_output()):
                 run_refine(self._config(decomposition_enabled=True), self._ctx("agents_only"))
         mock_decomp.assert_not_called()
 
     def test_agents_only_writes_skipped_decomposition_flags(self) -> None:
         run_dir = Path(self.tmp) / "out" / "agent_runs" / "refine" / "test-run"
-        with self._mock_agents(_empty_agent_output()):
+        with self._mock_agents(_empty_full_output()):
             run_refine(self._config(), self._ctx("agents_only"))
         flags_path = run_dir / "decomposition_flags.json"
         self.assertTrue(flags_path.exists())
@@ -1663,17 +1579,402 @@ class PhaseOnlyModeTests(unittest.TestCase):
 
     def test_agents_only_creates_run_meta(self) -> None:
         run_dir = Path(self.tmp) / "out" / "agent_runs" / "refine" / "test-run"
-        with self._mock_agents(_empty_agent_output()):
+        with self._mock_agents(_empty_full_output()):
             run_refine(self._config(), self._ctx("agents_only"))
         self.assertTrue((run_dir / "run_meta.json").exists())
 
     def test_agents_only_completed_output_shape_matches_normal(self) -> None:
-        with self._mock_agents(_empty_agent_output()):
+        with self._mock_agents(_empty_full_output()):
             normal = run_refine(self._config(), self._ctx(None, run_id="normal-run"))
-        with self._mock_agents(_empty_agent_output()):
+        with self._mock_agents(_empty_full_output()):
             agents_only = run_refine(self._config(), self._ctx("agents_only", run_id="agents-run"))
         self.assertEqual(normal["status"], agents_only["status"])
         self.assertEqual(set(normal.keys()), set(agents_only.keys()))
+
+
+# ---------------------------------------------------------------------------
+# Group J: Severity rollup helper
+# ---------------------------------------------------------------------------
+
+class SeverityBreakdownTests(unittest.TestCase):
+    """_format_severity_breakdown() — counts MR items by consequence_class."""
+
+    def test_empty_returns_unspecified(self) -> None:
+        self.assertEqual(_format_severity_breakdown([]), "unspecified")
+
+    def test_orders_by_severity_descending(self) -> None:
+        items = [
+            {"consequence_class": "cosmetic"},
+            {"consequence_class": "safety_or_clinical"},
+            {"consequence_class": "data_integrity"},
+            {"consequence_class": "functional_defect"},
+        ]
+        out = _format_severity_breakdown(items)
+        # safety first, then data_integrity, then functional_defect, then cosmetic.
+        self.assertEqual(
+            out,
+            "1 safety_or_clinical, 1 data_integrity, 1 functional_defect, 1 cosmetic",
+        )
+
+    def test_skips_zero_counts(self) -> None:
+        items = [{"consequence_class": "data_integrity"}, {"consequence_class": "data_integrity"}]
+        self.assertEqual(_format_severity_breakdown(items), "2 data_integrity")
+
+    def test_unknown_bucket_for_missing_class(self) -> None:
+        items = [{"spec_id": "S1"}, {"consequence_class": "functional_defect"}]
+        out = _format_severity_breakdown(items)
+        self.assertIn("1 functional_defect", out)
+        self.assertIn("1 unknown", out)
+
+
+# ---------------------------------------------------------------------------
+# Group K: v3 -> v2 legacy translation for desktop-app compat
+# ---------------------------------------------------------------------------
+
+class V3ToV2TranslationTests(unittest.TestCase):
+    """_translate_v3_item_to_v2_legacy() — emits v1-flat shape readable by the desktop app."""
+
+    def test_vague_language_produces_vague_phrases(self) -> None:
+        v3 = _vague_item()
+        v2 = _translate_v3_item_to_v2_legacy(v3)
+        self.assertIn("vague_phrases", v2)
+        self.assertNotIn("untestable_reason", v2)
+        self.assertEqual(v2["vague_phrases"], ["appropriately"])
+
+    def test_untestable_outcome_produces_untestable_reason(self) -> None:
+        v3 = _untestable_item()
+        v2 = _translate_v3_item_to_v2_legacy(v3)
+        self.assertNotIn("vague_phrases", v2)
+        self.assertIn("untestable_reason", v2)
+        self.assertEqual(v2["suggested_test_type"], "integration")
+
+    def test_compound_prefers_vague_path(self) -> None:
+        """When concern_kinds includes both vague_language and untestable_outcome, vague wins."""
+        v3 = {
+            "item_id": "QA-3",
+            "title": "Both",
+            "spec_id": "S3",
+            "field": "requirement",
+            "concern_kinds": ["vague_language", "untestable_outcome"],
+            "consequence_class": "functional_defect",
+            "worst_case": "feature does not work",
+            "vague_phrases": ["handles errors appropriately"],
+            "untestable_reason": "negative-only",
+            "suggested_test_type": "unit",
+            "suggested_improvement": "...",
+            "options": list(_STD_OPTIONS),
+        }
+        v2 = _translate_v3_item_to_v2_legacy(v3)
+        self.assertIn("vague_phrases", v2)
+        self.assertNotIn("untestable_reason", v2)
+
+    def test_implementation_leak_synthesizes_reason(self) -> None:
+        v3 = {
+            "item_id": "QA-4",
+            "title": "Leak",
+            "spec_id": "S4",
+            "field": "requirement",
+            "concern_kinds": ["implementation_leak"],
+            "consequence_class": "cosmetic",
+            "worst_case": "design choice in spec",
+            "suggested_improvement": "REMOVE: relocate to design documentation. Original: ...",
+            "options": list(_STD_OPTIONS),
+        }
+        v2 = _translate_v3_item_to_v2_legacy(v3)
+        self.assertIn("untestable_reason", v2)
+        self.assertNotIn("vague_phrases", v2)
+        self.assertTrue(len(v2["untestable_reason"]) > 0)
+
+    def test_legitimate_constraint_synthesizes_reason_and_keeps_method(self) -> None:
+        v3 = {
+            "item_id": "QA-5",
+            "title": "Encryption",
+            "spec_id": "S5",
+            "field": "requirement",
+            "concern_kinds": ["legitimate_constraint"],
+            "consequence_class": "data_integrity",
+            "worst_case": "unencrypted PHI",
+            "verification_method": "configuration audit",
+            "suggested_improvement": "AES-256 at rest. (Verification: configuration audit.)",
+            "options": list(_STD_OPTIONS),
+        }
+        v2 = _translate_v3_item_to_v2_legacy(v3)
+        self.assertIn("untestable_reason", v2)
+        self.assertEqual(v2["verification_method"], "configuration audit")
+
+    def test_v3_metadata_passed_through(self) -> None:
+        """consequence_class, worst_case, concern_kinds carry through as extra fields."""
+        v2 = _translate_v3_item_to_v2_legacy(_vague_item())
+        self.assertEqual(v2["concern_kinds"], ["vague_language"])
+        self.assertEqual(v2["consequence_class"], "functional_defect")
+        self.assertTrue(v2["worst_case"].startswith("user input"))
+
+
+# ---------------------------------------------------------------------------
+# Group L: Resume on legacy cached files raises clean ResumeError
+# ---------------------------------------------------------------------------
+
+class ResumeOnLegacyCacheTests(unittest.TestCase):
+    """When a run_dir contains the pre-merger cache files, resume must refuse cleanly."""
+
+    def _run_dir(self, tmp: str, run_id: str) -> Path:
+        return Path(tmp) / "out" / "agent_runs" / "refine" / run_id
+
+    def test_legacy_cache_raises_resume_error(self) -> None:
+        from core.errors import ResumeError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_id = "legacy-run"
+            run_dir = self._run_dir(tmp, run_id)
+            run_dir.mkdir(parents=True, exist_ok=True)
+            # Simulate a pre-consolidation cache: two legacy files, no auditor_output.json
+            (run_dir / "ambiguity_output.json").write_text(
+                json.dumps({"manual_resolution_items": []}), encoding="utf-8",
+            )
+            (run_dir / "testability_output.json").write_text(
+                json.dumps({"manual_resolution_items": []}), encoding="utf-8",
+            )
+            design_csv = Path(tmp) / "DESIGN-SPEC.csv"
+            _write_design_csv(design_csv)
+            (run_dir / "run_meta.json").write_text(
+                json.dumps({
+                    "command": "refine",
+                    "run_id": run_id,
+                    "input_design_spec_path": str(design_csv),
+                    "completed_stages": ["agents"],
+                    "failed_at_stage": "post_agents",
+                }),
+                encoding="utf-8",
+            )
+            config = _make_config(tmp, str(design_csv))
+            ctx = _make_ctx(tmp, run_id=run_id)
+
+            with self.assertRaises(ResumeError) as cm:
+                _resume_refine(config, ctx, Path(tmp), run_id)
+            msg = str(cm.exception)
+            self.assertIn("legacy", msg.lower())
+
+
+# ---------------------------------------------------------------------------
+# Group M: Appendix recommendations propagation
+# ---------------------------------------------------------------------------
+
+class AppendixRecommendationsTests(unittest.TestCase):
+    """Stage 1.B output flows into auditor_output.json, summary.json, and agent_review.json."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = self._tmp.name
+        self.design_csv = Path(self.tmp) / "DESIGN-SPEC.csv"
+        _write_design_csv(self.design_csv)
+        _write_project_context(Path(self.tmp))
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _config(self) -> dict[str, Any]:
+        return _make_config(self.tmp, str(self.design_csv))
+
+    def _ctx(self) -> RuntimeContext:
+        return _make_ctx(self.tmp)
+
+    def _full_with_recs(self, items: list[dict[str, Any]], recs: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "manual_resolution_items": items,
+            "enrichments": [],
+            "appendix_recommendations": recs,
+        }
+
+    def _sample_rec(self) -> dict[str, Any]:
+        return {
+            "recommendation_id": "AR1",
+            "dictionary_type": "error code registry",
+            "rationale": "Two specs reference error responses without defined error codes.",
+            "affected_spec_ids": ["S1", "S2"],
+            "suggested_dictionary_shape": "Table mapping each error code to status, message, trigger.",
+        }
+
+    def test_recommendations_in_auditor_output(self) -> None:
+        full = self._full_with_recs([_vague_item()], [self._sample_rec()])
+        run_dir = Path(self.tmp) / "out" / "agent_runs" / "refine" / "test-run"
+        with _mock_auditor(full):
+            run_refine(self._config(), self._ctx())
+        auditor = json.loads((run_dir / "auditor_output.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(auditor["appendix_recommendations"]), 1)
+        self.assertEqual(auditor["appendix_recommendations"][0]["dictionary_type"], "error code registry")
+
+    def test_recommendations_in_agent_review_block(self) -> None:
+        full = self._full_with_recs([_vague_item()], [self._sample_rec()])
+        run_dir = Path(self.tmp) / "out" / "agent_runs" / "refine" / "test-run"
+        with _mock_auditor(full):
+            run_refine(self._config(), self._ctx())
+        block = json.loads((run_dir / "manual_resolution" / "agent_review.json").read_text(encoding="utf-8"))
+        self.assertIn("appendix_recommendations", block)
+        self.assertEqual(len(block["appendix_recommendations"]), 1)
+
+    def test_recommendations_count_in_blocked_result(self) -> None:
+        full = self._full_with_recs([_vague_item()], [self._sample_rec()])
+        with _mock_auditor(full):
+            result = run_refine(self._config(), self._ctx())
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["appendix_recommendations"], 1)
+
+    def test_no_recommendations_means_no_field_in_block(self) -> None:
+        """When no recommendations, agent_review.json omits the field (kept v2-shape minimal)."""
+        full = self._full_with_recs([_vague_item()], [])
+        run_dir = Path(self.tmp) / "out" / "agent_runs" / "refine" / "test-run"
+        with _mock_auditor(full):
+            run_refine(self._config(), self._ctx())
+        block = json.loads((run_dir / "manual_resolution" / "agent_review.json").read_text(encoding="utf-8"))
+        self.assertNotIn("appendix_recommendations", block)
+
+
+# ---------------------------------------------------------------------------
+# Group N: Quality-auditor schemas
+# ---------------------------------------------------------------------------
+
+class QualityAuditorSchemaTests(unittest.TestCase):
+    """JSON-schema sanity checks for the new spec_quality_auditor schemas."""
+
+    _SCHEMA_DIR = _PIKA_ROOT / "schemas" / "agent_outputs"
+
+    def _load(self, name: str) -> dict[str, Any]:
+        path = self._SCHEMA_DIR / f"{name}.schema.json"
+        self.assertTrue(path.exists(), f"Schema not found: {path}")
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def _validate(self, schema: dict, instance: Any) -> None:
+        import jsonschema
+        jsonschema.validate(instance, schema)
+
+    def _validate_fails(self, schema: dict, instance: Any) -> None:
+        import jsonschema
+        with self.assertRaises(jsonschema.ValidationError):
+            jsonschema.validate(instance, schema)
+
+    def test_full_schema_accepts_empty(self) -> None:
+        schema = self._load("spec_quality_auditor_output")
+        self._validate(schema, {
+            "enrichments": [],
+            "manual_resolution_items": [],
+            "appendix_recommendations": [],
+        })
+
+    def test_full_schema_accepts_quality_item_with_all_concern_kinds(self) -> None:
+        schema = self._load("spec_quality_auditor_output")
+        for kind in (
+            "vague_language",
+            "untestable_outcome",
+            "unresolvable_reference",
+            "implementation_leak",
+            "legitimate_constraint",
+        ):
+            with self.subTest(kind=kind):
+                self._validate(schema, {
+                    "enrichments": [],
+                    "manual_resolution_items": [
+                        {
+                            "item_id": f"QA-{kind}",
+                            "title": f"Test {kind}",
+                            "spec_id": "S1",
+                            "field": "requirement",
+                            "concern_kinds": [kind],
+                            "consequence_class": "functional_defect",
+                            "worst_case": "feature does not work",
+                            "suggested_improvement": "Rewritten requirement.",
+                            "options": _STD_OPTIONS,
+                        }
+                    ],
+                    "appendix_recommendations": [],
+                })
+
+    def test_full_schema_rejects_unknown_concern_kind(self) -> None:
+        schema = self._load("spec_quality_auditor_output")
+        self._validate_fails(schema, {
+            "enrichments": [],
+            "manual_resolution_items": [
+                {
+                    "item_id": "QA-X",
+                    "title": "T",
+                    "spec_id": "S1",
+                    "field": "requirement",
+                    "concern_kinds": ["bogus_kind"],
+                    "consequence_class": "functional_defect",
+                    "worst_case": "x",
+                    "suggested_improvement": "y",
+                    "options": _STD_OPTIONS,
+                }
+            ],
+            "appendix_recommendations": [],
+        })
+
+    def test_full_schema_rejects_unknown_consequence_class(self) -> None:
+        schema = self._load("spec_quality_auditor_output")
+        self._validate_fails(schema, {
+            "enrichments": [],
+            "manual_resolution_items": [
+                {
+                    "item_id": "QA-X",
+                    "title": "T",
+                    "spec_id": "S1",
+                    "field": "requirement",
+                    "concern_kinds": ["vague_language"],
+                    "consequence_class": "catastrophic",
+                    "worst_case": "x",
+                    "suggested_improvement": "y",
+                    "options": _STD_OPTIONS,
+                }
+            ],
+            "appendix_recommendations": [],
+        })
+
+    def test_full_schema_accepts_appendix_recommendation(self) -> None:
+        schema = self._load("spec_quality_auditor_output")
+        self._validate(schema, {
+            "enrichments": [],
+            "manual_resolution_items": [],
+            "appendix_recommendations": [
+                {
+                    "recommendation_id": "AR1",
+                    "dictionary_type": "error code registry",
+                    "rationale": "Three specs reference undefined error codes.",
+                    "affected_spec_ids": ["S1", "S2", "S3"],
+                    "suggested_dictionary_shape": "Table mapping code -> status, message, trigger.",
+                }
+            ],
+        })
+
+    def test_triage_schema_omits_appendix_recommendations(self) -> None:
+        """Triage schema allows MR items only — no enrichments[], no appendix_recommendations[]."""
+        schema = self._load("spec_quality_auditor_triage_output")
+        self._validate(schema, {"manual_resolution_items": []})
+        self._validate_fails(schema, {
+            "manual_resolution_items": [],
+            "appendix_recommendations": [],
+        })
+
+
+# ---------------------------------------------------------------------------
+# Group O: synthesize_untestable_reason helper
+# ---------------------------------------------------------------------------
+
+class SynthesizeUntestableReasonTests(unittest.TestCase):
+    """_synthesize_untestable_reason() — fallback text for v3->v2 translation."""
+
+    def test_uses_explicit_reason_when_present(self) -> None:
+        item = {"untestable_reason": "Custom reason here.", "worst_case": "ignored"}
+        out = _synthesize_untestable_reason(item, ["untestable_outcome"])
+        self.assertEqual(out, "Custom reason here.")
+
+    def test_falls_back_to_label_with_worst_case(self) -> None:
+        item = {"worst_case": "data corrupted on retry"}
+        out = _synthesize_untestable_reason(item, ["implementation_leak"])
+        self.assertIn("implementation", out.lower())
+        self.assertIn("data corrupted", out)
+
+    def test_handles_unknown_kind(self) -> None:
+        out = _synthesize_untestable_reason({}, ["bogus_kind"])
+        self.assertTrue(len(out) > 0)
 
 
 if __name__ == "__main__":

@@ -110,13 +110,17 @@
           "$ref": "#/$defs/local_agent_profile",
           "description": "Workspace override for the resolve_issues_with_diffs agent."
         },
+        "spec_quality_auditor": {
+          "$ref": "#/$defs/local_agent_profile",
+          "description": "Workspace override for the unified spec_quality_auditor agent (refine command). Replaces the deprecated spec_ambiguity_detector and spec_testability_enricher overrides."
+        },
         "spec_ambiguity_detector": {
           "$ref": "#/$defs/local_agent_profile",
-          "description": "Workspace override for the spec_ambiguity_detector agent."
+          "description": "DEPRECATED. Workspace override for the legacy spec_ambiguity_detector agent. Has no effect on the active refine pipeline; use spec_quality_auditor instead. Retained for backwards compatibility with existing project configs."
         },
         "spec_testability_auditor": {
           "$ref": "#/$defs/local_agent_profile",
-          "description": "Workspace override for the spec_testability_auditor agent."
+          "description": "DEPRECATED. Workspace override for the legacy spec_testability_auditor agent. Has no effect on the active refine pipeline; use spec_quality_auditor instead. Retained for backwards compatibility with existing project configs."
         },
         "spec_editor": {
           "$ref": "#/$defs/local_agent_profile",

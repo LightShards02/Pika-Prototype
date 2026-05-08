@@ -78,12 +78,10 @@ commands:
       resolve: resolve_issues_with_diffs
   refine:
     prompt_names:
-      ambiguity_detector: spec_ambiguity_detector
-      testability_enricher: spec_testability_enricher
-      testability_enricher: spec_testability_enricher
+      # Unified single-agent quality auditor (replaces ambiguity_detector + testability_enricher).
+      quality_auditor: spec_quality_auditor
+      # spec_editor is invoked from the resolve flow when the operator picks "let_agent_edit".
       spec_editor: spec_editor
-      spec_change_merger: spec_change_merger
-      spec_change_merger: spec_change_merger
 
 # Schema key -> filename mapping under schemas_dir
 schema_map:
@@ -94,8 +92,10 @@ schema_map:
   resolve_plan_output: issue_resolve_output.schema.json
   handshake_output: handshake_output.schema.json
   enrich_output: design_doc_enrich_output.schema.json
-  spec_testability_enricher_output: spec_testability_enricher_output.schema.json
-  spec_testability_triage_output: spec_testability_triage_output.schema.json
+  # Unified refine auditor (active).
+  spec_quality_auditor_output: spec_quality_auditor_output.schema.json
+  spec_quality_auditor_triage_output: spec_quality_auditor_triage_output.schema.json
+  # Legacy refine schemas (retained until legacy prompt blocks are deleted).
   spec_testability_enricher_output: spec_testability_enricher_output.schema.json
   spec_testability_triage_output: spec_testability_triage_output.schema.json
 
@@ -124,15 +124,19 @@ local:
     default:
       name: gpt-5.3-codex
       # Use null to omit reasoning_effort so temperature/top_p are honored by Loca.
-      # Use null to omit reasoning_effort so temperature/top_p are honored by Loca.
       reasoning_effort: medium
-      # temperature: 0.7
-      # top_p: 0.2
       # temperature: 0.7
       # top_p: 0.2
       web_search: false
       model_verbosity: null
       # base_url: "https://api.kimi.com/coding/"  # openai: OpenAI-compat root; anthropic: Messages API base
+    # Refine's unified spec_quality_auditor runs Stage 1 (5 rule families + consequence + worst_case),
+    # Stage 1.B (appendix gap recommendations), and Stage 2/3 (AC + criteria + test_plan) in one pass
+    # for instance 0. That's a lot of structured reasoning; bumping reasoning_effort to high reduces
+    # the rate of dropped enrichments observed under medium when Stage 1 produces many MR items.
+    spec_quality_auditor:
+      name: gpt-5.3-codex
+      reasoning_effort: high
     # map_spec_to_code:
     #   name: gpt-5.3-codex
     # implement_unified_planner:

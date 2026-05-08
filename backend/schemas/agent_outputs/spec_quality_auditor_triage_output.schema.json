@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SpecQualityAuditorTriageOutput",
+  "description": "Triage-only output of the spec_quality_auditor agent (replica instances 1..N-1). Produces only manual_resolution_items[] for consensus filtering across replicas. No enrichments[]: AC, criteria[], and test_plan are authored exclusively by instance 0 (full mode). MR-item shape is identical to the full schema's quality_item.",
+  "type": "object",
+  "required": ["manual_resolution_items"],
+  "additionalProperties": false,
+  "properties": {
+    "manual_resolution_items": {
+      "type": "array",
+      "description": "Single-spec quality findings flagged by this replica. Identical shape to the full schema's quality_item. Used by the orchestrator's consensus filter; only spec_ids flagged by at least consensus_min_votes replicas survive into the final resolution block.",
+      "items": { "$ref": "#/$defs/quality_item" }
+    }
+  },
+  "$defs": {
+    "quality_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "item_id",
+        "title",
+        "spec_id",
+        "field",
+        "concern_kinds",
+        "consequence_class",
+        "worst_case",
+        "suggested_improvement",
+        "options"
+      ],
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Unique identifier for this resolution item (e.g. QA-001)."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Short human-readable summary of the quality finding."
+        },
+        "spec_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "spec_id of the row with the finding."
+        },
+        "field": {
+          "type": "string",
+          "const": "requirement",
+          "description": "Always 'requirement'."
+        },
+        "concern_kinds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "vague_language",
+              "untestable_outcome",
+              "unresolvable_reference",
+              "implementation_leak",
+              "legitimate_constraint"
+            ]
+          },
+          "description": "One or more concern kinds. See full schema for semantics."
+        },
+        "consequence_class": {
+          "type": "string",
+          "enum": [
+            "cosmetic",
+            "functional_defect",
+            "data_integrity",
+            "safety_or_clinical"
+          ],
+          "description": "Worst-case impact if this requirement is implemented incorrectly."
+        },
+        "worst_case": {
+          "type": "string",
+          "minLength": 1,
+          "description": "One-line concrete description of the worst observable outcome."
+        },
+        "vague_phrases": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Optional. Populate when concern_kinds includes vague_language."
+        },
+        "untestable_reason": {
+          "type": "string",
+          "description": "Optional. Populate when concern_kinds includes untestable_outcome."
+        },
+        "suggested_test_type": {
+          "type": "string",
+          "enum": ["unit", "integration", "e2e", "manual"],
+          "description": "Optional. Populate when concern_kinds includes untestable_outcome."
+        },
+        "verification_method": {
+          "type": "string",
+          "description": "Optional. Required when concern_kinds includes legitimate_constraint."
+        },
+        "suggested_improvement": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Complete replacement text for the requirement field, addressing all listed concern_kinds."
+        },
+        "options": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/resolution_option" },
+          "description": "Resolution options presented to the user."
+        }
+      }
+    },
+    "resolution_option": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["option_id", "label", "effect"],
+      "properties": {
+        "option_id": {
+          "type": "string",
+          "enum": ["accept_suggestion", "let_agent_edit", "skip"],
+          "description": "accept_suggestion: apply suggested_improvement to requirement; let_agent_edit: call spec_editor for a custom rewrite; skip: leave requirement unchanged."
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable option label."
+        },
+        "effect": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Short description of what choosing this option does."
+        }
+      }
+    }
+  }
+}

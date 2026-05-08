@@ -27,10 +27,8 @@ def _get_refine_cfg(config: dict[str, Any]) -> dict[str, Any]:
 
     Returns dict with keys:
         enabled: bool
-        ambiguity_detector_prompt_name: str
-        testability_enricher_prompt_name: str
+        quality_auditor_prompt_name: str
         spec_editor_prompt_name: str
-        spec_change_merger_prompt_name: str
         decomposition_enabled: bool
         decomposition_blocking: bool
         similarity_threshold: float
@@ -45,10 +43,8 @@ def _get_refine_cfg(config: dict[str, Any]) -> dict[str, Any]:
     enabled = enabled_raw if isinstance(enabled_raw, bool) else True
 
     from core.pika_config import get_prompt_name
-    ambiguity_prompt = get_prompt_name("refine", "ambiguity_detector")
-    testability_prompt = get_prompt_name("refine", "testability_enricher")
+    quality_auditor_prompt = get_prompt_name("refine", "quality_auditor")
     editor_prompt = get_prompt_name("refine", "spec_editor")
-    merger_prompt = get_prompt_name("refine", "spec_change_merger")
 
     decomp_cfg = refine.get("decomposition") or {}
     if not isinstance(decomp_cfg, dict):
@@ -90,10 +86,8 @@ def _get_refine_cfg(config: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "enabled": enabled,
-        "ambiguity_detector_prompt_name": ambiguity_prompt,
-        "testability_enricher_prompt_name": testability_prompt,
+        "quality_auditor_prompt_name": quality_auditor_prompt,
         "spec_editor_prompt_name": editor_prompt,
-        "spec_change_merger_prompt_name": merger_prompt,
         "decomposition_enabled": decomp_enabled,
         "decomposition_blocking": decomp_blocking,
         "similarity_threshold": similarity_threshold,

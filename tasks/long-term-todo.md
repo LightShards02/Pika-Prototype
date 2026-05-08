@@ -31,3 +31,7 @@ Deferred from implement.py code review (issue 11). These items improve robustnes
   - On new runs, load rollup during implement config normalization and apply deterministic tuning rules (for example threshold nudges and alias allowlist updates) with caps and minimum sample sizes.
   - Record applied tuning decisions in current `run_meta.json` (for auditability and reproducibility).
   - Keep deterministic behavior only: no agent calls in telemetry aggregation/tuning.
+
+## REST API & Run Lifecycle
+
+- [ ] **Run TTL / cleanup policy** — Old `out/agent_runs/<cmd>/<run_id>/` directories accumulate indefinitely. Decide between an admin cleanup endpoint (`DELETE /v1/runs?older_than=...`) and automatic GC after N days. `generate_run_id` already embeds a timestamp, so retention queries are cheap. Out of scope for the initial REST migration; revisit once disk usage becomes a real concern.

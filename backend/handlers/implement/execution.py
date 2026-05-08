@@ -1682,9 +1682,9 @@ def _execute_batch(
     ac_for_batch = brief.get("acceptance_criteria_for_batch") or {}
     tp_for_batch = brief.get("test_plan_for_batch") or {}
     author_tests_enabled = bool(impl.get("author_tests", False))
-    test_authoring_kinds = impl.get(
-        "test_authoring_required_for_evidence_kinds",
-        ["unit_test", "integration_test"],
+    test_authoring_evidence_types = impl.get(
+        "test_authoring_required_for_evidence_types",
+        ["unit_test_execution_record", "integration_test_execution_record"],
     )
 
     template_vars: dict[str, Any] = {
@@ -1714,8 +1714,8 @@ def _execute_batch(
         "test_plan_json": json.dumps(tp_for_batch, indent=2),
         "mode": mode,
         "author_tests": "true" if author_tests_enabled else "false",
-        "test_authoring_required_for_evidence_kinds_json": json.dumps(
-            list(test_authoring_kinds)
+        "test_authoring_required_for_evidence_types_json": json.dumps(
+            list(test_authoring_evidence_types)
         ),
         "iteration_index": str(iteration_index),
     }
