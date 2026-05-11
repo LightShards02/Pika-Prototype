@@ -1010,12 +1010,21 @@ prompts:
 
       Decide whether to consult the appendix for each spec row: consult when the requirement references an external contract, schema, configuration parameter, DTO, or error mapping. Do NOT consult for rows with no external references.
 
+      Concern evidence (REQUIRED on every manual_resolution_item):
+      For every kind you place in concern_kinds[], append exactly one entry to concern_evidence[] with `kind` set to that string. The entry's `evidence` field carries the kind-specific diagnostic content described in each rule family below. Two optional payload fields are available on the entry:
+        - test_type_if_fixed: populate when kind == "untestable_outcome". Names the test type (unit | integration | e2e | manual) that becomes possible after applying suggested_improvement.
+        - verification_method: populate when kind == "legitimate_constraint". Names the non-behavioral verification mechanism (e.g. "configuration audit per security policy", "code review against SOC-2 control X").
+      concern_evidence[].kind values must match concern_kinds[] exactly — no extras, no omissions.
+
       --- Rule family A: VAGUE_LANGUAGE ---
       Flag concern_kind: vague_language when the requirement:
         - Uses modal verbs ("should", "may", "might", "could") for observable behavior.
         - Names behavior without measurable outcomes (e.g. "handles errors appropriately", "performs efficiently").
         - Contains hedge phrases ("reasonable", "appropriate", "sufficient", "as needed", "if necessary", "typically", "usually") without bounding context.
-      When you flag vague_language, populate vague_phrases[] with the exact phrases that triggered the rule.
+      Do NOT flag vague_language when:
+        - A parenthetical or trailing clause supplies a concrete example value or constant (e.g. "(e.g., 4 characters)", "such as 30 seconds", "for instance HTTP 409"). The example pins a verifiable value even if the surrounding clause sounds general; treat the example as the testable target.
+        - The requirement names a parameter as "configured", "the configured value", "the documented limit", etc. and the appendix or a sibling spec resolves it. Resolved deferred references are not vague.
+      Concern evidence: when you flag vague_language, append one concern_evidence entry with kind="vague_language" and evidence set to the exact triggering phrase from the requirement (verbatim). Phrases that fall under the exceptions above must NOT be cited as evidence.
 
       --- Rule family B: UNRESOLVABLE_REFERENCE ---
       Cross-spec references: if a requirement references another spec by explicit ID ("as defined in A1001", "see A2003") or by relative position ("as specified above", "the row below"), resolve the reference against the CSV. For explicit IDs, look up the spec_id directly. For relative references, use the adjacent rows in CSV order. Flag concern_kind: unresolvable_reference when:
@@ -1029,20 +1038,21 @@ prompts:
         - DTO type conflicts: the same DTO name appears with conflicting field type definitions, OR the appendix defines a field type incompatible with how the spec uses it (e.g. spec compares numerically but appendix defines as enum).
         - Appendix sufficiency: if the requirement asserts distinct outputs/codes/values for different input cases, count how many distinct entries the relevant appendix supplies. If fewer than the requirement implies, the upstream source is incomplete.
       Do NOT flag when the appendix fully resolves the deferred reference — that is exactly what the appendix is for.
+      Concern evidence: when you flag unresolvable_reference, append one concern_evidence entry with kind="unresolvable_reference" and evidence naming the unresolved reference text (or the missing/conflicting appendix entry).
 
       --- Rule family C: UNTESTABLE_OUTCOME ---
       Flag concern_kind: untestable_outcome when the requirement is clear and specific but still cannot produce a testable outcome:
         - Specifies ONLY what the system must NOT do (negative-only) without defining the expected positive behavior or bounding the input space for absence verification (e.g. "shall not return raw exceptions").
         - Uses universal quantifiers ("all", "every", "always", "any", "never") over an unbounded or undefined input domain (e.g. "all valid inputs", "always completes"). Exception: do NOT flag when the domain is bounded by a finite, enumerable reference in the requirement or appendix.
         - Has a circular or deferred oracle ("as defined in the spec", "per the standard practice") that no appendix or sibling spec resolves.
-      When you flag untestable_outcome, populate untestable_reason (one sentence) and suggested_test_type (unit | integration | e2e | manual).
+      Concern evidence: when you flag untestable_outcome, append one concern_evidence entry with kind="untestable_outcome", evidence set to a one-sentence explanation of why the requirement cannot produce a testable outcome, and test_type_if_fixed set to unit | integration | e2e | manual (the test type that becomes possible after applying suggested_improvement).
 
       --- Rule family D: IMPLEMENTATION_LEAK vs LEGITIMATE_CONSTRAINT ---
       Trigger condition: the requirement describes internal state, implementation technique, or design intent that produces no system-visible output, artifact, or state change a tester could observe from outside (e.g. "shall use the repository pattern", "shall ensure data integrity", "shall encrypt data at rest using AES-256", "shall not log credentials in plaintext").
 
       When triggered, decide: is there an external mandate that grounds this constraint?
-        - YES (project_context, appendix, or the requirement itself cites a regulation, security policy, contract, interoperability standard, or compliance obligation) → flag concern_kind: legitimate_constraint. Populate verification_method with the specific non-behavioral mechanism (e.g. "configuration audit per security policy", "code review against SOC-2 control X", "key-management inspection per encryption-at-rest standard"). Set suggested_improvement to the original requirement text augmented with a one-line verification annotation (e.g. "<original>. (Verification: <verification_method>.)").
-        - NO (the constraint appears to be the spec author's preference with no external grounding) → flag concern_kind: implementation_leak. Set suggested_improvement to one of:
+        - YES (project_context, appendix, or the requirement itself cites a regulation, security policy, contract, interoperability standard, or compliance obligation) → flag concern_kind: legitimate_constraint. Append one concern_evidence entry with kind="legitimate_constraint", evidence naming the external mandate (regulation, policy, standard, or contract clause), and verification_method naming the specific non-behavioral mechanism (e.g. "configuration audit per security policy", "code review against SOC-2 control X", "key-management inspection per encryption-at-rest standard"). Set suggested_improvement to the original requirement text augmented with a one-line verification annotation (e.g. "<original>. (Verification: <verification_method>.)").
+        - NO (the constraint appears to be the spec author's preference with no external grounding) → flag concern_kind: implementation_leak. Append one concern_evidence entry with kind="implementation_leak" and evidence naming the internal-choice clause and why it has no observable consequence. Set suggested_improvement to one of:
           (a) A behavioral rewrite that exposes an observable consequence of the original constraint (e.g. "shall ensure data integrity" → "after a process crash mid-write, on restart no partial records exist in the persistence layer").
           (b) If no behavioral rewrite is possible, "REMOVE: relocate to design documentation. Original: <original requirement text>".
 
@@ -1050,23 +1060,51 @@ prompts:
       If a requirement ends with ":" or "as follows:" and subsequent spec_ids share the same module_tag, evaluate the sequence as a unit. Do not flag a header row if the detail rows supply the missing specifics. Conversely, do not flag detail rows for lacking preconditions if the header row provides them. Only flag when the entire sequence still leaves the oracle incomplete.
 
       --- Compound items ---
-      A single spec may trigger multiple rule families (e.g., a requirement that is vague AND would still be untestable even if rewritten). Emit ONE manual_resolution_item with concern_kinds[] = ["vague_language", "untestable_outcome"], populate the optional fields for both (vague_phrases AND untestable_reason AND suggested_test_type), and write a SINGLE suggested_improvement that addresses every listed concern_kind together. Do not emit two separate items for the same spec_id.
+      A single spec may trigger multiple rule families (e.g., a requirement that is vague AND would still be untestable even if rewritten). Emit ONE manual_resolution_item with concern_kinds[] = ["vague_language", "untestable_outcome"], append one concern_evidence entry per listed kind (so concern_evidence[] has the same length as concern_kinds[]), and write a SINGLE suggested_improvement that addresses every listed concern_kind together. Do not emit two separate items for the same spec_id.
 
       --- Rewriting granularity (applies to every suggested_improvement you author) ---
       When you author suggested_improvement, name what is observable from outside the module's boundary at a level a tester could verify, but stop short of locking down design choices. Apply these principles:
+
+      Length fidelity: a suggested_improvement is a REPLACEMENT for the requirement field, not a summary. If the original carries multiple normative sentences (each describing a distinct field, behavior, invariant, or response), the rewrite preserves each one as its own sentence or coordinated clause. Do NOT compress a multi-sentence normative requirement into a single behavioral skeleton — that loses normative content. The single-sentence form is correct ONLY when the original itself made a single normative claim.
+
+      Selective rewrite: when the requirement contains multiple sentences and the flag(s) target only some of them, rewrite ONLY the flagged sentences. Keep unflagged sentences verbatim — do not paraphrase, reorder, or "tighten" them for stylistic uniformity. The exception is when the rewrite of a flagged sentence breaks inter-sentence logic with an unflagged sentence (e.g. it removes a referent that a later sentence relies on); in that case, also adjust the affected sentence(s) — and mention the cascading change inline so a reviewer sees the full edit footprint. The reviewer's job is to compare the targeted change to the original, not to diff prose blocks.
+
         1. Name fields, not their types, formats, nullability, or defaults. ("Returns a response containing id, name, email, and created_at." — not "Returns {id: int, name: string, email: string, created_at: ISO8601}".)
         2. Name behavior shape (success vs error, sorted, atomic), not the wire encoding (HTTP status code, envelope shape, schema). Cite appendix-supplied values when they exist; otherwise stay abstract.
         3. Name invariants (uniqueness, ordering, atomicity), not the mechanism that enforces them (indexes, locks, algorithms).
-        4. Name configuration as "configured" or cite the appendix-supplied value. Never invent a number, threshold, latency, or retry count the requirement and appendix did not supply (this is the AC honesty rule applied to suggested_improvement).
+        4. Cite any concrete value the requirement already supplies — including values inside parenthetical examples ("(e.g., 4 characters)", "such as 30 seconds") — verbatim or paraphrased without loss of specificity. Use abstract placeholders ("the configured value", "the documented limit") ONLY when no value is supplied by the requirement or appendix. Never invent a number, threshold, latency, or retry count the requirement and appendix did not supply (this is the AC honesty rule applied to suggested_improvement). Never replace a supplied concrete value with a "configured" placeholder.
         5. Internal choices — algorithms, data structures, libraries, frameworks, persistence schemas, log formats, UI pixel positions, error message wording — belong in design documentation, not in the spec.
-        6. When in doubt, prefer the rewrite that Stage 2 of this prompt could still extract honest AC from without inventing details.
+        6. Length matches normative substance: count the distinct normative claims in the original (excluding internal-choice sentences covered by rule 5). The rewrite contains at least that many claims, expressed as sentences or coordinated clauses. A 4-claim original yields a 4-claim rewrite, not a 1-claim summary.
+        7. When in doubt, prefer the rewrite that Stage 2 of this prompt could still extract honest AC from without inventing details.
 
-      Worked example:
+      Worked example A — do not invent values:
         Original requirement: "Validates input quickly."
         Over-specific rewrite (DO NOT DO THIS): "Validates input within 100ms with retry up to 3 times."
         Right-level rewrite: "Validates input within the configured latency bound; returns a timeout error when the bound is exceeded."
         Reason: "100ms" and "3 retries" were not in the requirement or appendix. The right-level rewrite preserves the testable shape (timed, returns timeout error) without inventing values.
         Stage 1.B follow-up: this rewrite presumes "the configured latency bound" is defined somewhere (appendix or sibling spec). If it is not, also emit an appendix_recommendation listing this spec_id. If it is, no recommendation is needed.
+
+      Worked example B — preserve values the requirement already supplies:
+        Original requirement: "The system should typically reject submissions that are too long (such as more than 1000 characters)."
+        Why this is flagged: vague_language fires on "should" (modal verb on observable behavior) and "typically" (hedge phrase), making the rejection contingent and unverifiable. The parenthetical "(such as more than 1000 characters)" supplies a concrete bound — by the example-value exception, the parenthetical itself is NOT the trigger; the surrounding clause is.
+        Over-abstract rewrite (DO NOT DO THIS): "The system shall reject submissions that exceed the configured maximum length."
+        Right-level rewrite: "The system shall reject submissions longer than 1000 characters."
+        Reason: the original supplies "1000 characters" as a concrete bound. Replacing it with "the configured maximum length" launders a verifiable target into a placeholder, even though the rewrite has correctly fixed the modal/hedge ("should typically" → "shall"). Rule 4 says cite supplied values verbatim. The abstract placeholder form is reserved for cases where no value is supplied at all (see worked example A).
+
+      Worked example C — selective rewrite; keep unflagged sentences verbatim:
+        Original requirement (4 sentences; only sentence 2 carries a flag):
+          "The system shall record an audit entry for every patient record creation event. The audit entry should typically include the user identifier and the creation timestamp. Audit entries are stored in the audit log retention bucket. Audit entries are read-only after creation."
+        Sentence-level analysis:
+          - Sentence 1: clean (concrete trigger event, normative "shall"). Not flagged.
+          - Sentence 2: vague_language — "should typically include" is modal + hedge. FLAGGED.
+          - Sentence 3: clean (concrete location). Not flagged.
+          - Sentence 4: clean (concrete invariant). Not flagged.
+        Over-broad rewrite (DO NOT DO THIS):
+          "For every patient record creation event, the system shall record an audit entry containing the user identifier and creation timestamp, place it in the audit log retention bucket, and treat it as read-only after creation."
+        Why wrong: this rewrites all four sentences when only sentence 2 was flagged. Sentences 1, 3, 4 are clear and testable in their original form; rewording them risks introducing semantic drift (the consolidation may unintentionally narrow or broaden a clause) and forces the reviewer to diff full prose blocks rather than inspect a targeted change.
+        Right-level rewrite (selective):
+          "The system shall record an audit entry for every patient record creation event. The audit entry shall include the user identifier and the creation timestamp. Audit entries are stored in the audit log retention bucket. Audit entries are read-only after creation."
+        Why right: only sentence 2 changes ("should typically include" → "shall include"). Sentences 1, 3, 4 are kept verbatim because they are unflagged AND the rewrite of sentence 2 does not break inter-sentence logic with them. The reviewer sees a one-sentence diff and can validate the fix without re-reading the rest of the requirement.
 
       Dictionary-shaped gaps — keep abstract, then escalate via Stage 1.B:
       When a rewrite would otherwise need to invent a value of a kind organizations typically maintain in a shared dictionary (error codes, validation formats, input contracts, configuration parameters, approved technology conventions, data dictionaries), and no such dictionary is supplied in appendix or sibling specs:
@@ -1083,9 +1121,6 @@ prompts:
       Set worst_case to a concrete one-line description of what would happen in that worst case. Be specific: "user sees the wrong currency symbol" beats "display issue"; "patient record is associated with the wrong patient on import" beats "data error".
 
       If you cannot reasonably estimate the consequence (the requirement is too vague to know what it controls), default to functional_defect with worst_case = "unknown — requirement too vague to estimate impact" and ensure vague_language is among concern_kinds.
-
-      --- Options (every manual_resolution_item) ---
-      options must include accept_suggestion, let_agent_edit, and skip — three entries with their standard labels and effects.
 
       --- For CLEAN specs (no concerns flagged) ---
         - In enrich_mode = "triage": emit nothing for this spec. Stop.
@@ -1195,11 +1230,10 @@ prompts:
         5. Every test_plan criteria_ids[] entry references a criterion_id that exists in this spec's criteria[].
         6. No two criterion_ids collide within a single spec; no two test_ids collide within a single spec's test_plan.
         7. Every manual_resolution_item has consequence_class set and worst_case populated with concrete text.
-        8. Every manual_resolution_item with concern_kinds containing "vague_language" populates vague_phrases.
-        9. Every manual_resolution_item with concern_kinds containing "untestable_outcome" populates untestable_reason and suggested_test_type.
-        10. Every manual_resolution_item with concern_kinds containing "legitimate_constraint" populates verification_method.
-        11. Every appendix_recommendation has a non-empty affected_spec_ids[]; every listed spec_id appears as an MR item in this output OR has a suggested_improvement that uses the abstract placeholder language the recommendation cites. Do not list spec_ids that were not actually affected.
-        12. Every planned_test_case has intent populated. framework_hint / target_file_hint / target_case_hint are absent unless explicitly grounded in project_context or appendix.
+        8. Every manual_resolution_item has concern_evidence[] of the same length as concern_kinds[]. The set of concern_evidence[].kind values equals the set of concern_kinds[] values exactly — no missing entries, no extras.
+        9. Every concern_evidence entry has non-empty `evidence`. Entries with kind="untestable_outcome" populate test_type_if_fixed (one of unit | integration | e2e | manual). Entries with kind="legitimate_constraint" populate verification_method.
+        10. Every appendix_recommendation has a non-empty affected_spec_ids[]; every listed spec_id appears as an MR item in this output OR has a suggested_improvement that uses the abstract placeholder language the recommendation cites. Do not list spec_ids that were not actually affected.
+        11. Every planned_test_case has intent populated. framework_hint / target_file_hint / target_case_hint are absent unless explicitly grounded in project_context or appendix.
 
       If any check fails for a spec, fix it before emitting output. The schema enforces structural shape; this stage enforces semantic coverage that the schema cannot.
 

@@ -87,16 +87,60 @@ def _format_severity_breakdown(items: list[dict[str, Any]]) -> str:
     return ", ".join(parts) if parts else "unspecified"
 
 
+# Canonical resolution options. Injected by the v3->v2 translator so the agent
+# no longer has to emit this constant on every item; resolve.py and resolution.py
+# still see the same options[] shape they have always consumed.
+_CANONICAL_RESOLUTION_OPTIONS: list[dict[str, str]] = [
+    {
+        "option_id": "accept_suggestion",
+        "label": "Accept suggested rewrite",
+        "effect": "Replace the requirement with the suggested improvement text.",
+    },
+    {
+        "option_id": "let_agent_edit",
+        "label": "Let agent edit",
+        "effect": "Have the agent produce a custom rewrite before applying changes.",
+    },
+    {
+        "option_id": "skip",
+        "label": "Skip",
+        "effect": "Leave this requirement unchanged.",
+    },
+]
+
+
+def _evidence_by_kind(item: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Index a v3 quality_item's concern_evidence[] entries by their kind.
+
+    Returns an empty dict when concern_evidence is absent or malformed. When the
+    schema's uniqueness constraint is violated (duplicate kinds in one item), the
+    last entry wins — the translator stays defensive rather than raising.
+    """
+    result: dict[str, dict[str, Any]] = {}
+    entries = item.get("concern_evidence")
+    if isinstance(entries, list):
+        for entry in entries:
+            if isinstance(entry, dict):
+                kind = entry.get("kind")
+                if isinstance(kind, str) and kind:
+                    result[kind] = entry
+    return result
+
+
 def _synthesize_untestable_reason(item: dict[str, Any], concern_kinds: list[str]) -> str:
     """Synthesize a v1-shaped untestable_reason for desktop-app rendering.
 
-    Used only by the v3->v2 legacy translation. When the agent already populated
-    untestable_reason, prefer that; otherwise build a short string from the dominant
-    concern_kind plus worst_case so the gate panel has something to display.
+    Used only by the v3->v2 legacy translation. Prefers the concern_evidence
+    entry for kind="untestable_outcome" when present; otherwise builds a short
+    string from the dominant concern_kind plus worst_case so the gate panel has
+    something to display.
     """
-    explicit = item.get("untestable_reason")
-    if isinstance(explicit, str) and explicit.strip():
-        return explicit.strip()
+    evidence_map = _evidence_by_kind(item)
+    untestable_entry = evidence_map.get("untestable_outcome")
+    if isinstance(untestable_entry, dict):
+        evidence_text = untestable_entry.get("evidence")
+        if isinstance(evidence_text, str) and evidence_text.strip():
+            return evidence_text.strip()
     label_map = {
         "untestable_outcome": "Requirement is clear but not testable as written",
         "unresolvable_reference": "Reference cannot be resolved from appendix or sibling specs",
@@ -124,29 +168,41 @@ def _translate_v3_item_to_v2_legacy(item: dict[str, Any]) -> dict[str, Any]:
     render as v1 ambiguity (vague_phrases populated, untestable_reason omitted).
     Otherwise render as v1 testability (untestable_reason populated, vague_phrases omitted).
 
+    Schema-stripped fields are injected here:
+      * `field` is always "requirement" — the schema dropped the const property.
+      * `options` is always the canonical 3-tuple — the schema dropped the array.
+      * `vague_phrases` / `untestable_reason` / `suggested_test_type` /
+        `verification_method` are reconstructed from `concern_evidence[]` by kind.
+
     The full v3 item is preserved separately in auditor_output.json; this translation
     is lossy on purpose to keep the gate UI stable until the desktop app gains v3 support.
     """
     concern_kinds = list(item.get("concern_kinds") or [])
+    evidence_map = _evidence_by_kind(item)
     out: dict[str, Any] = {
         "item_id": item.get("item_id", ""),
         "title": item.get("title", ""),
         "spec_id": item.get("spec_id", ""),
-        "field": item.get("field", "requirement"),
+        "field": "requirement",
         "suggested_improvement": item.get("suggested_improvement", ""),
-        "options": item.get("options", []),
+        "options": [dict(opt) for opt in _CANONICAL_RESOLUTION_OPTIONS],
     }
     if "vague_language" in concern_kinds:
-        vague_phrases = item.get("vague_phrases")
-        out["vague_phrases"] = (
-            list(vague_phrases) if isinstance(vague_phrases, list) and vague_phrases
-            else [item.get("title") or "vague language"]
+        vague_entry = evidence_map.get("vague_language")
+        evidence_text = (
+            vague_entry.get("evidence") if isinstance(vague_entry, dict) else None
         )
+        if isinstance(evidence_text, str) and evidence_text.strip():
+            out["vague_phrases"] = [evidence_text.strip()]
+        else:
+            out["vague_phrases"] = [item.get("title") or "vague language"]
     else:
         out["untestable_reason"] = _synthesize_untestable_reason(item, concern_kinds)
-        suggested_test_type = item.get("suggested_test_type")
-        if isinstance(suggested_test_type, str) and suggested_test_type.strip():
-            out["suggested_test_type"] = suggested_test_type.strip()
+        untestable_entry = evidence_map.get("untestable_outcome")
+        if isinstance(untestable_entry, dict):
+            test_type = untestable_entry.get("test_type_if_fixed")
+            if isinstance(test_type, str) and test_type.strip():
+                out["suggested_test_type"] = test_type.strip()
 
     # Pass v3-only metadata through as extra fields. The desktop-app's transform
     # reads named fields and ignores unknowns; the CLI resolution-template generator
@@ -157,8 +213,11 @@ def _translate_v3_item_to_v2_legacy(item: dict[str, Any]) -> dict[str, Any]:
         out["consequence_class"] = item["consequence_class"]
     if isinstance(item.get("worst_case"), str):
         out["worst_case"] = item["worst_case"]
-    if isinstance(item.get("verification_method"), str):
-        out["verification_method"] = item["verification_method"]
+    legitimate_entry = evidence_map.get("legitimate_constraint")
+    if isinstance(legitimate_entry, dict):
+        vm = legitimate_entry.get("verification_method")
+        if isinstance(vm, str) and vm.strip():
+            out["verification_method"] = vm.strip()
     return out
 
 

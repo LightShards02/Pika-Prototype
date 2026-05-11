@@ -114,10 +114,25 @@ def _write_project_context(root: Path) -> None:
     (root / "PROJECT_CONTEXT.md").write_text("# Test project context", encoding="utf-8")
 
 
+# Canonical 3-tuple injected by _translate_v3_item_to_v2_legacy (mirror of
+# _CANONICAL_RESOLUTION_OPTIONS in handlers/refine/impl.py). Tests that assert
+# on the v2 options[] payload compare against this constant.
 _STD_OPTIONS = [
-    {"option_id": "accept_suggestion", "label": "Accept", "effect": "Apply"},
-    {"option_id": "let_agent_edit", "label": "Let agent edit", "effect": "Call spec_editor"},
-    {"option_id": "skip", "label": "Skip", "effect": "Keep original"},
+    {
+        "option_id": "accept_suggestion",
+        "label": "Accept suggested rewrite",
+        "effect": "Replace the requirement with the suggested improvement text.",
+    },
+    {
+        "option_id": "let_agent_edit",
+        "label": "Let agent edit",
+        "effect": "Have the agent produce a custom rewrite before applying changes.",
+    },
+    {
+        "option_id": "skip",
+        "label": "Skip",
+        "effect": "Leave this requirement unchanged.",
+    },
 ]
 
 
@@ -141,13 +156,13 @@ def _vague_item(spec_id: str = "S1", item_id: str = "QA-001") -> dict[str, Any]:
         "item_id": item_id,
         "title": "Vague requirement",
         "spec_id": spec_id,
-        "field": "requirement",
         "concern_kinds": ["vague_language"],
+        "concern_evidence": [
+            {"kind": "vague_language", "evidence": "appropriately"},
+        ],
         "consequence_class": "functional_defect",
         "worst_case": "user input passes when it should be rejected",
-        "vague_phrases": ["appropriately"],
         "suggested_improvement": "The system shall validate that input length <= 255 chars.",
-        "options": list(_STD_OPTIONS),
     }
 
 
@@ -157,14 +172,17 @@ def _untestable_item(spec_id: str = "S2", item_id: str = "QA-002") -> dict[str, 
         "item_id": item_id,
         "title": "Requirement clear but not testable",
         "spec_id": spec_id,
-        "field": "requirement",
         "concern_kinds": ["untestable_outcome"],
+        "concern_evidence": [
+            {
+                "kind": "untestable_outcome",
+                "evidence": "No measurable threshold for 'quickly'.",
+                "test_type_if_fixed": "integration",
+            },
+        ],
         "consequence_class": "data_integrity",
         "worst_case": "results returned past SLA without observable error",
-        "untestable_reason": "No measurable threshold for 'quickly'.",
-        "suggested_test_type": "integration",
         "suggested_improvement": "The system shall return results within 200ms under normal load.",
-        "options": list(_STD_OPTIONS),
     }
 
 
@@ -1654,31 +1672,36 @@ class V3ToV2TranslationTests(unittest.TestCase):
             "item_id": "QA-3",
             "title": "Both",
             "spec_id": "S3",
-            "field": "requirement",
             "concern_kinds": ["vague_language", "untestable_outcome"],
+            "concern_evidence": [
+                {"kind": "vague_language", "evidence": "handles errors appropriately"},
+                {
+                    "kind": "untestable_outcome",
+                    "evidence": "negative-only",
+                    "test_type_if_fixed": "unit",
+                },
+            ],
             "consequence_class": "functional_defect",
             "worst_case": "feature does not work",
-            "vague_phrases": ["handles errors appropriately"],
-            "untestable_reason": "negative-only",
-            "suggested_test_type": "unit",
             "suggested_improvement": "...",
-            "options": list(_STD_OPTIONS),
         }
         v2 = _translate_v3_item_to_v2_legacy(v3)
         self.assertIn("vague_phrases", v2)
         self.assertNotIn("untestable_reason", v2)
+        self.assertEqual(v2["vague_phrases"], ["handles errors appropriately"])
 
     def test_implementation_leak_synthesizes_reason(self) -> None:
         v3 = {
             "item_id": "QA-4",
             "title": "Leak",
             "spec_id": "S4",
-            "field": "requirement",
             "concern_kinds": ["implementation_leak"],
+            "concern_evidence": [
+                {"kind": "implementation_leak", "evidence": "uses repository pattern with no observable consequence"},
+            ],
             "consequence_class": "cosmetic",
             "worst_case": "design choice in spec",
             "suggested_improvement": "REMOVE: relocate to design documentation. Original: ...",
-            "options": list(_STD_OPTIONS),
         }
         v2 = _translate_v3_item_to_v2_legacy(v3)
         self.assertIn("untestable_reason", v2)
@@ -1690,13 +1713,17 @@ class V3ToV2TranslationTests(unittest.TestCase):
             "item_id": "QA-5",
             "title": "Encryption",
             "spec_id": "S5",
-            "field": "requirement",
             "concern_kinds": ["legitimate_constraint"],
+            "concern_evidence": [
+                {
+                    "kind": "legitimate_constraint",
+                    "evidence": "HIPAA Security Rule 45 CFR 164.312(a)(2)(iv)",
+                    "verification_method": "configuration audit",
+                },
+            ],
             "consequence_class": "data_integrity",
             "worst_case": "unencrypted PHI",
-            "verification_method": "configuration audit",
             "suggested_improvement": "AES-256 at rest. (Verification: configuration audit.)",
-            "options": list(_STD_OPTIONS),
         }
         v2 = _translate_v3_item_to_v2_legacy(v3)
         self.assertIn("untestable_reason", v2)
@@ -1708,6 +1735,44 @@ class V3ToV2TranslationTests(unittest.TestCase):
         self.assertEqual(v2["concern_kinds"], ["vague_language"])
         self.assertEqual(v2["consequence_class"], "functional_defect")
         self.assertTrue(v2["worst_case"].startswith("user input"))
+
+    def test_field_always_injected_as_requirement(self) -> None:
+        """Translator injects field='requirement' regardless of input (schema dropped the const property)."""
+        v3 = _vague_item()
+        v3.pop("field", None)  # confirm absence in v3 input
+        v2 = _translate_v3_item_to_v2_legacy(v3)
+        self.assertEqual(v2["field"], "requirement")
+
+    def test_options_always_injected_as_canonical_3_tuple(self) -> None:
+        """Translator injects the canonical accept_suggestion / let_agent_edit / skip 3-tuple."""
+        v3 = _vague_item()
+        self.assertNotIn("options", v3)  # confirm v3 doesn't carry options
+        v2 = _translate_v3_item_to_v2_legacy(v3)
+        self.assertEqual(v2["options"], _STD_OPTIONS)
+        option_ids = [opt["option_id"] for opt in v2["options"]]
+        self.assertEqual(option_ids, ["accept_suggestion", "let_agent_edit", "skip"])
+
+    def test_suggested_test_type_extracted_from_concern_evidence(self) -> None:
+        """The 'integration' value comes from concern_evidence[0].test_type_if_fixed, not a top-level field."""
+        v2 = _translate_v3_item_to_v2_legacy(_untestable_item())
+        self.assertEqual(v2["suggested_test_type"], "integration")
+
+    def test_untestable_outcome_without_evidence_falls_back_to_label_map(self) -> None:
+        """When concern_evidence has no untestable_outcome entry, _synthesize_untestable_reason fills via label_map."""
+        v3 = {
+            "item_id": "QA-FALLBACK",
+            "title": "Edge case",
+            "spec_id": "S99",
+            "concern_kinds": ["untestable_outcome"],
+            "concern_evidence": [],
+            "consequence_class": "functional_defect",
+            "worst_case": "untracked drift",
+            "suggested_improvement": "Rewritten.",
+        }
+        v2 = _translate_v3_item_to_v2_legacy(v3)
+        self.assertIn("untestable_reason", v2)
+        self.assertIn("untracked drift", v2["untestable_reason"])
+        self.assertNotIn("suggested_test_type", v2)
 
 
 # ---------------------------------------------------------------------------
@@ -1877,12 +1942,13 @@ class QualityAuditorSchemaTests(unittest.TestCase):
                             "item_id": f"QA-{kind}",
                             "title": f"Test {kind}",
                             "spec_id": "S1",
-                            "field": "requirement",
                             "concern_kinds": [kind],
+                            "concern_evidence": [
+                                {"kind": kind, "evidence": "evidence text"},
+                            ],
                             "consequence_class": "functional_defect",
                             "worst_case": "feature does not work",
                             "suggested_improvement": "Rewritten requirement.",
-                            "options": _STD_OPTIONS,
                         }
                     ],
                     "appendix_recommendations": [],
@@ -1897,12 +1963,13 @@ class QualityAuditorSchemaTests(unittest.TestCase):
                     "item_id": "QA-X",
                     "title": "T",
                     "spec_id": "S1",
-                    "field": "requirement",
                     "concern_kinds": ["bogus_kind"],
+                    "concern_evidence": [
+                        {"kind": "bogus_kind", "evidence": "x"},
+                    ],
                     "consequence_class": "functional_defect",
                     "worst_case": "x",
                     "suggested_improvement": "y",
-                    "options": _STD_OPTIONS,
                 }
             ],
             "appendix_recommendations": [],
@@ -1917,12 +1984,79 @@ class QualityAuditorSchemaTests(unittest.TestCase):
                     "item_id": "QA-X",
                     "title": "T",
                     "spec_id": "S1",
-                    "field": "requirement",
                     "concern_kinds": ["vague_language"],
+                    "concern_evidence": [
+                        {"kind": "vague_language", "evidence": "x"},
+                    ],
                     "consequence_class": "catastrophic",
                     "worst_case": "x",
                     "suggested_improvement": "y",
-                    "options": _STD_OPTIONS,
+                }
+            ],
+            "appendix_recommendations": [],
+        })
+
+    def test_full_schema_rejects_field_property(self) -> None:
+        """The dropped 'field' property must be rejected by additionalProperties:false."""
+        schema = self._load("spec_quality_auditor_output")
+        self._validate_fails(schema, {
+            "enrichments": [],
+            "manual_resolution_items": [
+                {
+                    "item_id": "QA-1",
+                    "title": "T",
+                    "spec_id": "S1",
+                    "field": "requirement",
+                    "concern_kinds": ["vague_language"],
+                    "concern_evidence": [
+                        {"kind": "vague_language", "evidence": "x"},
+                    ],
+                    "consequence_class": "functional_defect",
+                    "worst_case": "x",
+                    "suggested_improvement": "y",
+                }
+            ],
+            "appendix_recommendations": [],
+        })
+
+    def test_full_schema_rejects_options_property(self) -> None:
+        """The dropped 'options' property must be rejected by additionalProperties:false."""
+        schema = self._load("spec_quality_auditor_output")
+        self._validate_fails(schema, {
+            "enrichments": [],
+            "manual_resolution_items": [
+                {
+                    "item_id": "QA-1",
+                    "title": "T",
+                    "spec_id": "S1",
+                    "concern_kinds": ["vague_language"],
+                    "concern_evidence": [
+                        {"kind": "vague_language", "evidence": "x"},
+                    ],
+                    "consequence_class": "functional_defect",
+                    "worst_case": "x",
+                    "suggested_improvement": "y",
+                    "options": [{"option_id": "skip", "label": "L", "effect": "E"}],
+                }
+            ],
+            "appendix_recommendations": [],
+        })
+
+    def test_full_schema_requires_concern_evidence(self) -> None:
+        """concern_evidence is now a required property."""
+        schema = self._load("spec_quality_auditor_output")
+        self._validate_fails(schema, {
+            "enrichments": [],
+            "manual_resolution_items": [
+                {
+                    "item_id": "QA-1",
+                    "title": "T",
+                    "spec_id": "S1",
+                    "concern_kinds": ["vague_language"],
+                    # concern_evidence omitted
+                    "consequence_class": "functional_defect",
+                    "worst_case": "x",
+                    "suggested_improvement": "y",
                 }
             ],
             "appendix_recommendations": [],
@@ -1961,8 +2095,14 @@ class QualityAuditorSchemaTests(unittest.TestCase):
 class SynthesizeUntestableReasonTests(unittest.TestCase):
     """_synthesize_untestable_reason() — fallback text for v3->v2 translation."""
 
-    def test_uses_explicit_reason_when_present(self) -> None:
-        item = {"untestable_reason": "Custom reason here.", "worst_case": "ignored"}
+    def test_uses_concern_evidence_when_present(self) -> None:
+        """When concern_evidence has an untestable_outcome entry, its evidence text is returned verbatim."""
+        item = {
+            "concern_evidence": [
+                {"kind": "untestable_outcome", "evidence": "Custom reason here."},
+            ],
+            "worst_case": "ignored",
+        }
         out = _synthesize_untestable_reason(item, ["untestable_outcome"])
         self.assertEqual(out, "Custom reason here.")
 
@@ -1975,6 +2115,18 @@ class SynthesizeUntestableReasonTests(unittest.TestCase):
     def test_handles_unknown_kind(self) -> None:
         out = _synthesize_untestable_reason({}, ["bogus_kind"])
         self.assertTrue(len(out) > 0)
+
+    def test_falls_back_when_concern_evidence_lacks_untestable_outcome(self) -> None:
+        """When concern_evidence is present but missing the untestable_outcome entry, label_map fallback fires."""
+        item = {
+            "concern_evidence": [
+                {"kind": "vague_language", "evidence": "appropriately"},
+            ],
+            "worst_case": "feature broken",
+        }
+        out = _synthesize_untestable_reason(item, ["untestable_outcome"])
+        self.assertIn("not testable", out.lower())
+        self.assertIn("feature broken", out)
 
 
 if __name__ == "__main__":

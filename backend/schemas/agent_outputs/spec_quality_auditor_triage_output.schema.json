@@ -20,12 +20,11 @@
         "item_id",
         "title",
         "spec_id",
-        "field",
         "concern_kinds",
+        "concern_evidence",
         "consequence_class",
         "worst_case",
-        "suggested_improvement",
-        "options"
+        "suggested_improvement"
       ],
       "properties": {
         "item_id": {
@@ -43,11 +42,6 @@
           "minLength": 1,
           "description": "spec_id of the row with the finding."
         },
-        "field": {
-          "type": "string",
-          "const": "requirement",
-          "description": "Always 'requirement'."
-        },
         "concern_kinds": {
           "type": "array",
           "minItems": 1,
@@ -64,6 +58,12 @@
           },
           "description": "One or more concern kinds. See full schema for semantics."
         },
+        "concern_evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/concern_evidence_entry" },
+          "description": "Per-kind diagnostic payload — one entry per concern_kind flagged on this item. See full schema for entry semantics."
+        },
         "consequence_class": {
           "type": "string",
           "enum": [
@@ -79,56 +79,43 @@
           "minLength": 1,
           "description": "One-line concrete description of the worst observable outcome."
         },
-        "vague_phrases": {
-          "type": "array",
-          "items": { "type": "string", "minLength": 1 },
-          "description": "Optional. Populate when concern_kinds includes vague_language."
-        },
-        "untestable_reason": {
-          "type": "string",
-          "description": "Optional. Populate when concern_kinds includes untestable_outcome."
-        },
-        "suggested_test_type": {
-          "type": "string",
-          "enum": ["unit", "integration", "e2e", "manual"],
-          "description": "Optional. Populate when concern_kinds includes untestable_outcome."
-        },
-        "verification_method": {
-          "type": "string",
-          "description": "Optional. Required when concern_kinds includes legitimate_constraint."
-        },
         "suggested_improvement": {
           "type": "string",
           "minLength": 1,
           "description": "Complete replacement text for the requirement field, addressing all listed concern_kinds."
-        },
-        "options": {
-          "type": "array",
-          "minItems": 1,
-          "items": { "$ref": "#/$defs/resolution_option" },
-          "description": "Resolution options presented to the user."
         }
       }
     },
-    "resolution_option": {
+    "concern_evidence_entry": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["option_id", "label", "effect"],
+      "required": ["kind", "evidence"],
       "properties": {
-        "option_id": {
+        "kind": {
           "type": "string",
-          "enum": ["accept_suggestion", "let_agent_edit", "skip"],
-          "description": "accept_suggestion: apply suggested_improvement to requirement; let_agent_edit: call spec_editor for a custom rewrite; skip: leave requirement unchanged."
+          "enum": [
+            "vague_language",
+            "untestable_outcome",
+            "unresolvable_reference",
+            "implementation_leak",
+            "legitimate_constraint"
+          ],
+          "description": "Which concern_kind this entry supports. Must appear in the item's concern_kinds[]."
         },
-        "label": {
+        "evidence": {
           "type": "string",
           "minLength": 1,
-          "description": "Human-readable option label."
+          "description": "Kind-specific diagnostic payload."
         },
-        "effect": {
+        "test_type_if_fixed": {
+          "type": "string",
+          "enum": ["unit", "integration", "e2e", "manual"],
+          "description": "Optional. Populate when kind is 'untestable_outcome'."
+        },
+        "verification_method": {
           "type": "string",
           "minLength": 1,
-          "description": "Short description of what choosing this option does."
+          "description": "Optional. Populate when kind is 'legitimate_constraint'."
         }
       }
     }

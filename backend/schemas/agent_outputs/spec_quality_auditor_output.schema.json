@@ -154,12 +154,11 @@
         "item_id",
         "title",
         "spec_id",
-        "field",
         "concern_kinds",
+        "concern_evidence",
         "consequence_class",
         "worst_case",
-        "suggested_improvement",
-        "options"
+        "suggested_improvement"
       ],
       "properties": {
         "item_id": {
@@ -177,11 +176,6 @@
           "minLength": 1,
           "description": "spec_id of the row with the finding. Always single-spec; cross-spec contradictions are out of scope for this agent."
         },
-        "field": {
-          "type": "string",
-          "const": "requirement",
-          "description": "Always 'requirement'. Suggestions target the requirement text."
-        },
         "concern_kinds": {
           "type": "array",
           "minItems": 1,
@@ -198,6 +192,12 @@
           },
           "description": "One or more concern kinds from the unified rule family. vague_language: modal verbs or unmeasurable phrases in the requirement text. untestable_outcome: the requirement is clear but produces no system-visible output a tester can inspect. unresolvable_reference: a cross-spec or appendix reference cannot be resolved (target spec missing/vague, or appendix has duplicate/conflicting/missing entries the spec depends on). implementation_leak: the requirement constrains internal implementation choice with no external mandate; should be relocated to design documentation. legitimate_constraint: the requirement constrains internal implementation but is grounded in an external mandate (regulation, security policy, contract); verification is by code review/audit rather than behavioral test."
         },
+        "concern_evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/concern_evidence_entry" },
+          "description": "Per-kind diagnostic payload — one entry per concern_kind flagged on this item. Each entry's 'kind' must match a value in concern_kinds. The 'evidence' field carries the kind-specific diagnostic content: vague_language -> the exact phrase from the requirement that triggered the rule; untestable_outcome -> a one-sentence explanation of why the requirement cannot produce a testable outcome; unresolvable_reference -> the unresolved reference text or the missing/conflicting appendix entry; implementation_leak -> the internal-choice clause and why it has no observable consequence; legitimate_constraint -> the external mandate that grounds the constraint."
+        },
         "consequence_class": {
           "type": "string",
           "enum": [
@@ -213,34 +213,43 @@
           "minLength": 1,
           "description": "One-line concrete description of the worst observable outcome that justifies the consequence_class."
         },
-        "vague_phrases": {
-          "type": "array",
-          "items": { "type": "string", "minLength": 1 },
-          "description": "Optional. Exact phrases or clauses from the requirement that are vague or unmeasurable. Populate when concern_kinds includes vague_language."
-        },
-        "untestable_reason": {
-          "type": "string",
-          "description": "Optional. One-sentence explanation of why the requirement cannot produce a testable outcome. Populate when concern_kinds includes untestable_outcome."
-        },
-        "suggested_test_type": {
-          "type": "string",
-          "enum": ["unit", "integration", "e2e", "manual"],
-          "description": "Optional. Test type the suggested_improvement would enable. Populate when concern_kinds includes untestable_outcome."
-        },
-        "verification_method": {
-          "type": "string",
-          "description": "Optional. Required when concern_kinds includes legitimate_constraint. Names the non-behavioral verification mechanism (e.g. 'configuration audit per security policy', 'code review against encryption-at-rest standard'). Tells the operator how the constraint is verified outside the test suite."
-        },
         "suggested_improvement": {
           "type": "string",
           "minLength": 1,
-          "description": "Complete replacement text for the requirement field. For implementation_leak: rewrite as observable behavior if possible, otherwise propose removal with text like 'REMOVE: relocate to design documentation. Original: <text>'. For legitimate_constraint: typically the original requirement augmented with a verification annotation. For other kinds: rewrite that addresses all listed concern_kinds together."
+          "description": "Complete replacement text for the requirement field. For implementation_leak: rewrite as observable behavior if possible, otherwise propose removal with text like 'REMOVE: relocate to design documentation. Original: <text>'. For legitimate_constraint: typically the original requirement augmented with a verification annotation. For other kinds: rewrite that addresses all listed concern_kinds together. Length fidelity: a multi-claim normative original yields a multi-sentence rewrite — the rewrite is a replacement, not a summary."
+        }
+      }
+    },
+    "concern_evidence_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "evidence"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "vague_language",
+            "untestable_outcome",
+            "unresolvable_reference",
+            "implementation_leak",
+            "legitimate_constraint"
+          ],
+          "description": "Which concern_kind this entry supports. Must appear in the item's concern_kinds[]."
         },
-        "options": {
-          "type": "array",
-          "minItems": 1,
-          "items": { "$ref": "#/$defs/resolution_option" },
-          "description": "Resolution options presented to the user."
+        "evidence": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Kind-specific diagnostic payload. See concern_evidence description on quality_item for what each kind expects."
+        },
+        "test_type_if_fixed": {
+          "type": "string",
+          "enum": ["unit", "integration", "e2e", "manual"],
+          "description": "Optional. Populate when kind is 'untestable_outcome'. Names the test type that would become possible after applying suggested_improvement."
+        },
+        "verification_method": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional. Populate when kind is 'legitimate_constraint'. Names the non-behavioral verification mechanism (e.g. 'configuration audit per security policy', 'code review against encryption-at-rest standard'). Distinct from 'evidence', which names the external mandate; this names how the constraint is verified."
         }
       }
     },
@@ -280,28 +289,6 @@
           "type": "string",
           "minLength": 1,
           "description": "One-line description of what the missing dictionary should contain (e.g. 'A table mapping each error code to its HTTP status, user-facing message, and triggering condition'). Scoped enough that an operator can decide whether to create it."
-        }
-      }
-    },
-    "resolution_option": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["option_id", "label", "effect"],
-      "properties": {
-        "option_id": {
-          "type": "string",
-          "enum": ["accept_suggestion", "let_agent_edit", "skip"],
-          "description": "accept_suggestion: apply suggested_improvement to requirement; let_agent_edit: call spec_editor for a custom rewrite; skip: leave requirement unchanged."
-        },
-        "label": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Human-readable option label."
-        },
-        "effect": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Short description of what choosing this option does."
         }
       }
     }
