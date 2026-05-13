@@ -23,11 +23,17 @@ from core.lifecycle import resolve_agent_runs_root
 
 def register_phases() -> None:
     """Import and register all known phases (side effects on import)."""
-    from api.phases import format_normalize, refine_decomposition_check, refine_quality_audit
+    from api.phases import (
+        format_normalize,
+        implement_unified_planner,
+        refine_decomposition_check,
+        refine_quality_audit,
+    )
 
     format_normalize.register()
     refine_decomposition_check.register()
     refine_quality_audit.register()
+    implement_unified_planner.register()
 
 
 def _agent_runs_roots_for_known_workspaces(store: WorkspaceStore) -> list[Path]:
