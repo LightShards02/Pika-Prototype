@@ -401,8 +401,9 @@ def _run_refine_agents(
         f"quality auditor x{agent_replicas} (1 full + {agent_replicas - 1} triage)",
     )
 
-    def _make_caller(template_vars: dict[str, Any], schema_path: Path):
+    def _make_caller(template_vars: dict[str, Any], schema_path: Path, idx: int, mode: str):
         def _call() -> dict[str, Any]:
+            _report_refine_step(f"Agents.replica.{idx}", "running", f"mode={mode}")
             return invoke_agent_with_schema_retry(
                 prompt_name=auditor_prompt,
                 template_vars=template_vars,
@@ -419,16 +420,20 @@ def _run_refine_agents(
         futures = {}
         for i in range(agent_replicas):
             if i == 0:
-                tvars, sch = auditor_full_vars, auditor_full_schema
+                tvars, sch, mode = auditor_full_vars, auditor_full_schema, "full"
             else:
-                tvars, sch = auditor_triage_vars, auditor_triage_schema
-            futures[executor.submit(_make_caller(tvars, sch))] = i
+                tvars, sch, mode = auditor_triage_vars, auditor_triage_schema, "triage"
+            futures[executor.submit(_make_caller(tvars, sch, i, mode))] = i
 
         for future, idx in futures.items():
             try:
-                auditor_outputs[idx] = future.result()
+                result = future.result()
+                auditor_outputs[idx] = result
+                n_items = len((result or {}).get("manual_resolution_items", []) or [])
+                _report_refine_step(f"Agents.replica.{idx}", "ok", f"{n_items} items")
             except Exception as exc:
                 agent_errors.append(f"auditor[{idx}]: {exc}")
+                _report_refine_step(f"Agents.replica.{idx}", "failed", str(exc))
 
     if agent_errors:
         detail = "; ".join(agent_errors)
