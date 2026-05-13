@@ -8,8 +8,10 @@ from typing import Any
 
 from fastapi import Request
 
+from api.events import PhaseRunEventBus
 from api.phase_registry import PhaseRegistry, get_phase_registry
 from api.phase_runs import PhaseRunRegistry
+from api.workspace_lock import WorkspaceLockManager
 from api.workspaces import WorkspaceStore
 from core.config_loader import load_and_validate_config
 from core.pika_paths import get_config_schema_path
@@ -63,3 +65,11 @@ def get_phase_run_registry(request: Request) -> PhaseRunRegistry:
 
 def get_phase_registry_dep(request: Request) -> PhaseRegistry:
     return request.app.state.phase_registry
+
+
+def get_event_bus(request: Request) -> PhaseRunEventBus:
+    return request.app.state.event_bus
+
+
+def get_workspace_lock_manager(request: Request) -> WorkspaceLockManager:
+    return request.app.state.workspace_lock_manager

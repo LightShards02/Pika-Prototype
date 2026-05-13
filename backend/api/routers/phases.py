@@ -2,20 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, Response, status
 
+from api.adapters.stderr_capture import install_stderr_capture
 from api.deps import (
+    get_event_bus,
     get_phase_registry_dep,
     get_phase_run_registry,
+    get_workspace_lock_manager,
     get_workspace_store,
     load_workspace_config,
 )
 from api.errors import http_error
+from api.events import PhaseRunEventBus
 from api.jobs import generate_phase_run_id, phase_run_dir_for
 from api.phase_registry import (
     PhaseBlocked,
@@ -33,9 +37,11 @@ from api.schemas.phases import (
     PhaseRunCreateRequest,
     PhaseRunResponse,
 )
+from api.workspace_lock import WorkspaceLockManager
 from api.workspaces import WorkspaceStore
 from core.context import RuntimeContext
 from core.logger import init_run_logger
+from core.phase_types import PhaseResult
 from core.time_utils import format_timestamp_local_minutes
 
 router = APIRouter(prefix="/v1/phases", tags=["phases"])
@@ -68,6 +74,7 @@ def _contract_to_model(contract: PhaseContract) -> PhaseContractModel:
         can_block=contract.can_block,
         destructive=contract.destructive,
         description=contract.description,
+        async_execution=contract.async_execution,
     )
 
 
@@ -94,10 +101,6 @@ def get_phase(
 
 
 def _resolve_workspace_relative_path(workspace_root: Path, raw: str) -> Path:
-    """Resolve a workspace-relative or absolute path under the workspace root.
-
-    Rejects paths that escape the workspace root.
-    """
     candidate = Path(raw)
     if not candidate.is_absolute():
         candidate = (workspace_root / candidate).resolve()
@@ -118,7 +121,6 @@ def _resolve_inputs(
     workspace_root: Path,
     raw_inputs: dict[str, Any],
 ) -> tuple[dict[str, Any], list[str]]:
-    """Validate inputs against contract, resolve paths. Returns (resolved, errors)."""
     resolved: dict[str, Any] = {}
     errors: list[str] = []
     for spec in contract.inputs:
@@ -165,17 +167,234 @@ def _write_run_meta(meta_path: Path, payload: dict[str, Any]) -> None:
     meta_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def _events_url(phase_run_id: str) -> str:
+    return f"/v1/phase-runs/{phase_run_id}/events"
+
+
+def _build_terminal_meta(
+    *,
+    phase_name: str,
+    phase_run_id: str,
+    workspace_id: str,
+    chain_id: str | None,
+    started_at: str,
+    inputs_record: dict[str, Any],
+    result: PhaseResult,
+) -> dict[str, Any]:
+    """Translate a `PhaseResult` into the canonical terminal run_meta payload."""
+    ended_at = format_timestamp_local_minutes()
+    if isinstance(result, PhaseCompleted):
+        return {
+            "phase": phase_name,
+            "phase_run_id": phase_run_id,
+            "workspace_id": workspace_id,
+            "chain_id": chain_id,
+            "status": PhaseRunState.completed.value,
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "blocked_at": None,
+            "inputs": inputs_record,
+            "artifacts_index": result.artifacts_index,
+            "summary": result.summary,
+            "error": None,
+        }
+    if isinstance(result, PhaseBlocked):
+        return {
+            "phase": phase_name,
+            "phase_run_id": phase_run_id,
+            "workspace_id": workspace_id,
+            "chain_id": chain_id,
+            "status": PhaseRunState.blocked.value,
+            "started_at": started_at,
+            "ended_at": None,
+            "blocked_at": ended_at,
+            "inputs": inputs_record,
+            "artifacts_index": {},
+            "summary": {
+                "manual_dir": str(result.manual_dir),
+                "item_count": result.item_count,
+                "blocking_reason": result.blocking_reason,
+            },
+            "error": None,
+        }
+    failure: PhaseFailed = result
+    return {
+        "phase": phase_name,
+        "phase_run_id": phase_run_id,
+        "workspace_id": workspace_id,
+        "chain_id": chain_id,
+        "status": PhaseRunState.failed.value,
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "blocked_at": None,
+        "inputs": inputs_record,
+        "artifacts_index": failure.recoverable_artifacts,
+        "summary": {},
+        "error": {"code": failure.error_code, "message": failure.message},
+    }
+
+
+def _persist_terminal_result(
+    *,
+    phase_run_dir: Path,
+    run_registry: PhaseRunRegistry,
+    meta: dict[str, Any],
+) -> None:
+    _write_run_meta(phase_run_dir / "run_meta.json", meta)
+    run_registry.put(meta)
+
+
+def _persist_runner_exception(
+    *,
+    phase_name: str,
+    phase_run_id: str,
+    workspace_id: str,
+    chain_id: str | None,
+    started_at: str,
+    inputs_record: dict[str, Any],
+    phase_run_dir: Path,
+    run_registry: PhaseRunRegistry,
+    exc: BaseException,
+) -> dict[str, Any]:
+    meta = {
+        "phase": phase_name,
+        "phase_run_id": phase_run_id,
+        "workspace_id": workspace_id,
+        "chain_id": chain_id,
+        "status": PhaseRunState.failed.value,
+        "started_at": started_at,
+        "ended_at": format_timestamp_local_minutes(),
+        "blocked_at": None,
+        "inputs": inputs_record,
+        "artifacts_index": {},
+        "summary": {},
+        "error": {"code": "runner_exception", "message": str(exc)},
+    }
+    _persist_terminal_result(phase_run_dir=phase_run_dir, run_registry=run_registry, meta=meta)
+    return meta
+
+
+def _response_from_meta(meta: dict[str, Any], events_url: str | None) -> PhaseRunResponse:
+    return PhaseRunResponse(
+        phase_run_id=meta["phase_run_id"],
+        phase=meta["phase"],
+        workspace_id=meta["workspace_id"],
+        chain_id=meta.get("chain_id"),
+        status=PhaseRunState(meta["status"]),
+        started_at=meta["started_at"],
+        ended_at=meta.get("ended_at"),
+        blocked_at=meta.get("blocked_at"),
+        inputs=meta.get("inputs") or {},
+        artifacts_index=meta.get("artifacts_index") or {},
+        summary=meta.get("summary") or {},
+        error=meta.get("error"),
+        events_url=events_url,
+    )
+
+
+def _terminal_event_name(meta: dict[str, Any]) -> str:
+    return meta["status"]
+
+
+async def _run_async_phase(
+    *,
+    runner: Any,
+    contract: PhaseContract,
+    config: dict[str, Any],
+    ctx: RuntimeContext,
+    phase_run_dir: Path,
+    resolved_inputs: dict[str, Any],
+    workspace_id: str,
+    chain_id: str | None,
+    started_at: str,
+    inputs_record: dict[str, Any],
+    run_registry: PhaseRunRegistry,
+    event_bus: PhaseRunEventBus,
+    lock_manager: WorkspaceLockManager,
+    phase_run_id: str,
+) -> None:
+    """Background coroutine: hold workspace lock, capture stderr, run phase, persist terminal."""
+    from api.routers.phase_runs import _terminal_event_payload as _tep
+    lock = lock_manager.get(workspace_id)
+    async with lock:
+        if run_registry.is_cancelled(phase_run_id):
+            meta = {
+                "phase": contract.name,
+                "phase_run_id": phase_run_id,
+                "workspace_id": workspace_id,
+                "chain_id": chain_id,
+                "status": PhaseRunState.failed.value,
+                "started_at": started_at,
+                "ended_at": format_timestamp_local_minutes(),
+                "blocked_at": None,
+                "inputs": inputs_record,
+                "artifacts_index": {},
+                "summary": {},
+                "error": {"code": "cancelled", "message": "phase run cancelled"},
+            }
+            _persist_terminal_result(phase_run_dir=phase_run_dir, run_registry=run_registry, meta=meta)
+            event_bus.publish(phase_run_id, {"event": "cancelled", "data": {"phase_run_id": phase_run_id}})
+            event_bus.close(phase_run_id)
+            run_registry.clear_future(phase_run_id)
+            return
+
+        def _invoke() -> PhaseResult:
+            with install_stderr_capture(phase_run_id, event_bus):
+                return runner(config, ctx, phase_run_dir, resolved_inputs)
+
+        try:
+            result = await asyncio.to_thread(_invoke)
+        except BaseException as exc:
+            meta = _persist_runner_exception(
+                phase_name=contract.name,
+                phase_run_id=phase_run_id,
+                workspace_id=workspace_id,
+                chain_id=chain_id,
+                started_at=started_at,
+                inputs_record=inputs_record,
+                phase_run_dir=phase_run_dir,
+                run_registry=run_registry,
+                exc=exc,
+            )
+            event_bus.publish(phase_run_id, {"event": "failed", "data": _tep(meta, phase_run_id)})
+            event_bus.close(phase_run_id)
+            run_registry.clear_future(phase_run_id)
+            return
+        finally:
+            pass
+
+        meta = _build_terminal_meta(
+            phase_name=contract.name,
+            phase_run_id=phase_run_id,
+            workspace_id=workspace_id,
+            chain_id=chain_id,
+            started_at=started_at,
+            inputs_record=inputs_record,
+            result=result,
+        )
+        _persist_terminal_result(phase_run_dir=phase_run_dir, run_registry=run_registry, meta=meta)
+        event_bus.publish(
+            phase_run_id,
+            {"event": _terminal_event_name(meta), "data": _tep(meta, phase_run_id)},
+        )
+        event_bus.close(phase_run_id)
+        run_registry.clear_future(phase_run_id)
+
+
 @router.post(
     "/{phase_name}/runs",
     response_model=PhaseRunResponse,
-    status_code=status.HTTP_200_OK,
 )
-def create_phase_run(
+async def create_phase_run(
     phase_name: str,
     payload: PhaseRunCreateRequest,
+    response: Response,
+    request: Request,
     registry: PhaseRegistry = Depends(get_phase_registry_dep),
     run_registry: PhaseRunRegistry = Depends(get_phase_run_registry),
     workspace_store: WorkspaceStore = Depends(get_workspace_store),
+    event_bus: PhaseRunEventBus = Depends(get_event_bus),
+    lock_manager: WorkspaceLockManager = Depends(get_workspace_lock_manager),
 ) -> PhaseRunResponse:
     entry = registry.get(phase_name)
     if entry is None:
@@ -257,86 +476,72 @@ def create_phase_run(
     _write_run_meta(phase_run_dir / "run_meta.json", running_meta)
     run_registry.put(running_meta)
 
+    if contract.async_execution:
+        event_bus.create(phase_run_id)
+        task = asyncio.create_task(_run_async_phase(
+            runner=runner,
+            contract=contract,
+            config=config,
+            ctx=ctx,
+            phase_run_dir=phase_run_dir,
+            resolved_inputs=resolved_inputs,
+            workspace_id=payload.workspace_id,
+            chain_id=payload.chain_id,
+            started_at=started_at,
+            inputs_record=inputs_record,
+            run_registry=run_registry,
+            event_bus=event_bus,
+            lock_manager=lock_manager,
+            phase_run_id=phase_run_id,
+        ))
+        run_registry.set_future(phase_run_id, task)
+        response.status_code = status.HTTP_202_ACCEPTED
+        return PhaseRunResponse(
+            phase_run_id=phase_run_id,
+            phase=phase_name,
+            workspace_id=payload.workspace_id,
+            chain_id=payload.chain_id,
+            status=PhaseRunState.running,
+            started_at=started_at,
+            ended_at=None,
+            blocked_at=None,
+            inputs=inputs_record,
+            artifacts_index={},
+            summary={},
+            error=None,
+            events_url=_events_url(phase_run_id),
+        )
+
     try:
         result = runner(config, ctx, phase_run_dir, resolved_inputs)
     except Exception as exc:  # noqa: BLE001
-        ended_at = format_timestamp_local_minutes()
-        meta = {
-            "phase": phase_name,
-            "phase_run_id": phase_run_id,
-            "workspace_id": payload.workspace_id,
-            "chain_id": payload.chain_id,
-            "status": PhaseRunState.failed.value,
-            "started_at": started_at,
-            "ended_at": ended_at,
-            "blocked_at": None,
-            "inputs": inputs_record,
-            "artifacts_index": {},
-            "summary": {},
-            "error": {"code": "runner_exception", "message": str(exc)},
-        }
-        _write_run_meta(phase_run_dir / "run_meta.json", meta)
-        run_registry.put(meta)
+        _persist_runner_exception(
+            phase_name=phase_name,
+            phase_run_id=phase_run_id,
+            workspace_id=payload.workspace_id,
+            chain_id=payload.chain_id,
+            started_at=started_at,
+            inputs_record=inputs_record,
+            phase_run_dir=phase_run_dir,
+            run_registry=run_registry,
+            exc=exc,
+        )
         raise http_error(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
             "runner_exception",
             str(exc),
         ) from exc
 
-    ended_at = format_timestamp_local_minutes()
-    if isinstance(result, PhaseCompleted):
-        meta = {
-            "phase": phase_name,
-            "phase_run_id": phase_run_id,
-            "workspace_id": payload.workspace_id,
-            "chain_id": payload.chain_id,
-            "status": PhaseRunState.completed.value,
-            "started_at": started_at,
-            "ended_at": ended_at,
-            "blocked_at": None,
-            "inputs": inputs_record,
-            "artifacts_index": result.artifacts_index,
-            "summary": result.summary,
-            "error": None,
-        }
-    elif isinstance(result, PhaseBlocked):
-        meta = {
-            "phase": phase_name,
-            "phase_run_id": phase_run_id,
-            "workspace_id": payload.workspace_id,
-            "chain_id": payload.chain_id,
-            "status": PhaseRunState.blocked.value,
-            "started_at": started_at,
-            "ended_at": None,
-            "blocked_at": ended_at,
-            "inputs": inputs_record,
-            "artifacts_index": {},
-            "summary": {
-                "manual_dir": str(result.manual_dir),
-                "item_count": result.item_count,
-                "blocking_reason": result.blocking_reason,
-            },
-            "error": None,
-        }
-    else:
-        failure: PhaseFailed = result
-        meta = {
-            "phase": phase_name,
-            "phase_run_id": phase_run_id,
-            "workspace_id": payload.workspace_id,
-            "chain_id": payload.chain_id,
-            "status": PhaseRunState.failed.value,
-            "started_at": started_at,
-            "ended_at": ended_at,
-            "blocked_at": None,
-            "inputs": inputs_record,
-            "artifacts_index": failure.recoverable_artifacts,
-            "summary": {},
-            "error": {"code": failure.error_code, "message": failure.message},
-        }
-
-    _write_run_meta(phase_run_dir / "run_meta.json", meta)
-    run_registry.put(meta)
+    meta = _build_terminal_meta(
+        phase_name=phase_name,
+        phase_run_id=phase_run_id,
+        workspace_id=payload.workspace_id,
+        chain_id=payload.chain_id,
+        started_at=started_at,
+        inputs_record=inputs_record,
+        result=result,
+    )
+    _persist_terminal_result(phase_run_dir=phase_run_dir, run_registry=run_registry, meta=meta)
 
     if isinstance(result, PhaseFailed):
         raise http_error(
@@ -346,17 +551,4 @@ def create_phase_run(
             details={"phase_run_id": phase_run_id},
         )
 
-    return PhaseRunResponse(
-        phase_run_id=phase_run_id,
-        phase=phase_name,
-        workspace_id=payload.workspace_id,
-        chain_id=payload.chain_id,
-        status=PhaseRunState(meta["status"]),
-        started_at=started_at,
-        ended_at=meta.get("ended_at"),
-        blocked_at=meta.get("blocked_at"),
-        inputs=inputs_record,
-        artifacts_index=meta.get("artifacts_index") or {},
-        summary=meta.get("summary") or {},
-        error=meta.get("error"),
-    )
+    return _response_from_meta(meta, None)

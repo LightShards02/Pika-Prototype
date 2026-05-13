@@ -33,6 +33,7 @@ class PhaseContractModel(BaseModel):
     can_block: bool = False
     destructive: bool = False
     description: str = ""
+    async_execution: bool = False
 
 
 class PhaseRunCreateRequest(BaseModel):
@@ -54,3 +55,4 @@ class PhaseRunResponse(BaseModel):
     artifacts_index: dict[str, str] = Field(default_factory=dict)
     summary: dict[str, Any] = Field(default_factory=dict)
     error: dict[str, Any] | None = None
+    events_url: str | None = None

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 from pathlib import Path
@@ -14,9 +15,10 @@ class PhaseRunRegistry:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._records: dict[str, dict[str, Any]] = {}
+        self._futures: dict[str, asyncio.Future[Any]] = {}
+        self._cancelled: set[str] = set()
 
     def reflect_from_disk(self, agent_runs_roots: Iterable[Path]) -> int:
-        """Scan each <agent_runs_root>/<phase>/<run_id>/run_meta.json and load it."""
         loaded = 0
         with self._lock:
             for root in agent_runs_roots:
@@ -55,3 +57,27 @@ class PhaseRunRegistry:
 
     def list(self) -> list[dict[str, Any]]:
         return list(self._records.values())
+
+    def set_future(self, phase_run_id: str, future: asyncio.Future[Any]) -> None:
+        with self._lock:
+            self._futures[phase_run_id] = future
+
+    def clear_future(self, phase_run_id: str) -> None:
+        with self._lock:
+            self._futures.pop(phase_run_id, None)
+
+    def get_future(self, phase_run_id: str) -> asyncio.Future[Any] | None:
+        with self._lock:
+            return self._futures.get(phase_run_id)
+
+    def mark_cancelled(self, phase_run_id: str) -> None:
+        with self._lock:
+            self._cancelled.add(phase_run_id)
+
+    def is_cancelled(self, phase_run_id: str) -> bool:
+        with self._lock:
+            return phase_run_id in self._cancelled
+
+    def clear_cancelled(self, phase_run_id: str) -> None:
+        with self._lock:
+            self._cancelled.discard(phase_run_id)

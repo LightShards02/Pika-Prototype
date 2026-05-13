@@ -56,6 +56,7 @@ DECOMPOSITION_CHECK = PhaseContract(
         "Detect structural issues in specs (split/merge candidates) via NLP "
         "sentence-embedding analysis. Blocks on items requiring user clarification."
     ),
+    async_execution=True,
 )
 
 

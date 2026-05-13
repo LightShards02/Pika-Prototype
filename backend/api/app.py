@@ -10,20 +10,24 @@ from fastapi.responses import JSONResponse
 
 from api.deps import api_state_dir, load_workspace_config, repo_root, workspace_registry_path
 from api.errors import error_body
+from api.events import PhaseRunEventBus
 from api.phase_registry import get_phase_registry
 from api.phase_runs import PhaseRunRegistry
 from api.routers import phase_runs as phase_runs_router
 from api.routers import phases as phases_router
 from api.routers import workspaces as workspaces_router
+from api.workspace_lock import WorkspaceLockManager
 from api.workspaces import WorkspaceStore
 from core.lifecycle import resolve_agent_runs_root
 
 
 def register_phases() -> None:
     """Import and register all known phases (side effects on import)."""
-    from api.phases import format_normalize
+    from api.phases import format_normalize, refine_decomposition_check, refine_quality_audit
 
     format_normalize.register()
+    refine_decomposition_check.register()
+    refine_quality_audit.register()
 
 
 def _agent_runs_roots_for_known_workspaces(store: WorkspaceStore) -> list[Path]:
@@ -71,6 +75,8 @@ def create_app() -> FastAPI:
     app.state.workspace_store = workspace_store
     app.state.phase_run_registry = phase_run_registry
     app.state.phase_registry = get_phase_registry()
+    app.state.event_bus = PhaseRunEventBus()
+    app.state.workspace_lock_manager = WorkspaceLockManager()
 
     app.include_router(workspaces_router.router)
     app.include_router(phases_router.router)
