@@ -1,0 +1,6 @@
+title,requirement
+Login,Users can log in with email and password.
+Logout,Users can log out from any page.
+Reset password,Users can reset password via email link.
+Profile edit,Users can edit profile details.
+Account delete,Users can delete their account.

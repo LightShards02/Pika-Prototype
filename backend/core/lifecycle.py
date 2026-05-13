@@ -491,6 +491,36 @@ def resolve_agent_runs_dir_for_command(
     return path.resolve()
 
 
+def resolve_phase_run_dir(
+    config: dict[str, Any],
+    project_root: Path,
+    phase_name: str,
+    phase_run_id: str | None = None,
+) -> Path:
+    """Resolve phase-run path: <agent_runs_root>/{phase_name}/{phase_run_id}/.
+
+    Phase names may contain dots, e.g. ``format.normalize``. Returns
+    base/phase_name when ``phase_run_id`` is None, else base/phase_name/phase_run_id.
+    """
+    base = _agent_runs_base(config, project_root, command=None)
+    path = base / phase_name
+    if phase_run_id:
+        path = path / phase_run_id
+    return path.resolve()
+
+
+def resolve_agent_runs_root(config: dict[str, Any], project_root: Path) -> Path:
+    """Return the workspace-level base directory under which phase-run dirs live.
+
+    Used by the REST API's startup reflection to discover persisted phase-runs
+    across restarts. Falls back to ``<project_root>/out/agent_runs`` when no
+    override is in effect. Per-command overrides (used by CLI mode) are
+    intentionally NOT consulted here — the REST API places phase-run dirs at
+    the workspace-level base, independent of the phase's command.
+    """
+    return _agent_runs_base(config, project_root, command=None)
+
+
 def find_most_recent_blocked_run_id_across_commands(
     config: dict[str, Any],
     project_root: Path,

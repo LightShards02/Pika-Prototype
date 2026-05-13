@@ -1,0 +1,64 @@
+version: 1
+
+project:
+  name: ws1
+  root_dir: .
+  state:
+    design_spec_path: out/state/DESIGN-SPEC.csv
+    id_registry_path: out/state/id_registry.json
+    sads_id_mapping_path: out/state/sads_id_mapping.json
+
+default_outputs:
+  log_dir: out/logs
+
+agent:
+  provider: stub
+
+commands:
+  format:
+    enabled: true
+    deterministic: true
+    copy_before_write: true
+    inputs:
+      design_spec_path: specs/raw_sads.csv
+    outputs:
+      design_spec_path:
+        path: out/state/DESIGN-SPEC.csv
+        no_overwrite: false
+      backups_dir:
+        path: out/backups
+        no_overwrite: false
+  map:
+    enabled: false
+  implement:
+    enabled: false
+  resolve_plan:
+    enabled: false
+  refine:
+    enabled: false
+    decomposition:
+      enabled: false
+      blocking: false
+      similarity_threshold: 0.9
+      variance_threshold: 0.1
+    inputs:
+      design_spec_path: out/state/DESIGN-SPEC.csv
+      project_context_filename: PROJECT_CONTEXT.md
+    outputs:
+      root_dir:
+        path: out/refine
+        no_overwrite: false
+      design_spec_path:
+        path: out/state/DESIGN-SPEC.csv
+        no_overwrite: false
+      agent_runs_dir:
+        path: out/agent_runs
+        no_overwrite: false
+
+id_generation:
+  id_registry: out/state/id_registry.json
+
+logging:
+  level: INFO
+  verbose_level: DEBUG
+  json: false
