@@ -493,6 +493,14 @@ def _apply_structural_edits(
     return result
 
 
+# Public alias for use by phase modules (handlers/refine/phases/*) that need to
+# apply structural edits deterministically without depending on resolve.py internals.
+apply_structural_edits = _apply_structural_edits
+
+
+__all__ = ["apply_structural_edits"]
+
+
 def _apply_compound_resolution(
     item: dict[str, Any],
     rows: list[dict[str, Any]],
