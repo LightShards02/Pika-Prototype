@@ -493,12 +493,13 @@ def _apply_structural_edits(
     return result
 
 
-# Public alias for use by phase modules (handlers/refine/phases/*) that need to
-# apply structural edits deterministically without depending on resolve.py internals.
+# Public aliases for callers outside this module (phase functions, REST adapters)
+# that need the canonical resolve-machinery helpers without depending on private symbols.
 apply_structural_edits = _apply_structural_edits
+invoke_spec_editor = _invoke_spec_editor
 
 
-__all__ = ["apply_structural_edits"]
+__all__ = ["apply_structural_edits", "invoke_spec_editor"]
 
 
 def _apply_compound_resolution(

@@ -42,6 +42,7 @@ class PhaseContract:
     can_block: bool = False
     destructive: bool = False
     description: str = ""
+    async_execution: bool = False
 
 
 @dataclass(frozen=True)

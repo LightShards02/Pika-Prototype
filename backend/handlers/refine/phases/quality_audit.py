@@ -69,6 +69,7 @@ QUALITY_AUDIT = PhaseContract(
         "Run spec_quality_auditor agent in N parallel replicas (1 full + N-1 triage), "
         "consensus-filter manual-resolution items, apply enrichments, and gate."
     ),
+    async_execution=True,
 )
 
 
