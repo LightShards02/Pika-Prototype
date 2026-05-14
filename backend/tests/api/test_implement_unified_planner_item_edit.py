@@ -66,3 +66,36 @@ def test_edit_returns_404_for_out_of_range_index_on_planner(client, ws1_dir: Pat
     )
     assert resp.status_code == 404
     assert resp.json()["detail"]["code"] == "item_index_out_of_range"
+
+
+def test_edit_passes_memory_to_spec_editor(client, ws1_dir: Path, monkeypatch) -> None:
+    """When workspace memory contains lessons, /edit invokes spec_editor with
+    rendered {memory} in template_vars (via the agent invoker downstream)."""
+    captured: dict[str, object] = {}
+
+    def fake_invoke(item, config, ctx, phase_run_dir, *, user_guide):
+        captured["memory_context"] = ctx.memory_context
+        return {"edit_type": "field", "field": "requirement", "new_text": "ok"}
+
+    import handlers.resolve as resolve_mod
+    monkeypatch.setattr(resolve_mod, "invoke_spec_editor", fake_invoke)
+    monkeypatch.setattr(resolve_mod, "_invoke_spec_editor", fake_invoke)
+
+    phase_run_id, items = _start_blocked_planner_run(client, ws1_dir, monkeypatch)
+    assert len(items) >= 1
+
+    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    client.put(
+        f"/v1/workspaces/{ws['id']}/memory/lessons",
+        content="# Lessons\n\n- never use mocks in integration tests\n",
+        headers={"Content-Type": "text/plain"},
+    )
+
+    resp = client.post(
+        f"/v1/phase-runs/{phase_run_id}/resolutions/items/0/edit",
+        json={"user_guide": "tighten"},
+    )
+    assert resp.status_code == 200, resp.text
+    memory_ctx = captured.get("memory_context")
+    assert isinstance(memory_ctx, dict), f"expected dict, got {memory_ctx!r}"
+    assert "never use mocks" in memory_ctx.get("lessons", "")

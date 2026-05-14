@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace as _dc_replace
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,7 @@ from api.schemas.common import PhaseRunState
 from api.schemas.phases import PhaseRunResponse
 from api.workspace_lock import WorkspaceLockManager
 from api.workspaces import WorkspaceStore
+from core import memory_store
 from core.context import RuntimeContext
 from core.resolution import load_resolution_file, validate_resolutions
 from core.time_utils import format_timestamp_local_minutes
@@ -357,6 +359,10 @@ async def _run_resume_phase(
 
     lock = lock_manager.get(meta["workspace_id"])
     async with lock:
+        ctx = _dc_replace(
+            ctx, memory_context=memory_store.read_all(workspace_root)
+        )
+
         def _invoke() -> Any:
             with install_stderr_capture(phase_run_id, event_bus):
                 return runner(config, ctx, phase_run_dir, resolved_inputs)
@@ -540,6 +546,7 @@ def post_item_edit(
         workspace_root=workspace_root,
         inputs=meta.get("inputs") or {},
     )
+    ctx = _dc_replace(ctx, memory_context=memory_store.read_all(workspace_root))
     from handlers.resolve import invoke_spec_editor
     editor_output = invoke_spec_editor(item, config, ctx, phase_run_dir, user_guide=payload.user_guide)
     if editor_output is None:

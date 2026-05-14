@@ -55,11 +55,13 @@ def run_review(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
     schema_path = resolve_output_schema_path(
         config, project_root, "review_output", command="review"
     )
+    from core import memory_store as _memory_store
     output = invoke_agent_with_schema_retry(
         prompt_name=_get_prompt_name(config),
         template_vars={
             "srs_content": inputs["srs_content"],
             "draft_sads_content": inputs["draft_sads_content"],
+            "memory": _memory_store.memory_template_value(ctx),
         },
         schema_path=schema_path,
         config=config,

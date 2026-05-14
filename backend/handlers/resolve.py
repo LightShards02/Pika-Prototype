@@ -417,6 +417,7 @@ def _invoke_spec_editor(
     from core.pika_config import get_prompt_name as _get_pn
     prompt_name = _get_pn("refine", "spec_editor")
 
+    from core import memory_store as _memory_store
     template_vars: dict[str, Any] = {
         "output_schema_file": str(schema_path),
         "project_context": context_text,
@@ -428,6 +429,7 @@ def _invoke_spec_editor(
         "issue_description": issue_description,
         "suggested_improvement": suggested_improvement,
         "full_spec_csv": full_spec_csv,
+        "memory": _memory_store.memory_template_value(ctx),
     }
 
     try:

@@ -120,6 +120,7 @@ def _build_template_vars(
     project_context_content = resolve_project_context_content(
         config, project_root, ctx, codebase_dir_path
     )
+    from core import memory_store as _memory_store
     return {
         "output_schema_file": schema_file,
         "srs_content": inputs.get("srs_content", ""),
@@ -129,6 +130,7 @@ def _build_template_vars(
         "run_summary_file": str(run_summary_path),
         "agent_artifacts_dir": str(artifacts_path),
         "resolved_decisions": ctx.resolved_decisions or "",
+        "memory": _memory_store.memory_template_value(ctx),
     }
 
 

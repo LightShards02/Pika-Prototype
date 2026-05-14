@@ -25,3 +25,4 @@ class RuntimeContext:
     resume_run_id: str | None = None  # When set, use this run_id and load resolutions
     resolved_decisions: str | None = None  # Injected into agent prompts on resume
     phase_only: str | None = None  # "load_validate_only" | "decomposition_only" | "agents_only"
+    memory_context: dict[str, str] | None = None

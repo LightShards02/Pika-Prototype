@@ -54,6 +54,7 @@ def run_resolve_plan(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, A
     schema_path = resolve_output_schema_path(
         config, project_root, "resolve_plan_map_output", command="resolve_plan"
     )
+    from core import memory_store as _memory_store
     output = invoke_agent_with_schema_retry(
         prompt_name=_get_map_prompt_name(config),
         template_vars={
@@ -68,6 +69,7 @@ def run_resolve_plan(config: dict[str, Any], ctx: RuntimeContext) -> dict[str, A
                 resolve_run_summary_path_for_command(config, project_root, "resolve_plan")
             ),
             "resolved_decisions": ctx.resolved_decisions or "",
+            "memory": _memory_store.memory_template_value(ctx),
         },
         schema_path=schema_path,
         config=config,

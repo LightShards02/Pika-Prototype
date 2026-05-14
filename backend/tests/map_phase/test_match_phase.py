@@ -426,3 +426,42 @@ def test_phase_replays_from_subunits_only(
     assert (new_subunits / "profile.json").exists()
     assert result.summary["cache_replay"] is True
     assert result.summary["source_phase_run_id"] == prior_run_id
+
+
+def test_memory_context_renders_into_template_vars(
+    workspace_root: Path, design_csv: Path, codebase_dir: Path,
+) -> None:
+    _, run = _import_phase()
+    from core.phase_types import PhaseCompleted
+
+    phase_run_dir = workspace_root / "out" / "agent_runs" / "map.match" / "mp-mem"
+    config = make_config(workspace_root)
+    ctx = make_ctx(workspace_root, run_id="mp-mem")
+    from dataclasses import replace as _dc_replace
+    ctx = _dc_replace(ctx, memory_context={
+        "memory": "", "lessons": "lesson-z", "tasks": "", "gaps": ""
+    })
+
+    captured: dict[str, Any] = {}
+
+    def fake_invoke(**kwargs: Any) -> dict[str, Any]:
+        tv = kwargs.get("template_vars") or {}
+        captured.setdefault("template_vars", tv)
+        csv = tv.get("design_spec_rows_csv", "")
+        if "B1" in csv:
+            return clean_subunit_output(["B1"])
+        return clean_subunit_output(["A1", "A2"])
+
+    with patch(
+        "handlers.map_phases.match.invoke_agent_with_schema_retry",
+        side_effect=fake_invoke,
+    ):
+        result = run(
+            config, ctx, phase_run_dir,
+            {"design_spec_path": design_csv, "codebase_dir": codebase_dir},
+        )
+
+    assert isinstance(result, PhaseCompleted)
+    rendered = captured["template_vars"].get("memory", "")
+    assert "## Lessons" in rendered
+    assert "lesson-z" in rendered

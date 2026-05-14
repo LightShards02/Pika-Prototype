@@ -196,6 +196,7 @@ def run_code_evaluator(
 
     applied_diffs_summary = build_applied_diffs_summary(spec_outputs)
 
+    from core import memory_store as _memory_store
     template_vars: dict[str, Any] = {
         "output_schema_file": str(schema_path),
         "project_context": appendix_content if appendix_content else "",
@@ -208,6 +209,7 @@ def run_code_evaluator(
         "run_summary_file": str(paths["run"] / "summary.json"),
         "agent_artifacts_dir": str(artifacts_dir),
         "control_vocab_section": "",
+        "memory": _memory_store.memory_template_value(ctx),
     }
 
     log_lifecycle_event(

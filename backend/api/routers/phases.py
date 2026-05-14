@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace as _dc_replace
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,7 @@ from api.schemas.phases import (
 )
 from api.workspace_lock import WorkspaceLockManager
 from api.workspaces import WorkspaceStore
+from core import memory_store
 from core.context import RuntimeContext
 from core.logger import init_run_logger
 from core.phase_types import PhaseResult
@@ -317,6 +319,9 @@ async def _run_async_phase(
     from api.routers.phase_runs import _terminal_event_payload as _tep
     lock = lock_manager.get(workspace_id)
     async with lock:
+        ctx = _dc_replace(
+            ctx, memory_context=memory_store.read_all(Path(ctx.project_root))
+        )
         if run_registry.is_cancelled(phase_run_id):
             meta = {
                 "phase": contract.name,
@@ -512,6 +517,9 @@ async def create_phase_run(
             events_url=_events_url(phase_run_id),
         )
 
+    ctx = _dc_replace(
+        ctx, memory_context=memory_store.read_all(workspace_root)
+    )
     try:
         result = runner(config, ctx, phase_run_dir, resolved_inputs)
     except Exception as exc:  # noqa: BLE001

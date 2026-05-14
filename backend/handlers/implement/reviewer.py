@@ -744,6 +744,7 @@ def run_reviewer_for_batch(
             )
         ]
         authored_for_spec = list(authored_test_cases_by_spec.get(spec_id, []))
+        from core import memory_store as _memory_store
         template_vars: dict[str, Any] = {
             "output_schema_file": str(schema_path),
             "applied_diffs_summary_for_spec_json": diffs_payload,
@@ -753,6 +754,7 @@ def run_reviewer_for_batch(
             "selected_specs_csv": selected_specs_csv,
             "iteration_index": str(iteration_index),
             "prior_amendment_packets_for_spec_json": json.dumps(prior_for_spec, indent=2),
+            "memory": _memory_store.memory_template_value(ctx),
             **per_spec_inputs,
         }
         raw_output = invoke_agent_with_schema_retry(

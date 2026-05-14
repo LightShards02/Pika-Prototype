@@ -1730,6 +1730,8 @@ def _execute_batch(
             prior_authored_tests_by_spec or {}, indent=2
         )
     template_vars["resolved_decisions"] = getattr(ctx, "resolved_decisions", None) or ""
+    from core import memory_store as _memory_store
+    template_vars["memory"] = _memory_store.memory_template_value(ctx)
 
     def _prepare_semantic_attempt(attempt: int, render_vars: dict[str, Any]) -> None:
         if attempt <= 1:
