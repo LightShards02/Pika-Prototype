@@ -41,3 +41,25 @@ Current session — Refine consolidation + Nairb-derived improvements (#1, #4 sc
 - [ ] M4: Grep for `spec_change_merger` callers; if only the compound-options flow uses it, delete the agent + prompt + config key. Update `core/resolution.py` resolution-template generator to surface `consequence_class` and `worst_case` inline.
 - [ ] M5: Update `tests/test_refine_handler.py` config asserts. Add tests: `implementation_leak` suggests removal not rewrite; `legitimate_constraint` populates `verification_method`; `consequence_class` propagates to `agent_review.json`; resume on legacy schema raises ResumeError. Update `docs/refine-checks-execution-order.md` and `AGENTS.md`.
 - [ ] Smoke: run an end-to-end `pika refine` against a real workspace before declaring the consolidation done (model-invocation lesson).
+
+---
+
+Current session — REST API migration (phase-as-independent-run):
+- [x] M1: REST API skeleton + phase catalog + `format.normalize` end-to-end. Merged in `287e009`.
+- [x] M2a: extract refine phase functions. Merged in `4e6d984`.
+- [x] M2b: REST surface for refine phases (SSE + manual-block + lock + cancel). Merged in `f9baf2a`.
+- [x] M3: `implement.unified-planner` REST phase. Merged in `65bccd5`.
+- [x] M4: `map.match` REST phase + central path-traversal hardening across M2a/M3/M4 cache-replay paths. Merged in `3c95f74` (merge `a9bc092`). 11 handler tests + 9 API tests including live SSE progress assertion. 5 review rounds — each found a real Tier-1 (traversal, exception wrap, subunits-only post-merge equivalence, SSE coverage).
+- [skip] M5: login OAuth — skipped per user direction.
+- [x] M6: workspace memory layer (4-file: memory.md, lessons.md, tasks.md, gaps.md). Merged in `31f22f2` (merge `3990c81`). 15 memory_store + 9 workspace_memory API + 6 state_read API + 3 phase injection + 1 /edit memory injection = 34 new tests, plus 14 prompts wired with `{{memory}}` placeholder. Per-workspace lock on PUT writes. Bootstrap on POST /v1/workspaces (idempotent). `/state/{path}` with traversal/directory/missing/file distinctions. 4 review rounds; final 2 caught real bugs (lock + content-type + directory target), pushed back on Codex's "out of scope" cross-handler injection (Codex accepted in r3/r4 as justified). Codex reviewer infrastructure under `backend/scripts/codex_review/` now tracked in main (committed `d6e8cab`).
+
+Polish-pass follow-ups deferred (Codex non-blockings):
+- [ ] `backend/api/phase_runs.py` registry reads use no lock while writes are locked.
+- [ ] `RuntimeContext.config_path` hardcoded to `<workspace>/config.yaml`.
+- [ ] `_load_stage_file` mtime heuristic → deterministic filename priority.
+- [ ] `progress_dropped` dedicated SSE event type.
+- [ ] `_step_enabled` / `_step_value` local duplication in M3 phase module.
+- [ ] Trim verbose docstring in `handlers/implement/planner/__init__.py`.
+- [ ] Promote `_get_map_config` / `_get_prompt_name` to public aliases in `handlers/map.py` (same pattern as M2a's `apply_structural_edits` and M2b's `invoke_spec_editor`).
+
+Per user direction: `plan.design`, `resolve_plan.organize`, `review.audit`, and the legacy `/resolve` REST surface are explicitly out of scope. Remaining milestones: M5 login OAuth (small), M6 memory layer, M7-M8 chat orchestrator (router + curator), M9 desktop cutover, M10 hardening + OpenAPI + compaction.
