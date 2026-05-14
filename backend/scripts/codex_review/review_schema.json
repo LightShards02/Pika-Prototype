@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CodexReviewOutput",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "summary", "blocking_issues", "non_blocking_suggestions", "missing_tests", "design_violations", "regression_risk", "regression_notes", "out_of_scope_changes"],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["accept", "request_changes", "reject"]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "blocking_issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "line", "tier", "issue", "rationale", "suggested_fix"],
+        "properties": {
+          "file": { "type": "string" },
+          "line": {
+            "oneOf": [
+              { "type": "integer", "minimum": 0 },
+              { "type": "array", "items": { "type": "integer", "minimum": 0 }, "minItems": 2, "maxItems": 2 }
+            ]
+          },
+          "tier": { "type": "integer", "enum": [1, 2] },
+          "issue": { "type": "string", "minLength": 1 },
+          "rationale": { "type": "string", "minLength": 1 },
+          "suggested_fix": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "non_blocking_suggestions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "line", "issue", "rationale", "suggested_fix"],
+        "properties": {
+          "file": { "type": "string" },
+          "line": {
+            "oneOf": [
+              { "type": "integer", "minimum": 0 },
+              { "type": "array", "items": { "type": "integer", "minimum": 0 }, "minItems": 2, "maxItems": 2 }
+            ]
+          },
+          "issue": { "type": "string", "minLength": 1 },
+          "rationale": { "type": "string", "minLength": 1 },
+          "suggested_fix": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "missing_tests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["public_api", "scenario", "rationale"],
+        "properties": {
+          "public_api": { "type": "string" },
+          "scenario": { "type": "string" },
+          "rationale": { "type": "string" }
+        }
+      }
+    },
+    "design_violations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["decision_violated", "where", "how"],
+        "properties": {
+          "decision_violated": { "type": "string" },
+          "where": { "type": "string" },
+          "how": { "type": "string" }
+        }
+      }
+    },
+    "regression_risk": {
+      "type": "string",
+      "enum": ["low", "medium", "high"]
+    },
+    "regression_notes": { "type": "string" },
+    "out_of_scope_changes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "description", "recommend_action"],
+        "properties": {
+          "file": { "type": "string" },
+          "description": { "type": "string" },
+          "recommend_action": {
+            "type": "string",
+            "enum": ["remove", "defer", "keep — justified"]
+          }
+        }
+      }
+    }
+  }
+}
