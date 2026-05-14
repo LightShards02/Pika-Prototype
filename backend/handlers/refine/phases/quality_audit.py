@@ -81,9 +81,15 @@ def _resolve_design_path(
     """Resolve the design CSV path from inputs."""
     prior_run_id = inputs.get("decomposition_check_run_id")
     if prior_run_id:
-        prior_dir = resolve_phase_run_dir(
-            config, project_root, "refine.decomposition-check", str(prior_run_id),
-        )
+        try:
+            prior_dir = resolve_phase_run_dir(
+                config, project_root, "refine.decomposition-check", str(prior_run_id),
+            )
+        except ValueError:
+            return None, PhaseFailed(
+                error_code="prior_phase_artifact_missing",
+                message=f"decomposition_check_run_id {prior_run_id!s} is invalid",
+            )
         artifact = prior_dir / "restructured.csv"
         if not artifact.exists():
             return None, PhaseFailed(

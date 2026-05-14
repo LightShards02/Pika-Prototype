@@ -122,9 +122,15 @@ def _cache_replay(
     phase_run_dir: Path,
 ) -> PhaseResult:
     """Reuse a previously completed planner run's unified_plan.json as result."""
-    prior_dir = resolve_phase_run_dir(
-        config, project_root, "implement.unified-planner", prior_run_id,
-    )
+    try:
+        prior_dir = resolve_phase_run_dir(
+            config, project_root, "implement.unified-planner", prior_run_id,
+        )
+    except ValueError:
+        return PhaseFailed(
+            error_code="prior_phase_artifact_missing",
+            message=f"prior_planner_run_id {prior_run_id!r} is invalid",
+        )
     prior_plan = prior_dir / "unified_plan.json"
     if not prior_dir.exists() or not prior_plan.exists():
         return PhaseFailed(
