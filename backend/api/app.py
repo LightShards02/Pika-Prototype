@@ -26,6 +26,7 @@ def register_phases() -> None:
     from api.phases import (
         format_normalize,
         implement_unified_planner,
+        map_match,
         refine_decomposition_check,
         refine_quality_audit,
     )
@@ -34,6 +35,7 @@ def register_phases() -> None:
     refine_decomposition_check.register()
     refine_quality_audit.register()
     implement_unified_planner.register()
+    map_match.register()
 
 
 def _agent_runs_roots_for_known_workspaces(store: WorkspaceStore) -> list[Path]:

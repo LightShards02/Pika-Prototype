@@ -501,12 +501,23 @@ def resolve_phase_run_dir(
 
     Phase names may contain dots, e.g. ``format.normalize``. Returns
     base/phase_name when ``phase_run_id`` is None, else base/phase_name/phase_run_id.
+
+    When ``phase_run_id`` is provided, the resolved path is verified to remain
+    under the phase-name root to prevent path traversal via crafted IDs like
+    ``../../etc``. Out-of-tree resolution raises ``ValueError``.
     """
     base = _agent_runs_base(config, project_root, command=None)
-    path = base / phase_name
-    if phase_run_id:
-        path = path / phase_run_id
-    return path.resolve()
+    phase_root = (base / phase_name).resolve()
+    if not phase_run_id:
+        return phase_root
+    resolved = (phase_root / phase_run_id).resolve()
+    try:
+        resolved.relative_to(phase_root)
+    except ValueError as exc:
+        raise ValueError(
+            f"phase_run_id {phase_run_id!r} resolves outside phase root {phase_root}"
+        ) from exc
+    return resolved
 
 
 def resolve_agent_runs_root(config: dict[str, Any], project_root: Path) -> Path:
