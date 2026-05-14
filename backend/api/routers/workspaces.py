@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
+from typing import Any
 
-from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 
-from api.deps import get_workspace_lock_manager, get_workspace_store
+from api.deps import (
+    get_phase_run_registry,
+    get_workspace_lock_manager,
+    get_workspace_store,
+)
 from api.errors import http_error
+from api.phase_runs import PhaseRunRegistry
+from api.schemas.common import PhaseRunState
+from api.schemas.phases import PhaseRunResponse
 from api.schemas.workspaces import WorkspaceCreateRequest, WorkspaceResponse
 from api.workspace_lock import WorkspaceLockManager
 from api.workspaces import WorkspaceStore
@@ -181,3 +190,84 @@ def get_state_file(
     else:
         media_type = "application/octet-stream"
     return Response(content=data, media_type=media_type)
+
+
+_PHASE_RUN_LIMIT_MIN = 1
+_PHASE_RUN_LIMIT_MAX = 500
+_PHASE_RUN_LIMIT_DEFAULT = 100
+
+# started_at format produced by core.time_utils.format_timestamp_local_minutes
+# combined with the phase-run id counter, e.g. "20260514-153000-0042".
+_STARTED_AT_RE = re.compile(r"\d{8}-\d{6}-[0-9a-fA-F]{4}")
+
+
+def _phase_run_events_url(phase_run_id: str) -> str:
+    return f"/v1/phase-runs/{phase_run_id}/events"
+
+
+def _phase_run_response_from_meta(meta: dict[str, Any]) -> PhaseRunResponse:
+    """Project a registry record into a PhaseRunResponse, matching GET /v1/phase-runs/{id}."""
+    return PhaseRunResponse(
+        phase_run_id=meta["phase_run_id"],
+        phase=meta["phase"],
+        workspace_id=meta["workspace_id"],
+        chain_id=meta.get("chain_id"),
+        status=PhaseRunState(meta["status"]),
+        started_at=meta["started_at"],
+        ended_at=meta.get("ended_at"),
+        blocked_at=meta.get("blocked_at"),
+        inputs=meta.get("inputs") or {},
+        artifacts_index=meta.get("artifacts_index") or {},
+        summary=meta.get("summary") or {},
+        error=meta.get("error"),
+        events_url=_phase_run_events_url(meta["phase_run_id"]),
+    )
+
+
+@router.get("/{workspace_id}/phase-runs", response_model=list[PhaseRunResponse])
+def list_workspace_phase_runs(
+    workspace_id: str,
+    phase: str | None = Query(default=None),
+    status_filter: str | None = Query(default=None, alias="status"),
+    chain_id: str | None = Query(default=None),
+    limit: int = Query(default=_PHASE_RUN_LIMIT_DEFAULT),
+    store: WorkspaceStore = Depends(get_workspace_store),
+    run_registry: PhaseRunRegistry = Depends(get_phase_run_registry),
+) -> list[PhaseRunResponse]:
+    if store.get(workspace_id) is None:
+        raise http_error(
+            status.HTTP_404_NOT_FOUND,
+            "workspace_not_found",
+            f"workspace {workspace_id!r} not found",
+        )
+    if limit < _PHASE_RUN_LIMIT_MIN or limit > _PHASE_RUN_LIMIT_MAX:
+        raise http_error(
+            status.HTTP_400_BAD_REQUEST,
+            "invalid_limit",
+            f"limit must be between {_PHASE_RUN_LIMIT_MIN} and {_PHASE_RUN_LIMIT_MAX}",
+            details={"limit": limit, "min": _PHASE_RUN_LIMIT_MIN, "max": _PHASE_RUN_LIMIT_MAX},
+        )
+
+    matches: list[dict[str, Any]] = []
+    for record in run_registry.list():
+        if record.get("workspace_id") != workspace_id:
+            continue
+        if phase is not None and record.get("phase") != phase:
+            continue
+        if status_filter is not None and record.get("status") != status_filter:
+            continue
+        if chain_id is not None and record.get("chain_id") != chain_id:
+            continue
+        matches.append(record)
+
+    valid_runs: list[dict[str, Any]] = []
+    invalid_runs: list[dict[str, Any]] = []
+    for r in matches:
+        s = r.get("started_at")
+        if isinstance(s, str) and _STARTED_AT_RE.fullmatch(s):
+            valid_runs.append(r)
+        else:
+            invalid_runs.append(r)
+    valid_runs.sort(key=lambda r: r["started_at"], reverse=True)
+    ordered = valid_runs + invalid_runs
+    return [_phase_run_response_from_meta(r) for r in ordered[:limit]]
