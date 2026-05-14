@@ -679,6 +679,8 @@ def _run_implement_inner(config: dict[str, Any], ctx: RuntimeContext) -> dict[st
             "appendix_content": appendix_text,
         }
         template_vars["resolved_decisions"] = ctx.resolved_decisions or ""
+        from core import memory_store as _memory_store
+        template_vars["memory"] = _memory_store.memory_template_value(ctx)
         if shared_local_workspace is not None:
             sync_local_agent_workspace(codebase_dir, shared_local_workspace)
             log_lifecycle_event(

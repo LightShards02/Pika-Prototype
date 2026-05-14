@@ -328,3 +328,40 @@ def test_phase_fails_on_agent_exception(
     assert isinstance(result, PhaseFailed)
     assert result.error_code == "planner_failed"
     assert "agent died" in result.message
+
+
+def test_memory_context_renders_into_template_vars(
+    workspace_root: Path, design_csv: Path, codebase_dir: Path,
+) -> None:
+    _, run = _import_phase()
+    from core.phase_types import PhaseCompleted
+
+    phase_run_dir = (
+        workspace_root / "out" / "agent_runs" / "implement.unified-planner" / "pl-mem"
+    )
+    config = make_config(workspace_root)
+    ctx = make_ctx(workspace_root, run_id="pl-mem")
+    from dataclasses import replace as _dc_replace
+    ctx = _dc_replace(ctx, memory_context={
+        "memory": "M", "lessons": "lesson-y", "tasks": "", "gaps": ""
+    })
+
+    captured: dict[str, Any] = {}
+
+    def fake_invoke(**kwargs: Any) -> dict[str, Any]:
+        captured["template_vars"] = kwargs.get("template_vars") or {}
+        return empty_plan()
+
+    with patch(
+        "handlers.implement.phases.unified_planner.invoke_with_semantic_retry",
+        side_effect=fake_invoke,
+    ):
+        result = run(
+            config, ctx, phase_run_dir,
+            {"design_spec_path": design_csv, "codebase_dir": codebase_dir},
+        )
+
+    assert isinstance(result, PhaseCompleted)
+    rendered = captured["template_vars"].get("memory", "")
+    assert "## Lessons" in rendered
+    assert "lesson-y" in rendered

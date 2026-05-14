@@ -318,10 +318,12 @@ def _run_format_enrichment(
     allowed_roles = sorted(allowed_role_set)
     allowed_module_roles = ", ".join(allowed_roles)
 
+    from core import memory_store as _memory_store
     template_vars: dict[str, Any] = {
         "output_schema_file": str(schema_path) if schema_path else "",
         "specs_csv": specs_csv,
         "allowed_module_roles": allowed_module_roles,
+        "memory": _memory_store.memory_template_value(ctx),
     }
     if project_context:
         template_vars["project_context"] = project_context

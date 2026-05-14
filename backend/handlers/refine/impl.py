@@ -373,6 +373,7 @@ def _run_refine_agents(
     minimal_headers = [_header_lower[c] for c in _minimal_cols if c in _header_lower]
     minimal_design_csv = rows_to_csv(minimal_headers, rows)
 
+    from core import memory_store as _memory_store
     common_base: dict[str, Any] = {
         "project_context": context_text,
         "manual_resolution_file": str(manual_dir),
@@ -380,6 +381,7 @@ def _run_refine_agents(
         "control_vocab_section": "",
         "appendix_content": appendix_text,
         "design_spec_csv": minimal_design_csv,
+        "memory": _memory_store.memory_template_value(ctx),
     }
     auditor_full_vars = {
         **common_base,

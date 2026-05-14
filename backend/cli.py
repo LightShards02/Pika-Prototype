@@ -289,6 +289,8 @@ def _execute_command(
         validate_command_preconditions(command_name, config_data, preflight_ctx)
 
         runtime_ctx["run_id"] = run_id
+        from core import memory_store as _memory_store
+        memory_ctx = _memory_store.read_all(resolved_workspace_root)
         router_ctx = RuntimeContext(
             command=command_name,
             dry_run=dry_run,
@@ -301,6 +303,7 @@ def _execute_command(
             resume_run_id=resume_run_id,
             resolved_decisions=resolved_decisions,
             phase_only=phase_only,
+            memory_context=memory_ctx,
         )
         _ = init_run_logger(
             project_root=resolved_workspace_root, config=config_data, ctx=router_ctx

@@ -746,6 +746,7 @@ def build_template_vars(
     map_cfg_raw = map_cfg_raw if isinstance(map_cfg_raw, dict) else {}
     max_problem_threshold = map_cfg_raw.get("max_problem_threshold", 1.0)
 
+    from core import memory_store as _memory_store
     return {
         "output_schema_file": schema_file,
         "project_context": project_context_content,
@@ -758,6 +759,7 @@ def build_template_vars(
         "run_summary_file": str(run_summary_path),
         "resolved_decisions": ctx.resolved_decisions or "",
         "max_problem_threshold": str(max_problem_threshold),
+        "memory": _memory_store.memory_template_value(ctx),
     }
 
 

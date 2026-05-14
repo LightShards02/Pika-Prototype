@@ -208,6 +208,42 @@ def test_phase_returns_failed_when_no_inputs(workspace_root: Path) -> None:
     assert result.error_code == "inputs_invalid"
 
 
+def test_memory_context_renders_into_template_vars(
+    workspace_root: Path, design_csv: Path,
+) -> None:
+    _, run = _import_phase()
+    from core.phase_types import PhaseCompleted
+
+    phase_run_dir = workspace_root / "out" / "agent_runs" / "refine.quality-audit" / "qa-mem"
+    config = make_config(workspace_root, str(design_csv))
+    ctx = make_ctx(workspace_root, run_id="qa-mem")
+    from dataclasses import replace as _dc_replace
+    ctx = _dc_replace(ctx, memory_context={
+        "memory": "M-text",
+        "lessons": "lesson-x",
+        "tasks": "",
+        "gaps": "",
+    })
+
+    captured: dict[str, Any] = {}
+
+    def fake_invoke(prompt_name: str = "", template_vars: dict | None = None, **_kwargs: Any) -> dict:
+        captured.setdefault("first", template_vars or {})
+        return _empty_full() if (template_vars or {}).get("enrich_mode") == "full" else {"manual_resolution_items": []}
+
+    with patch(
+        "handlers.refine.impl.invoke_agent_with_schema_retry",
+        side_effect=fake_invoke,
+    ):
+        result = run(config, ctx, phase_run_dir, {"design_spec_path": str(design_csv)})
+
+    assert isinstance(result, PhaseCompleted)
+    rendered = captured["first"].get("memory", "")
+    assert "## Workspace Memory" in rendered
+    assert "## Lessons" in rendered
+    assert "lesson-x" in rendered
+
+
 def test_per_replica_progress_events_emitted(
     workspace_root: Path, design_csv: Path, capsys: Any,
 ) -> None:

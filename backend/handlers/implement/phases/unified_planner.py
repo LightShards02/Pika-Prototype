@@ -233,6 +233,7 @@ def _build_planner_template_vars(
         minimal,
     )
 
+    from core import memory_store as _memory_store
     manual_dir = phase_run_dir / "manual_resolution"
     template_vars: dict[str, Any] = {
         "output_schema_file": str(schema_path),
@@ -251,6 +252,7 @@ def _build_planner_template_vars(
         "semantic_retry_context": "",
         "appendix_content": appendix_text,
         "resolved_decisions": ctx.resolved_decisions or "",
+        "memory": _memory_store.memory_template_value(ctx),
     }
     return template_vars, schema_path
 

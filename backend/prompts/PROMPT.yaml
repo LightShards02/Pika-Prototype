@@ -37,6 +37,9 @@ prompts:
       - name: control_vocab_section
         required: false
         description: Per-project controlled vocabulary (categorized terms + definitions). Injected by lifecycle when project.control_vocab_path is configured.
+      - name: memory
+        required: false
+        description: Workspace memory blob rendered from <workspace>/out/state/memory/*.md (memory -> lessons -> tasks -> gaps, H2 headers). May be empty when no memory recorded.
     system: |
       You are a strict project design agent.
       You MUST follow the output schema exactly. Your output JSON must validate against {{output_schema_file}} without exception.
@@ -49,6 +52,9 @@ prompts:
       Do NOT produce separate fields for units, features, edge_cases, errors. All design detail goes into the SADS column text.
       Put any blocking unclarities into manual_resolution_items.
     user: |
+      Workspace Memory:
+      {{memory}}
+
       Project Context:
       {{project_context}}
       {{control_vocab_section}}
@@ -108,6 +114,9 @@ prompts:
       - name: max_problem_threshold
         required: false
         description: Threshold below which the problems field must be populated. Only populate problems when confidence OR consistency_score is below this value. Default 1.0.
+      - name: memory
+        required: false
+        description: Workspace memory blob rendered from <workspace>/out/state/memory/*.md (memory -> lessons -> tasks -> gaps, H2 headers). May be empty when no memory recorded.
     system: |
       You are a strict software indexing agent.
       You MUST follow the output schema exactly. Your output JSON must validate against {{output_schema_file}} without exception.
@@ -119,6 +128,9 @@ prompts:
       When codebase_content is empty, use codebase_dir to explore files directly.
       Populate `problems` only when confidence OR consistency_score < {{max_problem_threshold}}; otherwise leave as empty string.
     user: |
+      Workspace Memory:
+      {{memory}}
+
       Context:
       {{project_context}}
       {{control_vocab_section}}
@@ -186,6 +198,9 @@ prompts:
       - name: appendix_content
         required: false
         description: Formatted appendix documents (data dictionaries, API schemas, glossaries). Reference APX IDs in consumed_by_specs when a contract is defined by an appendix.
+      - name: memory
+        required: false
+        description: Workspace memory blob rendered from <workspace>/out/state/memory/*.md (memory -> lessons -> tasks -> gaps, H2 headers). May be empty when no memory recorded.
     system: |
       You are a strict unified implementation planner.
       Output must validate against {{output_schema_file}} exactly.
@@ -282,6 +297,9 @@ prompts:
       - shared_contracts[].planned_file_path must stay under shared_contract_prefix in allowed_paths_json.
       - Do not emit planned_file_path under forbidden_path_patterns_json.
     user: |
+      Workspace Memory:
+      {{memory}}
+
       Project Context:
       {{project_context}}
       {{control_vocab_section}}
@@ -457,6 +475,9 @@ prompts:
       - name: test_authoring_required_for_evidence_types_json
         required: true
         description: 'P3: JSON array of evidence_type values for which test authoring is required when author_tests=true. Default ["unit_test","integration_test"].'
+      - name: memory
+        required: false
+        description: Workspace memory blob rendered from <workspace>/out/state/memory/*.md (memory -> lessons -> tasks -> gaps, H2 headers). May be empty when no memory recorded.
     system: |
       You are a strict implementer for one deterministic batch.
       Output must validate against {{output_schema_file}} exactly.
@@ -546,6 +567,9 @@ prompts:
 
       If blocked by ambiguity, return only manual_resolution_items.
     user: |
+      Workspace Memory:
+      {{memory}}
+
       Project Context:
       {{project_context}}
 
@@ -634,6 +658,9 @@ prompts:
       - name: max_problem_threshold
         required: false
         description: Threshold below which the problems field must be populated. Only populate problems when confidence OR consistency_score is below this value. Default 1.0.
+      - name: memory
+        required: false
+        description: Workspace memory blob rendered from <workspace>/out/state/memory/*.md (memory -> lessons -> tasks -> gaps, H2 headers). May be empty when no memory recorded.
     system: |
       You are a strict software indexing agent with direct filesystem access.
       You MUST follow the output schema exactly. Your output JSON must validate against {{output_schema_file}} without exception.
@@ -649,6 +676,9 @@ prompts:
       4. code_ref.path must be relative to the codebase root (e.g. src/Auth/AuthController.cs), never an absolute path.
       Populate `problems` only when confidence OR consistency_score < {{max_problem_threshold}}; otherwise leave as empty string.
     user: |
+      Workspace Memory:
+      {{memory}}
+
       Context:
       {{project_context}}
       {{extra_prompt_section}}
@@ -739,6 +769,9 @@ prompts:
       - name: test_authoring_required_for_evidence_types_json
         required: true
         description: 'P3: JSON array of evidence_type values for which test authoring is required when author_tests=true. Default ["unit_test","integration_test"].'
+      - name: memory
+        required: false
+        description: Workspace memory blob rendered from <workspace>/out/state/memory/*.md (memory -> lessons -> tasks -> gaps, H2 headers). May be empty when no memory recorded.
     system: |
       You are a strict implementer for one deterministic batch with direct filesystem access.
       Output must validate against {{output_schema_file}} exactly.
@@ -841,6 +874,9 @@ prompts:
 
       If blocked by ambiguity, return only manual_resolution_items.
     user: |
+      Workspace Memory:
+      {{memory}}
+
       Project Context:
       {{project_context}}
       {{control_vocab_section}}
@@ -921,6 +957,9 @@ prompts:
       - name: control_vocab_section
         required: false
         description: Per-project controlled vocabulary (categorized terms + definitions). Injected by lifecycle when project.control_vocab_path is configured.
+      - name: memory
+        required: false
+        description: Workspace memory blob rendered from <workspace>/out/state/memory/*.md (memory -> lessons -> tasks -> gaps, H2 headers). May be empty when no memory recorded.
     system: |
       You are a strict issue mapping agent.
       You MUST follow the output schema exactly. Your output JSON must validate against {{output_schema_file}} without exception.
@@ -928,6 +967,9 @@ prompts:
       Mapping output must be suitable for the mapped_spec_ids CSV column.
       Interpret CSV columns using provided column definitions.
     user: |
+      Workspace Memory:
+      {{memory}}
+
       {{control_vocab_section}}
 
       Issue Tracking Column Definitions:
@@ -976,6 +1018,9 @@ prompts:
       - name: appendix_content
         required: false
         description: Formatted appendix documents (data dictionaries, glossaries, API schemas). Use as context for both ambiguity resolution and testability assessment.
+      - name: memory
+        required: false
+        description: Workspace memory blob rendered from <workspace>/out/state/memory/*.md (memory -> lessons -> tasks -> gaps, H2 headers). May be empty when no memory recorded.
     system: |
       You are a strict spec quality auditor.
       Your output JSON must validate against {{output_schema_file}} without exception.
@@ -1245,6 +1290,9 @@ prompts:
       In triage mode: only manual_resolution_items[] holds Stage 1 flags. Do not emit enrichments[] or appendix_recommendations[].
       An empty manual_resolution_items array is the preferred output when all requirements are clean.
     user: |
+      Workspace Memory:
+      {{memory}}
+
       Project Context:
       {{project_context}}
       {{control_vocab_section}}
@@ -1508,6 +1556,9 @@ prompts:
         required: true
         description: Minimal SADS design spec CSV with columns spec_id, module_tag, subunit, requirement only. Provides row context for coherent rewrites and structural split/merge decisions.
         description: Minimal SADS design spec CSV with columns spec_id, module_tag, subunit, requirement only. Provides row context for coherent rewrites and structural split/merge decisions.
+      - name: memory
+        required: false
+        description: Workspace memory blob rendered from <workspace>/out/state/memory/*.md (memory -> lessons -> tasks -> gaps, H2 headers). May be empty when no memory recorded.
     system: |
       You are a strict spec editor. Produce ONE edit only.
       Your output JSON must validate against {{output_schema_file}} without exception.
@@ -1520,6 +1571,9 @@ prompts:
         rationale must explain why the split or merge is correct.
       Do not include both field and structural keys. Use the oneOf branch that matches issue_kind.
     user: |
+      Workspace Memory:
+      {{memory}}
+
       Project Context:
       {{project_context}}
 
@@ -1748,6 +1802,9 @@ prompts:
       - name: control_vocab_section
         required: false
         description: Per-project controlled vocabulary (categorized terms + definitions). Injected by lifecycle when project.control_vocab_path is configured.
+      - name: memory
+        required: false
+        description: Workspace memory blob rendered from <workspace>/out/state/memory/*.md (memory -> lessons -> tasks -> gaps, H2 headers). May be empty when no memory recorded.
     system: |
       You are a strict issue resolution agent.
       You MUST follow the output schema exactly. Your output JSON must validate against {{output_schema_file}} without exception.
@@ -1758,6 +1815,9 @@ prompts:
       If there are no uncertainties, explicitly say "No follow_up_uncertainties".
       Interpret issue tracking CSV strictly via issue_tracking_column_definitions.
     user: |
+      Workspace Memory:
+      {{memory}}
+
       {{control_vocab_section}}
 
       Issue Tracking Column Definitions:
@@ -1910,6 +1970,9 @@ prompts:
       - name: iteration_index
         required: true
         description: 1-based iteration counter for this loop.
+      - name: memory
+        required: false
+        description: Workspace memory blob rendered from <workspace>/out/state/memory/*.md (memory -> lessons -> tasks -> gaps, H2 headers). May be empty when no memory recorded.
     system: |
       You are a strict implementer in AMENDMENT-ONLY mode for one deterministic batch.
       Output must validate against {{output_schema_file}} exactly.
@@ -1978,6 +2041,9 @@ prompts:
 
       If blocked by ambiguity, return only manual_resolution_items.
     user: |
+      Workspace Memory:
+      {{memory}}
+
       Project Context:
       {{project_context}}
 
@@ -2092,6 +2158,9 @@ prompts:
         required: true
       - name: iteration_index
         required: true
+      - name: memory
+        required: false
+        description: Workspace memory blob rendered from <workspace>/out/state/memory/*.md (memory -> lessons -> tasks -> gaps, H2 headers). May be empty when no memory recorded.
     system: |
       You are a strict implementer in AMENDMENT-ONLY mode for one deterministic batch with direct filesystem access.
       Output must validate against {{output_schema_file}} exactly.
@@ -2147,6 +2216,9 @@ prompts:
 
       If blocked by ambiguity, return only manual_resolution_items.
     user: |
+      Workspace Memory:
+      {{memory}}
+
       Project Context:
       {{project_context}}
       {{control_vocab_section}}
@@ -2250,6 +2322,9 @@ prompts:
       - name: prior_amendment_packets_for_spec_json
         required: true
         description: Prior amendment_packet entries that targeted this spec_id (for iteration context). Empty array on iteration 1.
+      - name: memory
+        required: false
+        description: Workspace memory blob rendered from <workspace>/out/state/memory/*.md (memory -> lessons -> tasks -> gaps, H2 headers). May be empty when no memory recorded.
     system: |
       You are a strict per-spec reviewer for one implement batch.
       You review ONE spec_id only: {{spec_id}}. Do not assess other specs.
@@ -2338,6 +2413,9 @@ prompts:
       Do NOT include amendment text, response_kind, or any aggregate fields —
       those are computed deterministically after your call.
     user: |
+      Workspace Memory:
+      {{memory}}
+
       Spec ID: {{spec_id}}
 
       Spec Row (JSON):
@@ -2409,6 +2487,9 @@ prompts:
       - name: control_vocab_section
         required: false
         description: Per-project controlled vocabulary. Injected by lifecycle when project.control_vocab_path is configured.
+      - name: memory
+        required: false
+        description: Workspace memory blob rendered from <workspace>/out/state/memory/*.md (memory -> lessons -> tasks -> gaps, H2 headers). May be empty when no memory recorded.
     system: |
       You are a senior code reviewer for a prototype. The goal is feasibility and a starting point for human programmers — not production polish. You DO NOT write or modify code.
       Output must validate against {{output_schema_file}} exactly. Return JSON only. No markdown fences.
@@ -2477,6 +2558,9 @@ prompts:
       - Negative (audit_trail, missing): "Touched files do not include any audit/log emitter call on the password-reset path; AC explicitly requires an audit record. satisfied=false, severity=major."
       - Structural-only (ui_screenshot): "Route /dashboard added in CORE/web/views.py with template binding; visual correctness deferred to human review. satisfied=true, severity=minor."
     user: |
+      Workspace Memory:
+      {{memory}}
+
       Project Context:
       {{project_context}}
       {{control_vocab_section}}
