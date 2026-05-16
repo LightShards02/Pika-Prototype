@@ -40,8 +40,9 @@ from api.schemas.phases import (
 )
 from api.workspace_lock import WorkspaceLockManager
 from api.workspaces import WorkspaceStore
-from core import memory_store
+from core import document_store, memory_store
 from core.context import RuntimeContext
+from core.document_store import DocumentNotFoundError
 from core.logger import init_run_logger
 from core.phase_types import PhaseResult
 from core.time_utils import format_timestamp_local_minutes
@@ -118,6 +119,75 @@ def _resolve_workspace_relative_path(workspace_root: Path, raw: str) -> Path:
     return candidate
 
 
+def _resolve_document_ref(
+    workspace_root: Path, spec_name: str, ref: dict[str, Any]
+) -> Path:
+    """Translate a ``{"category": ..., "file_id": ...}`` ref into a blob path."""
+    if set(ref.keys()) != {"category", "file_id"}:
+        raise ValueError(
+            f"input {spec_name}: document_ref must have exactly the keys "
+            "'category' and 'file_id'"
+        )
+    category = ref.get("category")
+    file_id = ref.get("file_id")
+    if not isinstance(category, str) or not isinstance(file_id, str):
+        raise ValueError(
+            f"input {spec_name}: document_ref must be an object with "
+            "string 'category' and 'file_id' fields"
+        )
+    if not document_store.is_valid_category(category):
+        raise ValueError(
+            f"input {spec_name}: document_ref.category {category!r} is invalid"
+        )
+    if not document_store.is_valid_file_id(file_id):
+        raise ValueError(
+            f"input {spec_name}: document_ref.file_id {file_id!r} is not a UUID4"
+        )
+    try:
+        return document_store.resolve_document_blob_path(
+            workspace_root, category, file_id
+        )
+    except DocumentNotFoundError as exc:
+        raise ValueError(
+            f"input {spec_name}: document {file_id} not found in category {category!r}"
+        ) from exc
+    except FileNotFoundError as exc:
+        raise ValueError(
+            f"input {spec_name}: document {file_id} blob is missing on disk"
+        ) from exc
+
+
+def _resolve_path_input(
+    workspace_root: Path, spec_name: str, value: Any
+) -> Path:
+    """Resolve a single path-shaped input to an absolute path.
+
+    Accepts:
+    - A non-empty string (workspace-relative or absolute path inside workspace).
+    - An object ``{"document_ref": {"category": ..., "file_id": ...}}``.
+
+    Raises ``ValueError`` on validation failure.
+    """
+    if isinstance(value, dict):
+        ref = value.get("document_ref")
+        # Document refs are the only object form currently supported. Any
+        # other dict shape is a type mismatch.
+        if ref is None or not isinstance(ref, dict):
+            raise ValueError(
+                f"input {spec_name} object must wrap a 'document_ref' field"
+            )
+        if set(value.keys()) - {"document_ref"}:
+            raise ValueError(
+                f"input {spec_name}: unexpected keys alongside 'document_ref'"
+            )
+        return _resolve_document_ref(workspace_root, spec_name, ref)
+    if isinstance(value, str) and value.strip():
+        return _resolve_workspace_relative_path(workspace_root, value.strip())
+    raise ValueError(
+        f"input {spec_name} must be a non-empty string or a document_ref object"
+    )
+
+
 def _resolve_inputs(
     contract: PhaseContract,
     workspace_root: Path,
@@ -132,11 +202,10 @@ def _resolve_inputs(
             continue
         value = raw_inputs[spec.name]
         if spec.kind in ("path", "workspace_relative_path"):
-            if not isinstance(value, str) or not value.strip():
-                errors.append(f"input {spec.name} must be a non-empty string")
-                continue
             try:
-                resolved[spec.name] = _resolve_workspace_relative_path(workspace_root, value.strip())
+                resolved[spec.name] = _resolve_path_input(
+                    workspace_root, spec.name, value
+                )
             except ValueError as exc:
                 errors.append(str(exc))
         else:

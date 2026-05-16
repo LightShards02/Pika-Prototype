@@ -1,13 +1,21 @@
-"""REST endpoints for workspace documents: CRUD over <ws>/documents/<category>/<name>."""
+"""REST endpoints for workspace documents (id-addressed, manifest-backed)."""
 
 from __future__ import annotations
 
+import io
 import json
 import os
+import re
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+
+
+_UUID4_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
 
 
 def _register(client, ws1_dir: Path) -> str:
@@ -16,250 +24,342 @@ def _register(client, ws1_dir: Path) -> str:
     return resp.json()["id"]
 
 
-def _put(client, wid: str, category: str, name: str, body: str | bytes):
-    return client.put(
-        f"/v1/workspaces/{wid}/documents/{category}/{name}",
-        content=body,
-        headers={"Content-Type": "text/plain; charset=utf-8"},
+def _upload(
+    client,
+    wid: str,
+    category: str,
+    *,
+    filename: str = "notes.md",
+    content: bytes | str = b"# hi\n",
+    display_name: str | None = None,
+    content_type: str = "text/markdown",
+):
+    if isinstance(content, str):
+        content = content.encode("utf-8")
+    data = {}
+    if display_name is not None:
+        data["display_name"] = display_name
+    return client.post(
+        f"/v1/workspaces/{wid}/documents/{category}",
+        files={"file": (filename, io.BytesIO(content), content_type)},
+        data=data,
     )
 
 
-# ---------- happy path / round-trip ----------
+# ---------- POST (upload) ----------
 
 
-def test_put_then_get_round_trips(client, ws1_dir: Path) -> None:
+def test_post_creates_document_and_returns_entry(client, ws1_dir: Path) -> None:
     wid = _register(client, ws1_dir)
-    text = "# Notes\n\nhello world\n"
-    resp = _put(client, wid, "my", "notes.md", text)
-    assert resp.status_code == 200, resp.text
-    assert resp.text == text
-    assert resp.headers["content-type"].startswith("text/plain")
+    resp = _upload(client, wid, "my", filename="notes.md", content="# hello\n")
+    assert resp.status_code == 201, resp.text
+    entry = resp.json()
+    assert _UUID4_RE.match(entry["file_id"])
+    assert entry["display_name"] == "notes.md"
+    assert entry["extension"] == ".md"
+    assert entry["size"] == len(b"# hello\n")
+    assert entry["content_type"] == "text/markdown; charset=utf-8"
+    assert entry["sha256"]
+    assert entry["created_at"] == entry["updated_at"]
+    # On-disk layout: blob filename = <file_id><extension>
+    fid = entry["file_id"]
+    assert (
+        ws1_dir / "documents" / "my" / "blobs" / f"{fid}.md"
+    ).read_bytes() == b"# hello\n"
+    manifest = json.loads(
+        (ws1_dir / "documents" / "my" / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["version"] == 1
+    assert fid in manifest["documents"]
+    assert manifest["documents"][fid]["display_name"] == "notes.md"
 
-    got = client.get(f"/v1/workspaces/{wid}/documents/my/notes.md")
-    assert got.status_code == 200
-    assert got.text == text
-    assert got.headers["content-type"].startswith("text/plain")
-    assert (ws1_dir / "documents" / "my" / "notes.md").read_text(encoding="utf-8") == text
 
-
-def test_put_json_returns_application_json_on_get(client, ws1_dir: Path) -> None:
+def test_post_uses_explicit_display_name_over_filename(client, ws1_dir: Path) -> None:
     wid = _register(client, ws1_dir)
-    body = json.dumps({"k": 1})
-    resp = _put(client, wid, "my", "data.json", body)
-    assert resp.status_code == 200, resp.text
+    resp = _upload(
+        client,
+        wid,
+        "my",
+        filename="upload.tmp.md",
+        display_name="design-spec.md",
+        content="x",
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["display_name"] == "design-spec.md"
 
-    got = client.get(f"/v1/workspaces/{wid}/documents/my/data.json")
-    assert got.status_code == 200
-    assert got.headers["content-type"].startswith("application/json")
-    assert got.json() == {"k": 1}
+
+def test_post_rejects_disallowed_extension(client, ws1_dir: Path) -> None:
+    wid = _register(client, ws1_dir)
+    resp = _upload(client, wid, "my", filename="evil.exe", content="x")
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"]["code"] == "document_invalid_display_name"
 
 
-def test_list_returns_empty_when_dir_missing(client, ws1_dir: Path) -> None:
+def test_post_rejects_oversized_body(client, ws1_dir: Path) -> None:
+    wid = _register(client, ws1_dir)
+    resp = _upload(
+        client, wid, "my", filename="big.txt", content=b"a" * (1024 * 1024 + 1)
+    )
+    assert resp.status_code == 413, resp.text
+    assert resp.json()["detail"]["code"] == "document_too_large"
+
+
+def test_post_rejects_non_utf8(client, ws1_dir: Path) -> None:
+    wid = _register(client, ws1_dir)
+    resp = _upload(
+        client, wid, "my", filename="b.txt", content=b"\xff\xfebad"
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"]["code"] == "document_body_not_utf8"
+
+
+def test_post_creates_parent_directory_lazily(client, ws1_dir: Path) -> None:
+    wid = _register(client, ws1_dir)
+    assert not (ws1_dir / "documents").exists()
+    resp = _upload(client, wid, "my", filename="x.md", content="x")
+    assert resp.status_code == 201
+    assert (ws1_dir / "documents" / "my" / "manifest.json").is_file()
+    assert (ws1_dir / "documents" / "my" / "blobs").is_dir()
+
+
+# ---------- GET list / content / meta ----------
+
+
+def test_list_empty_when_dir_missing(client, ws1_dir: Path) -> None:
     wid = _register(client, ws1_dir)
     resp = client.get(f"/v1/workspaces/{wid}/documents/my")
     assert resp.status_code == 200
     assert resp.json() == []
 
 
-def test_list_returns_entries_sorted_by_name(client, ws1_dir: Path) -> None:
+def test_list_returns_sorted_entries(client, ws1_dir: Path) -> None:
     wid = _register(client, ws1_dir)
-    _put(client, wid, "my", "b.md", "b")
-    _put(client, wid, "my", "a.md", "a")
-    _put(client, wid, "my", "c.md", "ccc")
-
-    resp = client.get(f"/v1/workspaces/{wid}/documents/my")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert [e["name"] for e in body] == ["a.md", "b.md", "c.md"]
-    sizes = {e["name"]: e["size"] for e in body}
-    assert sizes == {"a.md": 1, "b.md": 1, "c.md": 3}
-    for e in body:
-        assert isinstance(e["mtime"], (int, float))
-
-
-def test_list_skips_disallowed_extensions(client, ws1_dir: Path) -> None:
-    wid = _register(client, ws1_dir)
-    _put(client, wid, "my", "ok.md", "ok")
-    # Drop a stray .exe by hand to simulate a user-touched directory.
-    (ws1_dir / "documents" / "my" / "stray.exe").write_bytes(b"x")
+    _upload(client, wid, "my", filename="b.md", content="b")
+    _upload(client, wid, "my", filename="a.md", content="aa")
+    _upload(client, wid, "my", filename="c.md", content="ccc")
     body = client.get(f"/v1/workspaces/{wid}/documents/my").json()
-    assert [e["name"] for e in body] == ["ok.md"]
+    assert [e["display_name"] for e in body] == ["a.md", "b.md", "c.md"]
+    for e in body:
+        assert _UUID4_RE.match(e["file_id"])
 
 
-def test_delete_removes_document(client, ws1_dir: Path) -> None:
+def test_list_supports_duplicate_display_names(client, ws1_dir: Path) -> None:
     wid = _register(client, ws1_dir)
-    _put(client, wid, "my", "notes.md", "hi")
-    assert (ws1_dir / "documents" / "my" / "notes.md").is_file()
-
-    resp = client.delete(f"/v1/workspaces/{wid}/documents/my/notes.md")
-    assert resp.status_code == 204
-    assert not (ws1_dir / "documents" / "my" / "notes.md").exists()
-
-    got = client.get(f"/v1/workspaces/{wid}/documents/my/notes.md")
-    assert got.status_code == 404
-    assert got.json()["detail"]["code"] == "document_not_found"
+    r1 = _upload(client, wid, "my", filename="notes.md", content="one")
+    r2 = _upload(client, wid, "my", filename="notes.md", content="two")
+    ids = {r1.json()["file_id"], r2.json()["file_id"]}
+    assert len(ids) == 2
+    body = client.get(f"/v1/workspaces/{wid}/documents/my").json()
+    assert [e["display_name"] for e in body] == ["notes.md", "notes.md"]
+    assert {e["file_id"] for e in body} == ids
 
 
-def test_put_creates_parent_directory_lazily(client, ws1_dir: Path) -> None:
+def test_get_content_returns_bytes_and_correct_content_type(
+    client, ws1_dir: Path
+) -> None:
     wid = _register(client, ws1_dir)
-    assert not (ws1_dir / "documents").exists()
-    resp = _put(client, wid, "my", "first.md", "x")
-    assert resp.status_code == 200, resp.text
-    assert (ws1_dir / "documents" / "my").is_dir()
+    fid = _upload(client, wid, "my", filename="data.json", content='{"k":1}').json()[
+        "file_id"
+    ]
+    resp = client.get(f"/v1/workspaces/{wid}/documents/my/{fid}")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("application/json")
+    assert resp.headers["x-document-id"] == fid
+    assert resp.headers["x-document-display-name"] == "data.json"
+    assert resp.json() == {"k": 1}
 
 
-def test_put_supports_alternate_category(client, ws1_dir: Path) -> None:
+def test_get_meta_returns_entry_only(client, ws1_dir: Path) -> None:
     wid = _register(client, ws1_dir)
-    resp = _put(client, wid, "shared", "ref.md", "ref")
-    assert resp.status_code == 200, resp.text
-    assert (ws1_dir / "documents" / "shared" / "ref.md").read_text() == "ref"
-    body = client.get(f"/v1/workspaces/{wid}/documents/shared").json()
-    assert [e["name"] for e in body] == ["ref.md"]
-    # And listing under "my" remains empty (categories isolated).
-    assert client.get(f"/v1/workspaces/{wid}/documents/my").json() == []
+    fid = _upload(client, wid, "my", filename="notes.md", content="x").json()[
+        "file_id"
+    ]
+    resp = client.get(f"/v1/workspaces/{wid}/documents/my/{fid}/meta")
+    assert resp.status_code == 200
+    assert resp.json()["file_id"] == fid
 
 
-# ---------- validation ----------
-
-
-def test_invalid_category_400(client, ws1_dir: Path) -> None:
+def test_get_content_missing_returns_404(client, ws1_dir: Path) -> None:
     wid = _register(client, ws1_dir)
-    # A dot in the category segment fails the regex.
-    resp = client.get(f"/v1/workspaces/{wid}/documents/bad.cat")
-    assert resp.status_code == 400, resp.text
-    assert resp.json()["detail"]["code"] == "document_invalid_category"
-
-
-def test_invalid_name_extension_400(client, ws1_dir: Path) -> None:
-    wid = _register(client, ws1_dir)
-    resp = _put(client, wid, "my", "evil.exe", "x")
-    assert resp.status_code == 400, resp.text
-    assert resp.json()["detail"]["code"] == "document_invalid_name"
-
-
-def test_invalid_name_no_extension_400(client, ws1_dir: Path) -> None:
-    wid = _register(client, ws1_dir)
-    resp = _put(client, wid, "my", "noext", "x")
-    assert resp.status_code == 400
-    assert resp.json()["detail"]["code"] == "document_invalid_name"
-
-
-def test_invalid_name_starts_with_dot_400(client, ws1_dir: Path) -> None:
-    wid = _register(client, ws1_dir)
-    resp = _put(client, wid, "my", ".hidden.md", "x")
-    assert resp.status_code == 400
-    assert resp.json()["detail"]["code"] == "document_invalid_name"
-
-
-def test_put_blocks_path_traversal(client, ws1_dir: Path) -> None:
-    wid = _register(client, ws1_dir)
-    # URL-encoded dot-dot segments. The route matcher / regex should reject
-    # this before it ever touches the filesystem.
-    resp = client.put(
-        f"/v1/workspaces/{wid}/documents/%2E%2E/%2E%2E.md",
-        content=b"pwned",
-        headers={"Content-Type": "text/plain; charset=utf-8"},
-    )
-    assert resp.status_code == 400, resp.text
-    code = resp.json()["detail"]["code"]
-    assert code in {
-        "document_invalid_category",
-        "document_invalid_name",
-        "document_path_outside_workspace",
-    }
-    # And the file we'd target by traversal must not exist.
-    assert not (ws1_dir.parent / "pwned.md").exists()
-
-
-def test_get_blocks_path_traversal_in_name(client, ws1_dir: Path) -> None:
-    wid = _register(client, ws1_dir)
-    # %2F decodes to "/" which Starlette uses as a path separator; the route
-    # simply does not match and returns 404. Either a 404 (no route match) or
-    # a 400 with a document_* code is acceptable evidence the traversal cannot
-    # land. What we forbid is a 200 response or any file written outside the
-    # workspace.
-    resp = client.get(f"/v1/workspaces/{wid}/documents/my/%2E%2E%2Fescape.md")
-    assert resp.status_code in {400, 404}
-    if resp.status_code == 400:
-        assert resp.json()["detail"]["code"] in {
-            "document_invalid_name",
-            "document_path_outside_workspace",
-        }
-
-
-def test_put_body_too_large_413(client, ws1_dir: Path) -> None:
-    wid = _register(client, ws1_dir)
-    blob = b"a" * (1024 * 1024 + 1)
-    resp = client.put(
-        f"/v1/workspaces/{wid}/documents/my/big.txt",
-        content=blob,
-        headers={"Content-Type": "text/plain; charset=utf-8"},
-    )
-    assert resp.status_code == 413, resp.text
-    body = resp.json()["detail"]
-    assert body["code"] == "document_too_large"
-    assert body["details"]["limit_bytes"] == 1024 * 1024
-
-
-def test_put_body_at_size_cap_succeeds(client, ws1_dir: Path) -> None:
-    wid = _register(client, ws1_dir)
-    blob = b"a" * (1024 * 1024)
-    resp = client.put(
-        f"/v1/workspaces/{wid}/documents/my/edge.txt",
-        content=blob,
-        headers={"Content-Type": "text/plain; charset=utf-8"},
-    )
-    assert resp.status_code == 200, resp.text
-
-
-def test_put_body_not_utf8_400(client, ws1_dir: Path) -> None:
-    wid = _register(client, ws1_dir)
-    resp = client.put(
-        f"/v1/workspaces/{wid}/documents/my/binary.txt",
-        content=b"\xff\xfe\x00bad",
-        headers={"Content-Type": "text/plain; charset=utf-8"},
-    )
-    assert resp.status_code == 400, resp.text
-    assert resp.json()["detail"]["code"] == "document_body_not_utf8"
-
-
-# ---------- existence / workspace ----------
-
-
-def test_get_missing_document_404(client, ws1_dir: Path) -> None:
-    wid = _register(client, ws1_dir)
-    resp = client.get(f"/v1/workspaces/{wid}/documents/my/none.md")
+    bogus = str(uuid.uuid4())
+    resp = client.get(f"/v1/workspaces/{wid}/documents/my/{bogus}")
     assert resp.status_code == 404
     assert resp.json()["detail"]["code"] == "document_not_found"
+
+
+def test_get_meta_missing_returns_404(client, ws1_dir: Path) -> None:
+    wid = _register(client, ws1_dir)
+    bogus = str(uuid.uuid4())
+    resp = client.get(f"/v1/workspaces/{wid}/documents/my/{bogus}/meta")
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "document_not_found"
+
+
+def test_get_content_invalid_file_id_400(client, ws1_dir: Path) -> None:
+    wid = _register(client, ws1_dir)
+    resp = client.get(f"/v1/workspaces/{wid}/documents/my/not-a-uuid")
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["code"] == "document_invalid_file_id"
+
+
+# ---------- PUT (replace content) ----------
+
+
+def test_put_replaces_content(client, ws1_dir: Path) -> None:
+    wid = _register(client, ws1_dir)
+    fid = _upload(client, wid, "my", filename="notes.md", content="v1").json()[
+        "file_id"
+    ]
+    resp = client.put(
+        f"/v1/workspaces/{wid}/documents/my/{fid}",
+        files={"file": ("notes.md", io.BytesIO(b"v2-longer"), "text/markdown")},
+    )
+    assert resp.status_code == 200, resp.text
+    entry = resp.json()
+    assert entry["size"] == len(b"v2-longer")
+    assert entry["display_name"] == "notes.md"
+    assert entry["updated_at"] >= entry["created_at"]
+    body = client.get(f"/v1/workspaces/{wid}/documents/my/{fid}").content
+    assert body == b"v2-longer"
+
+
+def test_put_can_rename_during_replace(client, ws1_dir: Path) -> None:
+    wid = _register(client, ws1_dir)
+    fid = _upload(client, wid, "my", filename="old.md", content="x").json()[
+        "file_id"
+    ]
+    resp = client.put(
+        f"/v1/workspaces/{wid}/documents/my/{fid}",
+        files={"file": ("ignored.md", io.BytesIO(b"new"), "text/markdown")},
+        data={"display_name": "new.md"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["display_name"] == "new.md"
+
+
+def test_put_rejects_extension_change(client, ws1_dir: Path) -> None:
+    wid = _register(client, ws1_dir)
+    fid = _upload(client, wid, "my", filename="notes.md", content="x").json()[
+        "file_id"
+    ]
+    resp = client.put(
+        f"/v1/workspaces/{wid}/documents/my/{fid}",
+        files={"file": ("notes.md", io.BytesIO(b"y"), "text/plain")},
+        data={"display_name": "notes.txt"},
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"]["code"] == "document_invalid_input"
+
+
+def test_put_missing_document_404(client, ws1_dir: Path) -> None:
+    wid = _register(client, ws1_dir)
+    fid = str(uuid.uuid4())
+    resp = client.put(
+        f"/v1/workspaces/{wid}/documents/my/{fid}",
+        files={"file": ("notes.md", io.BytesIO(b"x"), "text/markdown")},
+    )
+    assert resp.status_code == 404
+
+
+# ---------- PATCH (rename) ----------
+
+
+def test_patch_renames_document(client, ws1_dir: Path) -> None:
+    wid = _register(client, ws1_dir)
+    fid = _upload(client, wid, "my", filename="old.md", content="x").json()[
+        "file_id"
+    ]
+    resp = client.patch(
+        f"/v1/workspaces/{wid}/documents/my/{fid}",
+        json={"display_name": "renamed.md"},
+    )
+    assert resp.status_code == 200, resp.text
+    entry = resp.json()
+    assert entry["display_name"] == "renamed.md"
+    # Content unchanged.
+    assert client.get(f"/v1/workspaces/{wid}/documents/my/{fid}").content == b"x"
+
+
+def test_patch_rejects_extension_change(client, ws1_dir: Path) -> None:
+    wid = _register(client, ws1_dir)
+    fid = _upload(client, wid, "my", filename="old.md", content="x").json()[
+        "file_id"
+    ]
+    resp = client.patch(
+        f"/v1/workspaces/{wid}/documents/my/{fid}",
+        json={"display_name": "old.txt"},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["code"] == "document_invalid_input"
+
+
+def test_patch_missing_document_404(client, ws1_dir: Path) -> None:
+    wid = _register(client, ws1_dir)
+    fid = str(uuid.uuid4())
+    resp = client.patch(
+        f"/v1/workspaces/{wid}/documents/my/{fid}",
+        json={"display_name": "x.md"},
+    )
+    assert resp.status_code == 404
+
+
+# ---------- DELETE ----------
+
+
+def test_delete_removes_document_and_blob(client, ws1_dir: Path) -> None:
+    wid = _register(client, ws1_dir)
+    fid = _upload(client, wid, "my", filename="notes.md", content="x").json()[
+        "file_id"
+    ]
+    blob = ws1_dir / "documents" / "my" / "blobs" / f"{fid}.md"
+    assert blob.is_file()
+
+    resp = client.delete(f"/v1/workspaces/{wid}/documents/my/{fid}")
+    assert resp.status_code == 204
+    assert not blob.exists()
+    assert client.get(f"/v1/workspaces/{wid}/documents/my/{fid}").status_code == 404
 
 
 def test_delete_missing_document_404(client, ws1_dir: Path) -> None:
     wid = _register(client, ws1_dir)
-    resp = client.delete(f"/v1/workspaces/{wid}/documents/my/none.md")
+    resp = client.delete(
+        f"/v1/workspaces/{wid}/documents/my/{uuid.uuid4()}"
+    )
     assert resp.status_code == 404
-    assert resp.json()["detail"]["code"] == "document_not_found"
+
+
+# ---------- category validation ----------
+
+
+def test_invalid_category_400(client, ws1_dir: Path) -> None:
+    wid = _register(client, ws1_dir)
+    resp = client.get(f"/v1/workspaces/{wid}/documents/bad.cat")
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["code"] == "document_invalid_category"
 
 
 def test_unknown_workspace_404_on_all_routes(client) -> None:
-    bogus = "aaaaaaaaaaaa"
-    assert client.get(f"/v1/workspaces/{bogus}/documents/my").status_code == 404
-    assert client.get(f"/v1/workspaces/{bogus}/documents/my/x.md").status_code == 404
+    wid = "aaaaaaaaaaaa"
+    fid = str(uuid.uuid4())
+    assert client.get(f"/v1/workspaces/{wid}/documents/my").status_code == 404
+    assert client.get(f"/v1/workspaces/{wid}/documents/my/{fid}").status_code == 404
     assert (
-        client.put(
-            f"/v1/workspaces/{bogus}/documents/my/x.md",
-            content=b"x",
-            headers={"Content-Type": "text/plain; charset=utf-8"},
+        client.get(f"/v1/workspaces/{wid}/documents/my/{fid}/meta").status_code == 404
+    )
+    assert (
+        client.post(
+            f"/v1/workspaces/{wid}/documents/my",
+            files={"file": ("x.md", io.BytesIO(b"x"), "text/markdown")},
         ).status_code
         == 404
     )
-    assert client.delete(f"/v1/workspaces/{bogus}/documents/my/x.md").status_code == 404
+    assert client.delete(f"/v1/workspaces/{wid}/documents/my/{fid}").status_code == 404
 
 
-# ---------- directory target ----------
+# ---------- symlink escape (platform-aware) ----------
 
 
 def _can_symlink_dir(tmp: Path) -> bool:
-    """True if this process can create directory symlinks. False on Windows w/o privilege."""
     src = tmp / "_src"
     dst = tmp / "_dst"
     src.mkdir()
@@ -283,83 +383,44 @@ def _can_symlink_dir(tmp: Path) -> bool:
 def test_list_blocks_symlinked_category_escape(
     client, ws1_dir: Path, tmp_path: Path
 ) -> None:
-    """A category dir that symlinks outside the workspace must surface as 400."""
     if not _can_symlink_dir(tmp_path):
         pytest.skip("directory symlinks not permitted in this environment")
     wid = _register(client, ws1_dir)
-    outside = tmp_path / "outside_target"
+    outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "secret.md").write_text("not yours", encoding="utf-8")
     docs_root = ws1_dir / "documents"
     docs_root.mkdir(parents=True, exist_ok=True)
-    link = docs_root / "escape"
-    os.symlink(outside, link, target_is_directory=True)
-
+    os.symlink(outside, docs_root / "escape", target_is_directory=True)
     resp = client.get(f"/v1/workspaces/{wid}/documents/escape")
-    assert resp.status_code == 400, resp.text
+    assert resp.status_code == 400
     assert resp.json()["detail"]["code"] == "document_path_outside_workspace"
 
 
-def test_get_on_directory_target_returns_400(client, ws1_dir: Path) -> None:
-    wid = _register(client, ws1_dir)
-    # Land a directory at <ws>/documents/my/dir.md so the route + name regex
-    # accept it but the filesystem entry is a directory.
-    bad = ws1_dir / "documents" / "my" / "dir.md"
-    bad.mkdir(parents=True)
-    resp = client.get(f"/v1/workspaces/{wid}/documents/my/dir.md")
-    assert resp.status_code == 400, resp.text
-    assert resp.json()["detail"]["code"] == "document_path_not_file"
+# ---------- concurrency ----------
 
 
-# ---------- concurrency smoke ----------
-
-
-def test_concurrent_puts_do_not_corrupt(client, ws1_dir: Path) -> None:
-    wid = _register(client, ws1_dir)
-    payloads = [("a" * 500) + f"\n#{i}\n" for i in range(8)]
-
-    def write(payload: str) -> int:
-        r = client.put(
-            f"/v1/workspaces/{wid}/documents/my/race.md",
-            content=payload,
-            headers={"Content-Type": "text/plain; charset=utf-8"},
-        )
-        return r.status_code
-
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        codes = list(ex.map(write, payloads))
-    assert all(c == 200 for c in codes), codes
-
-    final = (ws1_dir / "documents" / "my" / "race.md").read_text(encoding="utf-8")
-    assert final in payloads
-
-
-def test_concurrent_puts_to_different_names_same_extension(
+def test_concurrent_uploads_each_get_unique_file_id(
     client, ws1_dir: Path
 ) -> None:
-    """Cross-document writes in the same category must not collide on temp files."""
     wid = _register(client, ws1_dir)
-    names = [f"doc{i}.md" for i in range(8)]
-    payloads = {n: f"# {n}\n" + ("x" * 200) for n in names}
+    names = [f"d{i}.md" for i in range(8)]
 
-    def write(name: str) -> int:
-        r = client.put(
-            f"/v1/workspaces/{wid}/documents/my/{name}",
-            content=payloads[name],
-            headers={"Content-Type": "text/plain; charset=utf-8"},
-        )
-        return r.status_code
+    def upload(name: str) -> str:
+        r = _upload(client, wid, "my", filename=name, content=name)
+        assert r.status_code == 201, r.text
+        return r.json()["file_id"]
 
     with ThreadPoolExecutor(max_workers=8) as ex:
-        codes = list(ex.map(write, names))
-    assert all(c == 200 for c in codes), codes
+        ids = list(ex.map(upload, names))
+    assert len(set(ids)) == 8
 
-    for name in names:
-        on_disk = (ws1_dir / "documents" / "my" / name).read_text(encoding="utf-8")
-        assert on_disk == payloads[name], f"{name} got mangled"
-
-    # And no stray temp files were left in the directory.
-    leftover_tmp = [
-        p.name for p in (ws1_dir / "documents" / "my").iterdir() if p.suffix == ".tmp"
-    ]
-    assert leftover_tmp == []
+    listed = client.get(f"/v1/workspaces/{wid}/documents/my").json()
+    assert {e["file_id"] for e in listed} == set(ids)
+    # No stray .tmp files leaked into the blobs dir or the manifest dir.
+    blobs = list((ws1_dir / "documents" / "my" / "blobs").iterdir())
+    assert all(not p.name.endswith(".tmp") for p in blobs)
+    manifest_dir = ws1_dir / "documents" / "my"
+    assert not any(
+        p.name.endswith(".tmp") and p.is_file() for p in manifest_dir.iterdir()
+    )
