@@ -13,6 +13,7 @@ from api.errors import error_body
 from api.events import PhaseRunEventBus
 from api.phase_registry import get_phase_registry
 from api.phase_runs import PhaseRunRegistry
+from api.routers import documents as documents_router
 from api.routers import phase_runs as phase_runs_router
 from api.routers import phases as phases_router
 from api.routers import workspaces as workspaces_router
@@ -87,6 +88,7 @@ def create_app() -> FastAPI:
     app.state.workspace_lock_manager = WorkspaceLockManager()
 
     app.include_router(workspaces_router.router)
+    app.include_router(documents_router.router)
     app.include_router(phases_router.router)
     app.include_router(phase_runs_router.router)
 
