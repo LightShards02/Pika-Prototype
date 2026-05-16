@@ -24,7 +24,7 @@ def test_resolve_advances_blocked_run_to_completed(client, ws1_dir: Path, monkey
 
     monkeypatch.setattr(phase_mod, "run_decomposition_check", fake_decomp)
 
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     resp = client.post(
         "/v1/phases/refine.decomposition-check/runs",
         json={"workspace_id": ws["id"], "inputs": {"design_spec_path": refine_input}},
@@ -66,7 +66,7 @@ def test_resolve_with_unresolved_items_returns_422(client, ws1_dir: Path, monkey
 
     monkeypatch.setattr(phase_mod, "run_decomposition_check", fake_decomp)
 
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     resp = client.post(
         "/v1/phases/refine.decomposition-check/runs",
         json={"workspace_id": ws["id"], "inputs": {"design_spec_path": refine_input}},
@@ -98,7 +98,7 @@ def test_resolve_resets_event_channel(client, ws1_dir: Path, monkeypatch) -> Non
         },
     )
 
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     resp = client.post(
         "/v1/phases/refine.decomposition-check/runs",
         json={"workspace_id": ws["id"], "inputs": {"design_spec_path": refine_input}},
@@ -129,7 +129,7 @@ def test_resolve_returns_409_when_not_blocked(client, ws1_dir: Path, monkeypatch
         phase_mod, "run_decomposition_check",
         lambda *_a, **_k: {"split_candidates": [], "merge_candidates": [], "skipped": False},
     )
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     resp = client.post(
         "/v1/phases/refine.decomposition-check/runs",
         json={"workspace_id": ws["id"], "inputs": {"design_spec_path": refine_input}},

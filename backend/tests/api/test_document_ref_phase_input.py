@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 def _register(client, ws1_dir: Path) -> str:
-    return client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()["id"]
+    return client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()["id"]
 
 
 def _upload_csv(client, wid: str, *, name: str, content: bytes) -> str:

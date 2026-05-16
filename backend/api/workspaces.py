@@ -11,6 +11,14 @@ from pathlib import Path
 from typing import Any
 
 
+class AbsoluteWorkspacePathError(ValueError):
+    """Raised when register() receives an absolute path."""
+
+
+class PathEscapesBaseError(ValueError):
+    """Raised when a relative workspace path resolves outside the base dir."""
+
+
 @dataclass(frozen=True)
 class WorkspaceRecord:
     id: str
@@ -52,8 +60,9 @@ def _config_resolves(path: Path) -> bool:
 class WorkspaceStore:
     """Idempotent on-disk store of registered workspaces."""
 
-    def __init__(self, registry_path: Path) -> None:
+    def __init__(self, registry_path: Path, base_dir: Path) -> None:
         self._path = registry_path
+        self._base_dir = base_dir.expanduser().resolve()
         self._lock = threading.Lock()
         self._records: dict[str, WorkspaceRecord] = {}
         self._load()
@@ -96,15 +105,30 @@ class WorkspaceStore:
     def register(self, raw_path: str) -> WorkspaceRecord:
         """Register a workspace. Idempotent.
 
-        Accepts absolute or relative paths; relative is resolved against the
-        server's current working directory, matching CLI ``--project-root``
-        semantics. The hashed ID is always taken from the resolved absolute
-        form so the same directory is the same workspace regardless of how
-        the client referenced it.
+        Accepts a relative path which is resolved against the store's
+        ``base_dir``. Absolute paths are rejected. The base directory is
+        created on demand if it does not yet exist, but the workspace
+        subdirectory must already exist.
+
+        The hashed ID is always taken from the resolved absolute form so the
+        same directory is the same workspace regardless of how the client
+        referenced it.
         """
         if not raw_path or not raw_path.strip():
             raise ValueError("workspace path must be non-empty")
-        p = Path(raw_path).expanduser().resolve()
+        raw = Path(raw_path).expanduser()
+        if raw.is_absolute():
+            raise AbsoluteWorkspacePathError(
+                "workspace path must be relative; absolute paths are not accepted"
+            )
+        self._base_dir.mkdir(parents=True, exist_ok=True)
+        base_resolved = self._base_dir.resolve()
+        candidate = (base_resolved / raw).resolve()
+        if candidate != base_resolved and not candidate.is_relative_to(base_resolved):
+            raise PathEscapesBaseError(
+                f"workspace path escapes base directory: {raw_path!r}"
+            )
+        p = candidate
         if not p.exists():
             raise FileNotFoundError(f"workspace path does not exist: {p}")
         if not p.is_dir():

@@ -43,7 +43,7 @@ def test_cancellation_persists_as_failed_with_cancelled_error_code(
 
     monkeypatch.setattr(PhaseRunRegistry, "put", put_then_mark)
 
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     resp = client.post(
         "/v1/phases/refine.decomposition-check/runs",
         json={"workspace_id": ws["id"], "inputs": {"design_spec_path": refine_input}},
@@ -74,7 +74,7 @@ def test_cancel_endpoint_marks_flag_on_running_run(client, ws1_dir: Path, monkey
         lambda *_a, **_k: {"split_candidates": [], "merge_candidates": [], "skipped": False},
     )
 
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     resp = client.post(
         "/v1/phases/refine.decomposition-check/runs",
         json={"workspace_id": ws["id"], "inputs": {"design_spec_path": refine_input}},
@@ -95,7 +95,7 @@ def test_cancel_returns_409_for_terminal_run(client, ws1_dir: Path, monkeypatch)
         phase_mod, "run_decomposition_check",
         lambda *_a, **_k: {"split_candidates": [], "merge_candidates": [], "skipped": False},
     )
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     resp = client.post(
         "/v1/phases/refine.decomposition-check/runs",
         json={"workspace_id": ws["id"], "inputs": {"design_spec_path": refine_input}},

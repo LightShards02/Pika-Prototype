@@ -8,7 +8,13 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from api.deps import api_state_dir, load_workspace_config, repo_root, workspace_registry_path
+from api.deps import (
+    api_state_dir,
+    load_workspace_config,
+    repo_root,
+    workspace_base_dir,
+    workspace_registry_path,
+)
 from api.errors import error_body
 from api.events import PhaseRunEventBus
 from api.phase_registry import get_phase_registry
@@ -71,7 +77,7 @@ def create_app() -> FastAPI:
     app = FastAPI(title="PIKA REST API", version="0.1.0")
 
     api_state_dir().mkdir(parents=True, exist_ok=True)
-    workspace_store = WorkspaceStore(workspace_registry_path())
+    workspace_store = WorkspaceStore(workspace_registry_path(), workspace_base_dir())
     phase_run_registry = PhaseRunRegistry()
 
     register_phases()

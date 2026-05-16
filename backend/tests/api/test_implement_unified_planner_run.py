@@ -24,7 +24,7 @@ def test_async_run_completes_with_artifacts(client, ws1_dir: Path, monkeypatch) 
         lambda **_kwargs: empty_planner_output(),
     )
 
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     resp = client.post(
         "/v1/phases/implement.unified-planner/runs",
         json={
@@ -62,7 +62,7 @@ def test_cache_replay_via_prior_planner_run_id(client, ws1_dir: Path, monkeypatc
 
     monkeypatch.setattr(phase_mod, "invoke_with_semantic_retry", fake_invoke)
 
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     first = client.post(
         "/v1/phases/implement.unified-planner/runs",
         json={
@@ -103,7 +103,7 @@ def test_missing_prior_run_returns_failed(client, ws1_dir: Path, monkeypatch) ->
         lambda **_kwargs: empty_planner_output(),
     )
 
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     resp = client.post(
         "/v1/phases/implement.unified-planner/runs",
         json={

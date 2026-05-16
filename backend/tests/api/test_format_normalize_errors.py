@@ -9,7 +9,7 @@ import pytest
 
 
 def _register_ws(client, ws1_dir: Path) -> str:
-    return client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()["id"]
+    return client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()["id"]
 
 
 def test_missing_required_input_returns_422(client, ws1_dir: Path) -> None:

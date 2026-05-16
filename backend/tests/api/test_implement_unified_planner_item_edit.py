@@ -19,7 +19,7 @@ def _start_blocked_planner_run(client, ws1_dir: Path, monkeypatch) -> tuple[str,
     from handlers.implement.phases import unified_planner as phase_mod
     monkeypatch.setattr(phase_mod, "invoke_with_semantic_retry", lambda **_kw: blocking_planner_output())
 
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     resp = client.post(
         "/v1/phases/implement.unified-planner/runs",
         json={
@@ -84,7 +84,7 @@ def test_edit_passes_memory_to_spec_editor(client, ws1_dir: Path, monkeypatch) -
     phase_run_id, items = _start_blocked_planner_run(client, ws1_dir, monkeypatch)
     assert len(items) >= 1
 
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     client.put(
         f"/v1/workspaces/{ws['id']}/memory/lessons",
         content="# Lessons\n\n- never use mocks in integration tests\n",

@@ -29,7 +29,7 @@ def test_blocked_then_resolve_advances_to_completed(client, ws1_dir: Path, monke
 
     monkeypatch.setattr(phase_mod, "invoke_agent_with_schema_retry", fake_invoke)
 
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     resp = client.post(
         "/v1/phases/map.match/runs",
         json={

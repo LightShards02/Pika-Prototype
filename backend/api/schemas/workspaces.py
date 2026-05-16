@@ -9,9 +9,10 @@ class WorkspaceCreateRequest(BaseModel):
     path: str = Field(
         ...,
         description=(
-            "Workspace root path. May be absolute or relative. Relative paths are "
-            "resolved against the API server's current working directory (matching "
-            "the CLI's --project-root semantics)."
+            "Workspace root path. Must be a relative path; it is resolved under "
+            "the API server's workspace base directory ($PIKA_WORKSPACE_BASE_DIR "
+            "or <repo_root>/dataset/nutrition/backend by default). Absolute paths "
+            "are rejected."
         ),
     )
 

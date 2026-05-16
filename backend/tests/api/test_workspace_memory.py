@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 def _register(client, ws1_dir: Path) -> str:
-    resp = client.post("/v1/workspaces", json={"path": str(ws1_dir)})
+    resp = client.post("/v1/workspaces", json={"path": ws1_dir.name})
     assert resp.status_code == 200, resp.text
     return resp.json()["id"]
 
@@ -88,7 +88,7 @@ def test_bootstrap_idempotent_preserves_user_writes(client, ws1_dir: Path) -> No
     )
     assert put_resp.status_code == 200
     # Re-register the same workspace.
-    again = client.post("/v1/workspaces", json={"path": str(ws1_dir)})
+    again = client.post("/v1/workspaces", json={"path": ws1_dir.name})
     assert again.status_code == 200
     bundle = client.get(f"/v1/workspaces/{wid}/memory").json()
     assert bundle["lessons"] == payload

@@ -18,7 +18,7 @@ import pytest
 def test_reflection_uses_lifecycle_resolver_for_agent_runs_root(
     client, ws1_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
 
     custom_root = ws1_dir / "alternate_agent_runs"
     phase_run_id = "20260512-093000-aaaa"
@@ -67,7 +67,7 @@ def test_reflection_uses_lifecycle_resolver_for_agent_runs_root(
 def test_reflection_falls_back_to_default_when_config_load_fails(
     client, ws1_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
 
     phase_run_id = "20260512-094500-bbbb"
     run_dir = ws1_dir / "out" / "agent_runs" / "format.normalize" / phase_run_id

@@ -37,6 +37,20 @@ def workspace_registry_path() -> Path:
     return api_state_dir() / "workspaces.json"
 
 
+def workspace_base_dir() -> Path:
+    """Return the base directory under which relative workspace paths resolve.
+
+    Mirrors the ``api_state_dir()`` pattern: ``$PIKA_WORKSPACE_BASE_DIR``
+    overrides the default of ``<repo_root>/dataset/nutrition/backend``.
+    The directory is not required to exist on disk; the workspace store
+    bootstraps it on demand.
+    """
+    override = os.environ.get("PIKA_WORKSPACE_BASE_DIR")
+    if override:
+        return Path(override).expanduser().resolve()
+    return (_REPO_ROOT / "dataset" / "nutrition" / "backend").resolve()
+
+
 def load_workspace_config(workspace_path: Path) -> dict[str, Any] | None:
     """Resolve and load the workspace's config.yaml; return None if not present."""
     from core.pika_config import get_pika_config

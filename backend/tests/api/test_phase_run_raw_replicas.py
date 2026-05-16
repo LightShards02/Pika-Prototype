@@ -30,7 +30,7 @@ def _make_quality_run_record(ws1_dir: Path, phase_run_id: str) -> Path:
 
 
 def test_raw_replicas_returns_files(client, ws1_dir: Path) -> None:
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     phase_run_id = "qa-test-1"
     _make_quality_run_record(ws1_dir, phase_run_id)
     from api.deps import get_phase_run_registry
@@ -47,7 +47,7 @@ def test_raw_replicas_returns_files(client, ws1_dir: Path) -> None:
 
 
 def test_raw_replicas_returns_404_for_non_quality_audit(client, ws1_dir: Path) -> None:
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     record = {
         "phase": "format.normalize",
         "phase_run_id": "fmt-1",
@@ -77,7 +77,7 @@ def test_raw_replicas_returns_404_for_unknown_run(client) -> None:
 
 def test_raw_replicas_empty_when_no_files_present(client, ws1_dir: Path) -> None:
     """Quality-audit run exists but no auditor_output_*.json files: 200 []."""
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     phase_run_id = "qa-empty-1"
     phase_run_dir = ws1_dir / "out" / "agent_runs" / "refine.quality-audit" / phase_run_id
     phase_run_dir.mkdir(parents=True, exist_ok=True)

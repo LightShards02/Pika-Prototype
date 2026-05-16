@@ -23,7 +23,7 @@ def test_async_run_completes_with_artifacts(client, ws1_dir: Path, monkeypatch) 
         lambda **kwargs: clean_mapper_output_for_subunit(kwargs.get("template_vars") or {}),
     )
 
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     resp = client.post(
         "/v1/phases/map.match/runs",
         json={
@@ -62,7 +62,7 @@ def test_cache_replay_via_prior_match_run_id(client, ws1_dir: Path, monkeypatch)
 
     monkeypatch.setattr(phase_mod, "invoke_agent_with_schema_retry", fake_invoke)
 
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     first = client.post(
         "/v1/phases/map.match/runs",
         json={
@@ -104,7 +104,7 @@ def test_missing_prior_run_returns_failed(client, ws1_dir: Path, monkeypatch) ->
         lambda **kwargs: clean_mapper_output_for_subunit(kwargs.get("template_vars") or {}),
     )
 
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     resp = client.post(
         "/v1/phases/map.match/runs",
         json={
@@ -149,7 +149,7 @@ def test_sse_progress_events_emitted_during_async_run(client, ws1_dir: Path, mon
 
     monkeypatch.setattr(phase_mod, "invoke_agent_with_schema_retry", gated_agent)
 
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     resp = client.post(
         "/v1/phases/map.match/runs",
         json={

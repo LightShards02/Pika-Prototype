@@ -26,7 +26,7 @@ def _start_blocked_decomp(client, ws1_dir: Path, monkeypatch) -> dict:
 
     monkeypatch.setattr(phase_mod, "run_decomposition_check", fake_decomp)
 
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     resp = client.post(
         "/v1/phases/refine.decomposition-check/runs",
         json={"workspace_id": ws["id"], "inputs": {"design_spec_path": refine_input}},
@@ -55,7 +55,7 @@ def test_get_resolutions_returns_409_when_not_blocked(client, ws1_dir: Path, mon
         phase_mod, "run_decomposition_check",
         lambda *_a, **_k: {"split_candidates": [], "merge_candidates": [], "skipped": False},
     )
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     resp = client.post(
         "/v1/phases/refine.decomposition-check/runs",
         json={"workspace_id": ws["id"], "inputs": {"design_spec_path": refine_input}},
@@ -109,7 +109,7 @@ def test_put_resolutions_on_non_blocked_run_returns_409(client, ws1_dir: Path, m
         phase_mod, "run_decomposition_check",
         lambda *_a, **_k: {"split_candidates": [], "merge_candidates": [], "skipped": False},
     )
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     resp = client.post(
         "/v1/phases/refine.decomposition-check/runs",
         json={"workspace_id": ws["id"], "inputs": {"design_spec_path": refine_input}},
@@ -153,7 +153,7 @@ def test_edit_invokes_spec_editor_on_blocked_item(client, ws1_dir: Path, monkeyp
     monkeypatch.setattr(resolve_mod, "invoke_spec_editor", lambda *_a, **_kw: fake_output)
     monkeypatch.setattr(resolve_mod, "_invoke_spec_editor", lambda *_a, **_kw: fake_output)
 
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     resp = client.post(
         "/v1/phases/refine.decomposition-check/runs",
         json={"workspace_id": ws["id"], "inputs": {"design_spec_path": refine_input}},
@@ -184,7 +184,7 @@ def test_edit_returns_404_for_out_of_range_index(client, ws1_dir: Path, monkeypa
             "skipped": False,
         },
     )
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     resp = client.post(
         "/v1/phases/refine.decomposition-check/runs",
         json={"workspace_id": ws["id"], "inputs": {"design_spec_path": refine_input}},

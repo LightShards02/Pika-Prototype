@@ -9,7 +9,7 @@ from pathlib import Path
 def test_registry_reflects_existing_run_meta(client, ws1_dir: Path) -> None:
     """Write a synthetic run_meta.json under the workspace and verify a fresh
     PhaseRunRegistry picks it up after registering the workspace + reloading."""
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
 
     phase_run_id = "20260510-153000-abcd"
     run_dir = ws1_dir / "out" / "agent_runs" / "format.normalize" / phase_run_id

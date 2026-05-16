@@ -19,7 +19,7 @@ _UUID4_RE = re.compile(
 
 
 def _register(client, ws1_dir: Path) -> str:
-    resp = client.post("/v1/workspaces", json={"path": str(ws1_dir)})
+    resp = client.post("/v1/workspaces", json={"path": ws1_dir.name})
     assert resp.status_code == 200, resp.text
     return resp.json()["id"]
 

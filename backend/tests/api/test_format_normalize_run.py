@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 def test_format_normalize_happy_path(client, ws1_dir: Path) -> None:
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
 
     resp = client.post(
         f"/v1/phases/format.normalize/runs",
@@ -42,7 +42,7 @@ def test_format_normalize_happy_path(client, ws1_dir: Path) -> None:
 
 
 def test_phase_run_lookup_after_completion(client, ws1_dir: Path) -> None:
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     created = client.post(
         f"/v1/phases/format.normalize/runs",
         json={
@@ -78,7 +78,7 @@ def test_run_meta_persists_running_then_terminal(client, ws1_dir: Path, monkeypa
 
     monkeypatch.setattr(phases_router, "_write_run_meta", spy)
 
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     resp = client.post(
         "/v1/phases/format.normalize/runs",
         json={

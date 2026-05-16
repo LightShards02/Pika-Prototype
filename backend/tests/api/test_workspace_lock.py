@@ -27,7 +27,7 @@ def test_two_runs_on_same_workspace_serialize(client, ws1_dir: Path, monkeypatch
     from handlers.refine.phases import decomposition_check as phase_mod
     monkeypatch.setattr(phase_mod, "run_decomposition_check", slow_decomp)
 
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     rid1 = client.post(
         "/v1/phases/refine.decomposition-check/runs",
         json={"workspace_id": ws["id"], "inputs": {"design_spec_path": refine_input}},

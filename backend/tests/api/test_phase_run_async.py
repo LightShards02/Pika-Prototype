@@ -51,7 +51,7 @@ def test_async_create_returns_202_with_events_url(client, ws1_dir: Path, monkeyp
 
     monkeypatch.setattr(phase_mod, "run_decomposition_check", fake_decomp)
 
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
 
     resp = client.post(
         "/v1/phases/refine.decomposition-check/runs",
@@ -84,7 +84,7 @@ def test_async_phase_persists_terminal_meta(client, ws1_dir: Path, monkeypatch) 
 
     monkeypatch.setattr(phase_mod, "run_decomposition_check", fake_decomp)
 
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     resp = client.post(
         "/v1/phases/refine.decomposition-check/runs",
         json={"workspace_id": ws["id"], "inputs": {"design_spec_path": refine_input}},
@@ -102,7 +102,7 @@ def test_async_phase_persists_terminal_meta(client, ws1_dir: Path, monkeypatch) 
 
 
 def test_format_normalize_still_returns_200_sync(client, ws1_dir: Path) -> None:
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     resp = client.post(
         "/v1/phases/format.normalize/runs",
         json={"workspace_id": ws["id"], "inputs": {"design_spec_path": "specs/raw_sads.csv"}},

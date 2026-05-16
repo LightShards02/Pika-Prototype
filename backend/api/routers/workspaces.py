@@ -20,7 +20,11 @@ from api.schemas.common import PhaseRunState
 from api.schemas.phases import PhaseRunResponse
 from api.schemas.workspaces import WorkspaceCreateRequest, WorkspaceResponse
 from api.workspace_lock import WorkspaceLockManager
-from api.workspaces import WorkspaceStore
+from api.workspaces import (
+    AbsoluteWorkspacePathError,
+    PathEscapesBaseError,
+    WorkspaceStore,
+)
 from core import memory_store
 
 router = APIRouter(prefix="/v1/workspaces", tags=["workspaces"])
@@ -35,6 +39,20 @@ def create_workspace(
 ) -> WorkspaceResponse:
     try:
         record = store.register(payload.path)
+    except AbsoluteWorkspacePathError as exc:
+        raise http_error(
+            status.HTTP_400_BAD_REQUEST,
+            "workspace_path_must_be_relative",
+            str(exc),
+            details={"path": payload.path},
+        ) from exc
+    except PathEscapesBaseError as exc:
+        raise http_error(
+            status.HTTP_400_BAD_REQUEST,
+            "workspace_path_escapes_base",
+            str(exc),
+            details={"path": payload.path},
+        ) from exc
     except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
         raise http_error(
             status.HTTP_400_BAD_REQUEST,
@@ -47,6 +65,14 @@ def create_workspace(
     except OSError as exc:
         _log.warning("memory bootstrap failed for %s: %s", record.path, exc)
     return WorkspaceResponse(**record.to_dict())
+
+
+@router.get("", response_model=list[WorkspaceResponse])
+def list_workspaces(
+    store: WorkspaceStore = Depends(get_workspace_store),
+) -> list[WorkspaceResponse]:
+    records = sorted(store.list(), key=lambda r: r.path)
+    return [WorkspaceResponse(**r.to_dict()) for r in records]
 
 
 @router.get("/{workspace_id}", response_model=WorkspaceResponse)

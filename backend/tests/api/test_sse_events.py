@@ -44,7 +44,7 @@ def test_events_emits_terminal_for_already_completed_run(client, ws1_dir: Path, 
         phase_mod, "run_decomposition_check",
         lambda *_a, **_k: {"split_candidates": [], "merge_candidates": [], "skipped": False},
     )
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     rid = client.post(
         "/v1/phases/refine.decomposition-check/runs",
         json={"workspace_id": ws["id"], "inputs": {"design_spec_path": refine_input}},
@@ -81,7 +81,7 @@ def test_stderr_pika_lines_become_progress_events(client, ws1_dir: Path, monkeyp
     from handlers.refine.phases import decomposition_check as phase_mod
     monkeypatch.setattr(phase_mod, "run_decomposition_check", slow_decomp)
 
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     rid = client.post(
         "/v1/phases/refine.decomposition-check/runs",
         json={"workspace_id": ws["id"], "inputs": {"design_spec_path": refine_input}},
@@ -113,7 +113,7 @@ def test_subscribe_to_blocked_run_emits_blocked_and_closes(client, ws1_dir: Path
 
     monkeypatch.setattr(phase_mod, "run_decomposition_check", fake_decomp)
 
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     rid = client.post(
         "/v1/phases/refine.decomposition-check/runs",
         json={"workspace_id": ws["id"], "inputs": {"design_spec_path": refine_input}},
@@ -140,7 +140,7 @@ def test_events_emits_failed_with_errorbody_payload(client, ws1_dir: Path, monke
 
     monkeypatch.setattr(phase_mod, "run_decomposition_check", boom)
 
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     rid = client.post(
         "/v1/phases/refine.decomposition-check/runs",
         json={"workspace_id": ws["id"], "inputs": {"design_spec_path": refine_input}},
@@ -178,7 +178,7 @@ def test_events_emits_cancelled_event(client, ws1_dir: Path, monkeypatch) -> Non
 
     monkeypatch.setattr(PhaseRunRegistry, "put", put_then_mark)
 
-    ws = client.post("/v1/workspaces", json={"path": str(ws1_dir)}).json()
+    ws = client.post("/v1/workspaces", json={"path": ws1_dir.name}).json()
     rid = client.post(
         "/v1/phases/refine.decomposition-check/runs",
         json={"workspace_id": ws["id"], "inputs": {"design_spec_path": refine_input}},

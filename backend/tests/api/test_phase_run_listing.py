@@ -38,7 +38,7 @@ def _make_record(
 
 
 def _register_ws(client, ws_dir: Path) -> str:
-    resp = client.post("/v1/workspaces", json={"path": str(ws_dir)})
+    resp = client.post("/v1/workspaces", json={"path": ws_dir.name})
     assert resp.status_code == 200, resp.text
     return resp.json()["id"]
 
@@ -202,10 +202,12 @@ def test_unknown_workspace_returns_404(client) -> None:
     assert resp.json()["detail"]["code"] == "workspace_not_found"
 
 
-def test_only_returns_runs_for_requested_workspace(client, app, ws1_dir: Path, tmp_path: Path) -> None:
+def test_only_returns_runs_for_requested_workspace(
+    client, app, ws1_dir: Path, workspace_base: Path
+) -> None:
     ws_a = _register_ws(client, ws1_dir)
 
-    other = tmp_path / "ws_other"
+    other = workspace_base / "ws_other"
     other.mkdir()
     ws_b = _register_ws(client, other)
     assert ws_a != ws_b
