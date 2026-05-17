@@ -102,13 +102,20 @@ class WorkspaceStore:
         tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         os.replace(tmp, self._path)
 
-    def register(self, raw_path: str) -> WorkspaceRecord:
+    def register(self, raw_path: str, *, seed_config: bool = False) -> WorkspaceRecord:
         """Register a workspace. Idempotent.
 
         Accepts a relative path which is resolved against the store's
         ``base_dir``. Absolute paths are rejected. The base directory is
         created on demand if it does not yet exist, but the workspace
-        subdirectory must already exist.
+        subdirectory must already exist -- unless ``seed_config`` is
+        true, in which case the subdirectory is mkdir'd on demand and a
+        minimal valid ``config/config.yaml`` is seeded if missing. The
+        seeding step is idempotent: an existing config file is never
+        overwritten.
+
+        Absolute-path and traversal checks always fire before any
+        seeding so they cannot be bypassed by ``seed_config=True``.
 
         The hashed ID is always taken from the resolved absolute form so the
         same directory is the same workspace regardless of how the client
@@ -128,6 +135,14 @@ class WorkspaceStore:
             raise PathEscapesBaseError(
                 f"workspace path escapes base directory: {raw_path!r}"
             )
+        if seed_config:
+            # Materialize the workspace subdir and seed a default config
+            # BEFORE the existence/is_dir checks so the post-seed state is
+            # validated by the same code path that handles create=False.
+            from api.workspace_scaffold import seed_default_config_if_missing
+
+            candidate.mkdir(parents=True, exist_ok=True)
+            seed_default_config_if_missing(candidate)
         p = candidate
         if not p.exists():
             raise FileNotFoundError(f"workspace path does not exist: {p}")

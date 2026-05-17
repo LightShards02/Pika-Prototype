@@ -38,7 +38,7 @@ def create_workspace(
     store: WorkspaceStore = Depends(get_workspace_store),
 ) -> WorkspaceResponse:
     try:
-        record = store.register(payload.path)
+        record = store.register(payload.path, seed_config=payload.create)
     except AbsoluteWorkspacePathError as exc:
         raise http_error(
             status.HTTP_400_BAD_REQUEST,

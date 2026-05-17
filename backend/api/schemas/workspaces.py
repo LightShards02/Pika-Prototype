@@ -15,6 +15,17 @@ class WorkspaceCreateRequest(BaseModel):
             "are rejected."
         ),
     )
+    create: bool = Field(
+        default=False,
+        description=(
+            "If true, the API will mkdir the resolved workspace subdir when it "
+            "does not yet exist and seed a minimal valid config/config.yaml from "
+            "the bundled default template. The seeding step is idempotent: an "
+            "existing config file is never overwritten. Absolute-path and "
+            "traversal checks still apply. Defaults to false to preserve the "
+            "legacy registration semantics."
+        ),
+    )
 
 
 class WorkspaceResponse(BaseModel):
