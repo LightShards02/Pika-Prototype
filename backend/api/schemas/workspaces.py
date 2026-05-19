@@ -11,7 +11,7 @@ class WorkspaceCreateRequest(BaseModel):
         description=(
             "Workspace root path. Must be a relative path; it is resolved under "
             "the API server's workspace base directory ($PIKA_WORKSPACE_BASE_DIR "
-            "or <repo_root>/dataset/nutrition/backend by default). Absolute paths "
+            "or <repo_root>/backend/workspaces by default). Absolute paths "
             "are rejected."
         ),
     )

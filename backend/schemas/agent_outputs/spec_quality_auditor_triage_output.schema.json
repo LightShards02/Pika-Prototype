@@ -22,8 +22,6 @@
         "spec_id",
         "concern_kinds",
         "concern_evidence",
-        "consequence_class",
-        "worst_case",
         "suggested_improvement"
       ],
       "properties": {
@@ -63,21 +61,6 @@
           "minItems": 1,
           "items": { "$ref": "#/$defs/concern_evidence_entry" },
           "description": "Per-kind diagnostic payload — one entry per concern_kind flagged on this item. See full schema for entry semantics."
-        },
-        "consequence_class": {
-          "type": "string",
-          "enum": [
-            "cosmetic",
-            "functional_defect",
-            "data_integrity",
-            "safety_or_clinical"
-          ],
-          "description": "Worst-case impact if this requirement is implemented incorrectly."
-        },
-        "worst_case": {
-          "type": "string",
-          "minLength": 1,
-          "description": "One-line concrete description of the worst observable outcome."
         },
         "suggested_improvement": {
           "type": "string",

@@ -20,9 +20,9 @@ from handlers.refine.decomposition import (
 )
 from handlers.refine.impl import (
     _REQUIRED_COLUMNS,
+    _fill_appendix_coverage_gaps,
     _filter_by_consensus,
     _find_col,
-    _format_severity_breakdown,
     _resume_refine,
     _synthesize_untestable_reason,
     _translate_v3_item_to_v2_legacy,
@@ -160,8 +160,6 @@ def _vague_item(spec_id: str = "S1", item_id: str = "QA-001") -> dict[str, Any]:
         "concern_evidence": [
             {"kind": "vague_language", "evidence": "appropriately"},
         ],
-        "consequence_class": "functional_defect",
-        "worst_case": "user input passes when it should be rejected",
         "suggested_improvement": "The system shall validate that input length <= 255 chars.",
     }
 
@@ -180,8 +178,6 @@ def _untestable_item(spec_id: str = "S2", item_id: str = "QA-002") -> dict[str, 
                 "test_type_if_fixed": "integration",
             },
         ],
-        "consequence_class": "data_integrity",
-        "worst_case": "results returned past SLA without observable error",
         "suggested_improvement": "The system shall return results within 200ms under normal load.",
     }
 
@@ -484,7 +480,7 @@ class RunRefineIntegrationTests(unittest.TestCase):
         self.assertEqual(run_meta["run_id"], "test-run")
 
     def test_auditor_output_persists_v3_metadata(self) -> None:
-        """auditor_output.json keeps v3 fields (concern_kinds, consequence_class) intact."""
+        """auditor_output.json keeps v3 fields (concern_kinds, concern_evidence) intact."""
         run_dir = Path(self.tmp) / "out" / "agent_runs" / "refine" / "test-run"
         full = self._full_with_items([_vague_item(), _untestable_item()])
         with _mock_auditor(full):
@@ -494,9 +490,10 @@ class RunRefineIntegrationTests(unittest.TestCase):
         data = json.loads(auditor_path.read_text(encoding="utf-8"))
         items_by_spec = {it["spec_id"]: it for it in data["manual_resolution_items"]}
         self.assertEqual(items_by_spec["S1"]["concern_kinds"], ["vague_language"])
-        self.assertEqual(items_by_spec["S1"]["consequence_class"], "functional_defect")
         self.assertEqual(items_by_spec["S2"]["concern_kinds"], ["untestable_outcome"])
-        self.assertEqual(items_by_spec["S2"]["consequence_class"], "data_integrity")
+        # concern_evidence preserved with per-kind diagnostic payload
+        self.assertEqual(items_by_spec["S1"]["concern_evidence"][0]["kind"], "vague_language")
+        self.assertEqual(items_by_spec["S2"]["concern_evidence"][0]["kind"], "untestable_outcome")
 
     def test_decomposition_flags_json_written(self) -> None:
         """Decomposition check writes decomposition_flags.json when enabled."""
@@ -1611,41 +1608,6 @@ class PhaseOnlyModeTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Group J: Severity rollup helper
-# ---------------------------------------------------------------------------
-
-class SeverityBreakdownTests(unittest.TestCase):
-    """_format_severity_breakdown() — counts MR items by consequence_class."""
-
-    def test_empty_returns_unspecified(self) -> None:
-        self.assertEqual(_format_severity_breakdown([]), "unspecified")
-
-    def test_orders_by_severity_descending(self) -> None:
-        items = [
-            {"consequence_class": "cosmetic"},
-            {"consequence_class": "safety_or_clinical"},
-            {"consequence_class": "data_integrity"},
-            {"consequence_class": "functional_defect"},
-        ]
-        out = _format_severity_breakdown(items)
-        # safety first, then data_integrity, then functional_defect, then cosmetic.
-        self.assertEqual(
-            out,
-            "1 safety_or_clinical, 1 data_integrity, 1 functional_defect, 1 cosmetic",
-        )
-
-    def test_skips_zero_counts(self) -> None:
-        items = [{"consequence_class": "data_integrity"}, {"consequence_class": "data_integrity"}]
-        self.assertEqual(_format_severity_breakdown(items), "2 data_integrity")
-
-    def test_unknown_bucket_for_missing_class(self) -> None:
-        items = [{"spec_id": "S1"}, {"consequence_class": "functional_defect"}]
-        out = _format_severity_breakdown(items)
-        self.assertIn("1 functional_defect", out)
-        self.assertIn("1 unknown", out)
-
-
-# ---------------------------------------------------------------------------
 # Group K: v3 -> v2 legacy translation for desktop-app compat
 # ---------------------------------------------------------------------------
 
@@ -1681,8 +1643,6 @@ class V3ToV2TranslationTests(unittest.TestCase):
                     "test_type_if_fixed": "unit",
                 },
             ],
-            "consequence_class": "functional_defect",
-            "worst_case": "feature does not work",
             "suggested_improvement": "...",
         }
         v2 = _translate_v3_item_to_v2_legacy(v3)
@@ -1699,8 +1659,6 @@ class V3ToV2TranslationTests(unittest.TestCase):
             "concern_evidence": [
                 {"kind": "implementation_leak", "evidence": "uses repository pattern with no observable consequence"},
             ],
-            "consequence_class": "cosmetic",
-            "worst_case": "design choice in spec",
             "suggested_improvement": "REMOVE: relocate to design documentation. Original: ...",
         }
         v2 = _translate_v3_item_to_v2_legacy(v3)
@@ -1721,8 +1679,6 @@ class V3ToV2TranslationTests(unittest.TestCase):
                     "verification_method": "configuration audit",
                 },
             ],
-            "consequence_class": "data_integrity",
-            "worst_case": "unencrypted PHI",
             "suggested_improvement": "AES-256 at rest. (Verification: configuration audit.)",
         }
         v2 = _translate_v3_item_to_v2_legacy(v3)
@@ -1730,11 +1686,11 @@ class V3ToV2TranslationTests(unittest.TestCase):
         self.assertEqual(v2["verification_method"], "configuration audit")
 
     def test_v3_metadata_passed_through(self) -> None:
-        """consequence_class, worst_case, concern_kinds carry through as extra fields."""
+        """concern_kinds carries through as an extra field; severity fields are no longer emitted."""
         v2 = _translate_v3_item_to_v2_legacy(_vague_item())
         self.assertEqual(v2["concern_kinds"], ["vague_language"])
-        self.assertEqual(v2["consequence_class"], "functional_defect")
-        self.assertTrue(v2["worst_case"].startswith("user input"))
+        self.assertNotIn("consequence_class", v2)
+        self.assertNotIn("worst_case", v2)
 
     def test_field_always_injected_as_requirement(self) -> None:
         """Translator injects field='requirement' regardless of input (schema dropped the const property)."""
@@ -1765,13 +1721,12 @@ class V3ToV2TranslationTests(unittest.TestCase):
             "spec_id": "S99",
             "concern_kinds": ["untestable_outcome"],
             "concern_evidence": [],
-            "consequence_class": "functional_defect",
-            "worst_case": "untracked drift",
             "suggested_improvement": "Rewritten.",
         }
         v2 = _translate_v3_item_to_v2_legacy(v3)
         self.assertIn("untestable_reason", v2)
-        self.assertIn("untracked drift", v2["untestable_reason"])
+        # Label-map fallback returns a stable short label keyed on the dominant concern_kind.
+        self.assertIn("not testable", v2["untestable_reason"].lower())
         self.assertNotIn("suggested_test_type", v2)
 
 
@@ -1946,8 +1901,6 @@ class QualityAuditorSchemaTests(unittest.TestCase):
                             "concern_evidence": [
                                 {"kind": kind, "evidence": "evidence text"},
                             ],
-                            "consequence_class": "functional_defect",
-                            "worst_case": "feature does not work",
                             "suggested_improvement": "Rewritten requirement.",
                         }
                     ],
@@ -1967,15 +1920,14 @@ class QualityAuditorSchemaTests(unittest.TestCase):
                     "concern_evidence": [
                         {"kind": "bogus_kind", "evidence": "x"},
                     ],
-                    "consequence_class": "functional_defect",
-                    "worst_case": "x",
                     "suggested_improvement": "y",
                 }
             ],
             "appendix_recommendations": [],
         })
 
-    def test_full_schema_rejects_unknown_consequence_class(self) -> None:
+    def test_full_schema_rejects_consequence_class_property(self) -> None:
+        """consequence_class was dropped; additionalProperties:false must reject it."""
         schema = self._load("spec_quality_auditor_output")
         self._validate_fails(schema, {
             "enrichments": [],
@@ -1988,8 +1940,7 @@ class QualityAuditorSchemaTests(unittest.TestCase):
                     "concern_evidence": [
                         {"kind": "vague_language", "evidence": "x"},
                     ],
-                    "consequence_class": "catastrophic",
-                    "worst_case": "x",
+                    "consequence_class": "functional_defect",
                     "suggested_improvement": "y",
                 }
             ],
@@ -2011,8 +1962,6 @@ class QualityAuditorSchemaTests(unittest.TestCase):
                     "concern_evidence": [
                         {"kind": "vague_language", "evidence": "x"},
                     ],
-                    "consequence_class": "functional_defect",
-                    "worst_case": "x",
                     "suggested_improvement": "y",
                 }
             ],
@@ -2033,8 +1982,6 @@ class QualityAuditorSchemaTests(unittest.TestCase):
                     "concern_evidence": [
                         {"kind": "vague_language", "evidence": "x"},
                     ],
-                    "consequence_class": "functional_defect",
-                    "worst_case": "x",
                     "suggested_improvement": "y",
                     "options": [{"option_id": "skip", "label": "L", "effect": "E"}],
                 }
@@ -2054,8 +2001,6 @@ class QualityAuditorSchemaTests(unittest.TestCase):
                     "spec_id": "S1",
                     "concern_kinds": ["vague_language"],
                     # concern_evidence omitted
-                    "consequence_class": "functional_defect",
-                    "worst_case": "x",
                     "suggested_improvement": "y",
                 }
             ],
@@ -2101,16 +2046,15 @@ class SynthesizeUntestableReasonTests(unittest.TestCase):
             "concern_evidence": [
                 {"kind": "untestable_outcome", "evidence": "Custom reason here."},
             ],
-            "worst_case": "ignored",
         }
         out = _synthesize_untestable_reason(item, ["untestable_outcome"])
         self.assertEqual(out, "Custom reason here.")
 
-    def test_falls_back_to_label_with_worst_case(self) -> None:
-        item = {"worst_case": "data corrupted on retry"}
+    def test_falls_back_to_label_for_implementation_leak(self) -> None:
+        """Without an untestable_outcome evidence entry, label_map fallback fires keyed on concern_kind."""
+        item: dict = {"concern_evidence": []}
         out = _synthesize_untestable_reason(item, ["implementation_leak"])
         self.assertIn("implementation", out.lower())
-        self.assertIn("data corrupted", out)
 
     def test_handles_unknown_kind(self) -> None:
         out = _synthesize_untestable_reason({}, ["bogus_kind"])
@@ -2122,11 +2066,131 @@ class SynthesizeUntestableReasonTests(unittest.TestCase):
             "concern_evidence": [
                 {"kind": "vague_language", "evidence": "appropriately"},
             ],
-            "worst_case": "feature broken",
         }
         out = _synthesize_untestable_reason(item, ["untestable_outcome"])
         self.assertIn("not testable", out.lower())
-        self.assertIn("feature broken", out)
+
+
+# ---------------------------------------------------------------------------
+# Group P: _fill_appendix_coverage_gaps deterministic backstop
+# ---------------------------------------------------------------------------
+
+class FillAppendixCoverageGapsTests(unittest.TestCase):
+    """_fill_appendix_coverage_gaps() — synthesizes ARs for pending_dictionaries
+    not covered by agent-emitted recommendations, enforcing the coverage invariant.
+    """
+
+    @staticmethod
+    def _enr(spec_id: str, *labels: str) -> dict[str, Any]:
+        return {
+            "spec_id": spec_id,
+            "pending_dictionaries": [{"dictionary_label": lbl} for lbl in labels],
+        }
+
+    @staticmethod
+    def _rec(rec_id: str, dict_type: str, *spec_ids: str) -> dict[str, Any]:
+        return {
+            "recommendation_id": rec_id,
+            "dictionary_type": dict_type,
+            "rationale": "agent-authored rationale",
+            "affected_spec_ids": list(spec_ids),
+            "suggested_dictionary_shape": "agent-authored shape",
+        }
+
+    def test_synthesizes_ar_when_pending_dict_uncovered(self) -> None:
+        """Pending dict that no AR covers gets a synthetic AR with the backstop rationale."""
+        enrichments = [
+            self._enr("A2001", "PHI-redaction policy dictionary"),
+            self._enr("A2002", "duplicate-suppression window table"),
+        ]
+        recommendations = [
+            self._rec("AR1", "PHI-redaction policy dictionary", "A2001"),
+        ]
+        out = _fill_appendix_coverage_gaps(enrichments, recommendations)
+
+        self.assertEqual(len(out), 2)
+        synthetic = next((r for r in out if r["recommendation_id"] != "AR1"), None)
+        self.assertIsNotNone(synthetic)
+        self.assertTrue(
+            synthetic["rationale"].startswith("Auto-emitted to backstop coverage"),
+            f"synthetic AR rationale was: {synthetic['rationale']!r}",
+        )
+        self.assertEqual(synthetic["affected_spec_ids"], ["A2002"])
+
+    def test_no_synthetic_ar_when_fully_covered(self) -> None:
+        """When every pending_dictionary already has a matching AR, no synthetic AR is added."""
+        enrichments = [
+            self._enr("A2001", "PHI-redaction policy dictionary"),
+            self._enr("A2002", "duplicate-suppression window table"),
+        ]
+        recommendations = [
+            self._rec("AR1", "PHI-redaction policy dictionary", "A2001"),
+            self._rec("AR2", "duplicate-suppression window table", "A2002"),
+        ]
+        out = _fill_appendix_coverage_gaps(enrichments, recommendations)
+        self.assertEqual(len(out), 2)
+        for rec in out:
+            self.assertFalse(
+                rec["rationale"].startswith("Auto-emitted to backstop coverage"),
+                f"unexpected synthetic AR: {rec}",
+            )
+
+    def test_multiple_uncovered_dicts_each_get_own_ar(self) -> None:
+        """Three distinct uncovered dictionaries produce three distinct synthetic ARs."""
+        enrichments = [
+            self._enr("A2001", "PHI-redaction policy dictionary"),
+            self._enr("A2002", "duplicate-suppression window table"),
+            self._enr("A2003", "operator role tier dictionary"),
+        ]
+        out = _fill_appendix_coverage_gaps(enrichments, [])
+
+        self.assertEqual(len(out), 3)
+        synthetic_count = sum(
+            1 for r in out
+            if r["rationale"].startswith("Auto-emitted to backstop coverage")
+        )
+        self.assertEqual(synthetic_count, 3)
+
+        affected_singletons = sorted(r["affected_spec_ids"] for r in out)
+        self.assertEqual(affected_singletons, [["A2001"], ["A2002"], ["A2003"]])
+
+        rec_ids = sorted(r["recommendation_id"] for r in out)
+        self.assertEqual(rec_ids, ["AR1", "AR2", "AR3"])
+
+    def test_synthetic_ar_dictionary_type_drawn_from_pending_dict(self) -> None:
+        """The synthetic AR's dictionary_type matches the source pending_dictionary label exactly."""
+        label = "anonymization fingerprint dictionary"
+        enrichments = [self._enr("A2068", label)]
+        out = _fill_appendix_coverage_gaps(enrichments, [])
+
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["dictionary_type"], label)
+        self.assertEqual(out[0]["affected_spec_ids"], ["A2068"])
+
+    def test_appends_uncovered_spec_id_to_existing_matching_ar(self) -> None:
+        """When an AR's dictionary_type matches a pending dict but its affected_spec_ids
+        is missing the source spec, the spec_id is appended (not a new AR synthesized)."""
+        enrichments = [
+            self._enr("A2001", "PHI-redaction policy dictionary"),
+            self._enr("A2099", "PHI-redaction policy dictionary"),
+        ]
+        recommendations = [
+            self._rec("AR1", "PHI-redaction policy dictionary", "A2001"),
+        ]
+        out = _fill_appendix_coverage_gaps(enrichments, recommendations)
+
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["recommendation_id"], "AR1")
+        self.assertEqual(sorted(out[0]["affected_spec_ids"]), ["A2001", "A2099"])
+        self.assertFalse(
+            out[0]["rationale"].startswith("Auto-emitted to backstop coverage"),
+            "AR1 should retain its original rationale, not be replaced",
+        )
+
+    def test_empty_enrichments_returns_recommendations_unchanged(self) -> None:
+        recommendations = [self._rec("AR1", "type-X", "A2001")]
+        out = _fill_appendix_coverage_gaps([], recommendations)
+        self.assertEqual(out, recommendations)
 
 
 if __name__ == "__main__":

@@ -158,14 +158,14 @@ def test_workspace_base_dir_env_override(
         assert Path(body["path"]) == (override / "ws1").resolve()
 
 
-def test_workspace_base_dir_default_is_dataset_nutrition_backend(
+def test_workspace_base_dir_default_is_backend_workspaces(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Without the env var, workspace_base_dir() points at <repo_root>/dataset/nutrition/backend."""
+    """Without the env var, workspace_base_dir() points at <repo_root>/backend/workspaces."""
     from api.deps import repo_root, workspace_base_dir
 
     monkeypatch.delenv("PIKA_WORKSPACE_BASE_DIR", raising=False)
-    expected = (repo_root() / "dataset" / "nutrition" / "backend").resolve()
+    expected = (repo_root() / "backend" / "workspaces").resolve()
     assert workspace_base_dir() == expected
 
 

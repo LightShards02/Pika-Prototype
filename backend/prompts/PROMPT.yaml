@@ -1046,30 +1046,110 @@ prompts:
       Read every appendix document in the Appendix Documents section. For each one, identify:
         - Its domain type: source contracts (input field formats and constraints), configuration proposals (runtime parameter values), DTO schemas (structured message definitions), error code registries, data flow diagrams, or other.
         - What kind of resolution it can provide: concrete values, field formats, type definitions, enum lists, error code mappings, etc.
-      Record this type-map mentally. You will use it in Stage 1.
+      Record this type-map mentally. You will use it in Stage 0.5 and Stage 1.
+
+      ============================================================
+      STAGE 0.5 — DEFERRED REFERENCE RESOLUTION (run before any rule family)
+      ============================================================
+      Many requirements use **deferred reference phrases** — placeholders that point at content living in an appendix or a sibling spec rather than inlining the values. Common patterns:
+        - "the documented X" / "the documented X fields" / "the documented required and optional fields"
+        - "the configured X" / "the configured value" / "the configured limit"
+        - "the standard X" / "the standard format"
+        - "the defined X" / "the defined enumeration" / "the appendix-defined X"
+        - "the canonical X" / "the catalog-defined X" / "the contract-defined X"
+
+      For each spec row, scan the requirement for any such phrase. For each phrase found, perform a **semantic resolution check** against the appendix type-map from Stage 0 and against sibling spec rows.
+
+      Resolution rules:
+        - SEMANTIC, not literal. The appendix entry does not need the same surface phrasing as the requirement. "the documented Order Message DTO fields" is RESOLVED by an appendix entry titled "Order Message DTO" listing field names and types. Match on subject, not on surface word overlap.
+        - COVERAGE: if the appendix supplies the values, types, formats, ordering, or enumeration the requirement defers to, the reference is RESOLVED. The appendix only needs to cover what THIS requirement defers.
+        - META-ATTRIBUTE coverage: when the requirement defers to a meta-attribute OF the appendix entries (which fields are required vs optional, which entries are deprecated, which methods are GET vs POST), the reference is RESOLVED when individual appendix entries already carry that meta-attribute as part of their data. A DTO catalog row that lists `field_a string required; field_b string optional; field_c integer required` resolves a requirement deferring to "the documented required and optional fields" — the required/optional split IS the data on the row, not a separate dictionary that needs authoring.
+        - FORM-NEUTRAL coverage: appendix content in prose form (sentence-form descriptions, numbered or bulleted lists inside a markdown appendix, narrative data-flow text) counts as RESOLUTION just like tabular CSV rows. A markdown bullet "DATA probes `order_source`, `manifest_source`, `repository`, and `audit_sink`" resolves a deferred reference to "the documented dependencies". Do not disqualify resolution on form alone.
+        - PARTIAL coverage: when the appendix supplies some but not all of the deferred values (e.g. requirement defers an enumeration of 5 outcomes, appendix lists only 3), the missing portion is UNRESOLVED.
+        - CROSS-SPEC resolution: a deferred reference may be resolved by a sibling spec_id named explicitly ("as defined in A1001") or implicitly in adjacent CSV rows.
+
+      Wording classification — applies to UNRESOLVED references only:
+      Once a deferred reference is classified UNRESOLVED, examine the requirement's wording to decide whether the spec contains a falsifiable claim about external existence (DEFINITIVE) or merely names a slot (INDEFINITE). The classification decides whether the spec is added to manual_resolution_items[].
+        - **DEFINITIVE wording** — the spec asserts that a specific external authority exists and contains the resolution. Markers: "as defined in <named locus>", "as specified in <named locus>", "per the <X> specification", "per <RFC / ISO clause / named standard>", "the canonical <X>", "the official <X>", "the well-defined <X>", "the designated <X>". The spec NAMES the authority, not just the slot. If the named authority does not exist or does not contain the resolution, the spec's premise is false — flag the spec as `unresolvable_reference`.
+        - **INDEFINITE wording** — the spec uses a placeholder / variable-name style; the reference is a slot whose value lives in the appendix space. Markers: "the documented X", "the configured X", "the recorded X", "the appendix-defined X", "the standard <generic noun>", "the X" where X is the spec's own noun. The phrasing names the slot, not an asserting authority. There is NO falsifiable claim about external existence — the slot is simply waiting for an appendix dictionary. Do NOT add the spec to manual_resolution_items[] on the basis of this reference.
+      Edge cases:
+        - "appendix-defined X" / "the X-defined Y": INDEFINITE — these qualify the slot's location, not assert an external authority.
+        - "the canonical X" / "the official X" attached to a specific concept: DEFINITIVE — asserts that X has a canonical form somewhere.
+        - "as documented in <X>": DEFINITIVE if <X> names a specific external authority; INDEFINITE if <X> is just "the appendix" generically.
+        - Plain "documented" without a named locus: INDEFINITE.
+      Per-spec rule: if ANY UNRESOLVED reference in the requirement is DEFINITIVE, the spec is MR-eligible. If ALL UNRESOLVED references are INDEFINITE, the spec is CLEAN.
+
+      Outcomes — apply globally before any rule-family classification:
+        - **RESOLVED** → the deferred reference itself is NOT a flag-worthy defect. Do NOT classify this spec as vague_language, unresolvable_reference, untestable_outcome, implementation_leak, or legitimate_constraint ON THE BASIS OF THAT PHRASE. The spec may still be flagged for INDEPENDENT reasons (modal verbs, negative-only behavior, unbounded universals, internal-state-only requirements) — not the deferred reference. If no independent defect exists, treat the spec as CLEAN.
+        - **UNRESOLVED + DEFINITIVE wording** → flag as `unresolvable_reference` in manual_resolution_items[]. In full mode, ALSO emit a Stage 1.B `appendix_recommendation` listing this spec_id.
+        - **UNRESOLVED + INDEFINITE wording** → treat the spec as CLEAN. Do NOT add to manual_resolution_items[]. Stage 2 authors AC using abstract placeholders ("the configured X", "the documented X") consistent with the requirement's existing wording — do NOT invent concrete values to fill the slot. When authoring this spec's enrichment, populate `pending_dictionaries[]` with one entry per missing dictionary the spec depends on (e.g. `{"dictionary_label": "correlation key dictionary"}`). Choose a dictionary_label that names the missing artifact in natural language — the orchestrator will reuse this label as the `dictionary_type` of a synthesized appendix_recommendation if you do not cluster the spec into an existing recommendation. You may still author a Stage 1.B `appendix_recommendation` for a high-confidence cluster — the orchestrator deduplicates by label match — but you are not required to handle every spec; uncovered specs are backstopped deterministically.
+        - The spec may still be flagged for INDEPENDENT reasons (modal verbs, negative-only behavior, etc.) regardless of the deferred-reference verdict — those reasons go in their own MR item with their own concern_kind, alongside any deferred-reference flag this outcome produces.
+
+      Critical: this gate runs BEFORE Stage 1's rule families fire, not after. Do not "flag and then check the appendix." Check the appendix FIRST and skip the flag entirely when resolved. The flag-then-check sequence historically over-fired on appendix-grounded references; this stage exists to prevent that.
+
+      Worked example A — required/optional split, RESOLVED (META-ATTRIBUTE):
+        Requirement: "CORE shall accept the documented required and optional fields of the Manifest Row DTO."
+        Stage 0.5 check: `appendix_dto_definitions.csv` row "Manifest Row DTO" lists each field with an explicit `required` or `optional` marker (e.g. `barcode_id string required; row_number integer required`). The required/optional split is encoded as part of each field's data. RESOLVED.
+        Conclusion: do NOT flag. Do NOT emit an appendix_recommendation for a "required/optional field dictionary" — the DTO catalog already encodes the split.
+
+      Worked example B — prose-form appendix coverage, RESOLVED (FORM-NEUTRAL):
+        Requirement: "the CLI module shall display the documented dependencies of the readiness check."
+        Stage 0.5 check: `appendix_data_flow.md` contains the prose line "DATA probes `order_source`, `manifest_source`, `repository`, and `audit_sink`." That enumeration is RESOLUTION even though the appendix uses a markdown sentence rather than a CSV column.
+        Conclusion: do NOT flag. The deferred reference is grounded.
+
+      Worked example C — INDEFINITE wording, UNRESOLVED → CLEAN + recommendation:
+        Requirement: "the CLI module shall print dependency states in the appendix-defined dependency-state order."
+        Stage 0.5 check: `appendix_data_flow.md` names the dependencies but does NOT define an ordering. UNRESOLVED for the ordering aspect.
+        Wording classification: "the appendix-defined dependency-state order" is INDEFINITE despite containing "defined" — "appendix-defined" qualifies the slot's location (the appendix is where the ordering would live), not an external authority being asserted as already containing the value. The phrasing reads as "the ordering that the appendix [will] define."
+        Conclusion: do NOT add to manual_resolution_items[]. Treat the spec as CLEAN; Stage 2 authors AC with abstract placeholders like "CLI prints dependency states in the configured order." Emit a Stage 1.B appendix_recommendation for a dependency-state-ordering dictionary, listing this spec_id. A future refine run, after the appendix is updated, will resolve the reference and replace the placeholder AC with concrete ordering.
+
+      Worked example D — DEFINITIVE wording, UNRESOLVED → MR + recommendation:
+        Requirement: "the WORKER module shall validate incoming orders per the canonical HL7 v2.5 message format as defined in section 4.2 of the source contracts appendix."
+        Stage 0.5 check: `appendix_source_contracts.csv` has source-contract entries but no section labeled "4.2" and no HL7 v2.5 message format. UNRESOLVED.
+        Wording classification: "per the canonical HL7 v2.5 message format as defined in section 4.2 of the source contracts appendix" is DEFINITIVE — the spec asserts a named external standard AND a specific appendix location. Both are falsifiable assertions; both fail.
+        Conclusion: flag as `unresolvable_reference` in manual_resolution_items[]. ALSO emit a Stage 1.B appendix_recommendation listing this spec_id. The MR item gives the operator a chance to either fix the spec (correct the citation, drop the reference) or supply the missing authority.
 
       ============================================================
       STAGE 1 — QUALITY CLASSIFICATION (both modes)
       ============================================================
-      For each spec row, decide whether the requirement is CLEAN (clear, testable, no concerns) or has one or more quality concerns. Apply every rule below; a single spec may trigger multiple rules. When it does, emit ONE manual_resolution_item with concern_kinds[] holding every kind that fired.
+      Reminder: Stage 0.5 already ran. If a deferred reference in this requirement was RESOLVED there, do NOT re-flag this spec on the basis of that reference under any rule family below. Rule-family flagging applies only to INDEPENDENT defects (modal verbs, negative-only behavior, unbounded universals, internal-state requirements, etc.) — not to appendix-grounded placeholders.
+
+      --- Sequence resolution pass (run FIRST, before any per-check evaluation) ---
+      A spec whose requirement defers content to adjacent specs MUST be evaluated as part of that sibling group, not in isolation. Recognize the semantic intent — "the full content for this requirement lives in adjacent rows, not here" — regardless of exact wording. Illustrative cues include colon-ending lists ("…one of the following:", "…in this order:"), directional keywords ("above", "the prior", "as previously stated", "the following", "the next N", "as detailed below"), and sibling ID conventions (A2031 ↔ A2031a/b/c, or adjacent numeric IDs like A2031 → A2032).
+
+      When such a deferral is detected, scan rows immediately adjacent (by row order AND by spec_id proximity) for rows that fill in the deferred content. If the siblings together complete the sequence (and match the appendix's authoritative set if any), treat the parent as RESOLVED against its group and SKIP Checks A–D entirely for the parent — do not emit any MR item for it. If the siblings are missing, partial relative to the appendix's authoritative set, or contradictory, the parent enters Check B as unresolvable_reference with evidence naming the gap. Detail rows are evaluated as part of the group and are NOT flagged in isolation for lacking preconditions the parent provides.
+
+      CRITICAL — do not flag the parent solely because its row alone is incomplete: a colon-ending or otherwise sibling-deferring parent is INTENDED to be incomplete on its own; its function is to introduce the sibling group. Observations like "the parent row alone does not contain the [enumeration / category set / list]" or "relies on sibling sequence rows" are structurally true of every such header by design and are NOT defects. Only the combined parent + siblings unit is evaluated for completeness; if the unit is complete, emit no MR item for any row in the unit.
+
+      For each spec row, perform FOUR independent checks before deciding the verdict. Do NOT stop after the first check fires — all four checks must be evaluated and recorded before you decide whether the spec is CLEAN or which concern_kinds[] to emit. Short-circuiting on the first triggered family causes compound defects to be silently downgraded to single-family.
+
+        Check A (vague_language): does the requirement use modal verbs ("should", "may", "might", "could") or hedge phrases ("reasonable", "appropriate", "sufficient", "typically", "usually") for observable behavior, or name behavior without measurable outcomes ("handles errors appropriately")? Record YES/NO. If YES, record the exact triggering phrase.
+
+        Check B (unresolvable_reference): does the requirement reference an appendix entry or sibling spec that is missing, duplicate, type-conflicting, has TBD/placeholder content, or only partial coverage of the values the requirement implies? Stage 0.5's UNRESOLVED + DEFINITIVE outcomes funnel into this check. Record YES/NO. If YES, record the unresolved reference text or the missing/conflicting appendix entry.
+
+        Check C (untestable_outcome): is the requirement clear and specific but still produces no testable outcome — negative-only without bounded input space, unbounded universal quantifier over undefined domain, circular/deferred oracle with no appendix resolution, or internal-state-only without observable artifact? Record YES/NO. If YES, record the reason (one sentence) AND the test type that would become possible after the fix (test_type_if_fixed ∈ unit | integration | e2e | manual).
+
+        Check D (implementation_leak vs legitimate_constraint): does the requirement constrain internal design (algorithm / pattern / library / data structure / log format / UI pixel layout) that produces no observable artifact from outside the module's boundary? If YES, then: if project_context, appendix, or the requirement itself cites an external mandate (regulation, security policy, contract, named standard), mark legitimate_constraint and record the verification_method (non-behavioral verification mechanism). If YES and no external mandate, mark implementation_leak and record the internal-choice clause + why it has no observable consequence. If NO internal-design constraint, neither sub-case fires.
+
+      After ALL FOUR checks complete: if 0 fired, the spec is CLEAN — in full mode proceed to Stage 2; in triage mode emit nothing for this spec. If 1+ fired, emit ONE manual_resolution_item with concern_kinds[] containing every kind that fired and concern_evidence[] containing the recorded triggers. Multi-trigger items are expected; the per-check structure exists precisely so they don't get silently downgraded.
 
       Decide whether to consult the appendix for each spec row: consult when the requirement references an external contract, schema, configuration parameter, DTO, or error mapping. Do NOT consult for rows with no external references.
 
       Concern evidence (REQUIRED on every manual_resolution_item):
-      For every kind you place in concern_kinds[], append exactly one entry to concern_evidence[] with `kind` set to that string. The entry's `evidence` field carries the kind-specific diagnostic content described in each rule family below. Two optional payload fields are available on the entry:
-        - test_type_if_fixed: populate when kind == "untestable_outcome". Names the test type (unit | integration | e2e | manual) that becomes possible after applying suggested_improvement.
-        - verification_method: populate when kind == "legitimate_constraint". Names the non-behavioral verification mechanism (e.g. "configuration audit per security policy", "code review against SOC-2 control X").
-      concern_evidence[].kind values must match concern_kinds[] exactly — no extras, no omissions.
+      For each kind in concern_kinds[], append exactly one entry to concern_evidence[] with `kind` set to that string. concern_evidence[].kind values must match concern_kinds[] exactly — no extras, no omissions. Per-kind evidence payload:
+        - vague_language → `evidence` = the exact triggering phrase from the requirement (verbatim).
+        - unresolvable_reference → `evidence` = the unresolved reference text, or the missing/conflicting appendix entry.
+        - untestable_outcome → `evidence` = a one-sentence explanation of why the requirement cannot produce a testable outcome. Also set `test_type_if_fixed` ∈ {unit, integration, e2e, manual} — the test type that becomes possible after applying suggested_improvement.
+        - implementation_leak → `evidence` = the internal-choice clause and why it has no observable consequence.
+        - legitimate_constraint → `evidence` = the external mandate (regulation, policy, standard, or contract clause). Also set `verification_method` naming the non-behavioral verification mechanism (e.g. "configuration audit per security policy").
 
       --- Rule family A: VAGUE_LANGUAGE ---
       Flag concern_kind: vague_language when the requirement:
         - Uses modal verbs ("should", "may", "might", "could") for observable behavior.
         - Names behavior without measurable outcomes (e.g. "handles errors appropriately", "performs efficiently").
         - Contains hedge phrases ("reasonable", "appropriate", "sufficient", "as needed", "if necessary", "typically", "usually") without bounding context.
-      Do NOT flag vague_language when:
-        - A parenthetical or trailing clause supplies a concrete example value or constant (e.g. "(e.g., 4 characters)", "such as 30 seconds", "for instance HTTP 409"). The example pins a verifiable value even if the surrounding clause sounds general; treat the example as the testable target.
-        - The requirement names a parameter as "configured", "the configured value", "the documented limit", etc. and the appendix or a sibling spec resolves it. Resolved deferred references are not vague.
-      Concern evidence: when you flag vague_language, append one concern_evidence entry with kind="vague_language" and evidence set to the exact triggering phrase from the requirement (verbatim). Phrases that fall under the exceptions above must NOT be cited as evidence.
+      Do NOT flag vague_language when a parenthetical or trailing clause supplies a concrete example value or constant (e.g. "(e.g., 4 characters)", "such as 30 seconds", "for instance HTTP 409"). The example pins a verifiable value even if the surrounding clause sounds general; treat the example as the testable target.
+      Phrases falling under the vague_language exceptions (parenthetical example values; resolved deferred references per Stage 0.5) must NOT be cited as evidence.
 
       --- Rule family B: UNRESOLVABLE_REFERENCE ---
       Cross-spec references: if a requirement references another spec by explicit ID ("as defined in A1001", "see A2003") or by relative position ("as specified above", "the row below"), resolve the reference against the CSV. For explicit IDs, look up the spec_id directly. For relative references, use the adjacent rows in CSV order. Flag concern_kind: unresolvable_reference when:
@@ -1082,30 +1162,34 @@ prompts:
         - Undefined contract fields: the referenced appendix entry has incomplete or placeholder format (TBD, vendor-specific, source-defined) for a field the spec depends on.
         - DTO type conflicts: the same DTO name appears with conflicting field type definitions, OR the appendix defines a field type incompatible with how the spec uses it (e.g. spec compares numerically but appendix defines as enum).
         - Appendix sufficiency: if the requirement asserts distinct outputs/codes/values for different input cases, count how many distinct entries the relevant appendix supplies. If fewer than the requirement implies, the upstream source is incomplete.
-      Do NOT flag when the appendix fully resolves the deferred reference — that is exactly what the appendix is for.
-      Concern evidence: when you flag unresolvable_reference, append one concern_evidence entry with kind="unresolvable_reference" and evidence naming the unresolved reference text (or the missing/conflicting appendix entry).
+
+      Authority citation check: when the requirement asserts that some external source (an appendix file, dictionary, section, vocab entry, or named authority) defines / specifies / documents a concept — regardless of exact phrasing — you MUST verify that the cited source actually contains the named concept. Recognize the semantic intent (X is presented as the authority for Y), not a fixed phrase list. Illustrative shapes include "as defined in / specified in / per the appendix-defined / as required by / per the canonical / the X-mandated Y", among others. If the cited source exists but is silent on the named concept ("present but mute"), flag concern_kind: unresolvable_reference with evidence calling out the specific gap (e.g. "appendix_error_codes.csv exists but defines no error-envelope structure"). Existence of the cited file alone does NOT resolve the reference; only its containing the named concept does.
 
       --- Rule family C: UNTESTABLE_OUTCOME ---
       Flag concern_kind: untestable_outcome when the requirement is clear and specific but still cannot produce a testable outcome:
         - Specifies ONLY what the system must NOT do (negative-only) without defining the expected positive behavior or bounding the input space for absence verification (e.g. "shall not return raw exceptions").
         - Uses universal quantifiers ("all", "every", "always", "any", "never") over an unbounded or undefined input domain (e.g. "all valid inputs", "always completes"). Exception: do NOT flag when the domain is bounded by a finite, enumerable reference in the requirement or appendix.
         - Has a circular or deferred oracle ("as defined in the spec", "per the standard practice") that no appendix or sibling spec resolves.
-      Concern evidence: when you flag untestable_outcome, append one concern_evidence entry with kind="untestable_outcome", evidence set to a one-sentence explanation of why the requirement cannot produce a testable outcome, and test_type_if_fixed set to unit | integration | e2e | manual (the test type that becomes possible after applying suggested_improvement).
 
       --- Rule family D: IMPLEMENTATION_LEAK vs LEGITIMATE_CONSTRAINT ---
       Trigger condition: the requirement describes internal state, implementation technique, or design intent that produces no system-visible output, artifact, or state change a tester could observe from outside (e.g. "shall use the repository pattern", "shall ensure data integrity", "shall encrypt data at rest using AES-256", "shall not log credentials in plaintext").
 
       When triggered, decide: is there an external mandate that grounds this constraint?
-        - YES (project_context, appendix, or the requirement itself cites a regulation, security policy, contract, interoperability standard, or compliance obligation) → flag concern_kind: legitimate_constraint. Append one concern_evidence entry with kind="legitimate_constraint", evidence naming the external mandate (regulation, policy, standard, or contract clause), and verification_method naming the specific non-behavioral mechanism (e.g. "configuration audit per security policy", "code review against SOC-2 control X", "key-management inspection per encryption-at-rest standard"). Set suggested_improvement to the original requirement text augmented with a one-line verification annotation (e.g. "<original>. (Verification: <verification_method>.)").
-        - NO (the constraint appears to be the spec author's preference with no external grounding) → flag concern_kind: implementation_leak. Append one concern_evidence entry with kind="implementation_leak" and evidence naming the internal-choice clause and why it has no observable consequence. Set suggested_improvement to one of:
+        - YES (project_context, appendix, or the requirement itself cites a regulation, security policy, contract, interoperability standard, or compliance obligation) → flag concern_kind: legitimate_constraint. Set suggested_improvement to the original requirement text augmented with a one-line verification annotation (e.g. "<original>. (Verification: <verification_method>.)"). (The concern_evidence entry, including verification_method, is required per the global table above.)
+        - NO (the constraint appears to be the spec author's preference with no external grounding) → flag concern_kind: implementation_leak. Set suggested_improvement to one of:
           (a) A behavioral rewrite that exposes an observable consequence of the original constraint (e.g. "shall ensure data integrity" → "after a process crash mid-write, on restart no partial records exist in the persistence layer").
           (b) If no behavioral rewrite is possible, "REMOVE: relocate to design documentation. Original: <original requirement text>".
 
-      --- Multi-row sequence awareness (applies to all rule families) ---
-      If a requirement ends with ":" or "as follows:" and subsequent spec_ids share the same module_tag, evaluate the sequence as a unit. Do not flag a header row if the detail rows supply the missing specifics. Conversely, do not flag detail rows for lacking preconditions if the header row provides them. Only flag when the entire sequence still leaves the oracle incomplete.
-
       --- Compound items ---
       A single spec may trigger multiple rule families (e.g., a requirement that is vague AND would still be untestable even if rewritten). Emit ONE manual_resolution_item with concern_kinds[] = ["vague_language", "untestable_outcome"], append one concern_evidence entry per listed kind (so concern_evidence[] has the same length as concern_kinds[]), and write a SINGLE suggested_improvement that addresses every listed concern_kind together. Do not emit two separate items for the same spec_id.
+
+      Worked example — 3-kind compound (validator for the per-check-then-decide structure):
+        Requirement: "When CORE issues a rejection for an order or manifest record, the CORE module shall typically handle all invalid input scenarios by not returning raw internal exception details, formatted per the appendix-defined error envelope."
+        Check A: "typically" is a hedge phrase on observable behavior → FIRES. Triggering phrase: "typically".
+        Check B: "the appendix-defined error envelope" defers to an appendix that does not define an error-envelope dictionary → FIRES (UNRESOLVED INDEFINITE per Stage 0.5; Stage 1.B will emit / synthesize an appendix_recommendation).
+        Check C: "all invalid input scenarios" is an unbounded universal over an undefined domain; "not returning raw internal exception details" is negative-only without bounded positive behavior. Both sub-rules trigger Check C → FIRES.
+        Check D: no internal-design constraint named → does NOT fire.
+        Aggregate: concern_kinds = ["vague_language", "unresolvable_reference", "untestable_outcome"]. concern_evidence has three entries, one per kind. The single suggested_improvement rewrites all three issues together. DO NOT stop after Check A fires — the other two are independently triggered and must be captured.
 
       --- Rewriting granularity (applies to every suggested_improvement you author) ---
       When you author suggested_improvement, name what is observable from outside the module's boundary at a level a tester could verify, but stop short of locking down design choices. Apply these principles:
@@ -1114,13 +1198,11 @@ prompts:
 
       Selective rewrite: when the requirement contains multiple sentences and the flag(s) target only some of them, rewrite ONLY the flagged sentences. Keep unflagged sentences verbatim — do not paraphrase, reorder, or "tighten" them for stylistic uniformity. The exception is when the rewrite of a flagged sentence breaks inter-sentence logic with an unflagged sentence (e.g. it removes a referent that a later sentence relies on); in that case, also adjust the affected sentence(s) — and mention the cascading change inline so a reviewer sees the full edit footprint. The reviewer's job is to compare the targeted change to the original, not to diff prose blocks.
 
-        1. Name fields, not their types, formats, nullability, or defaults. ("Returns a response containing id, name, email, and created_at." — not "Returns {id: int, name: string, email: string, created_at: ISO8601}".)
-        2. Name behavior shape (success vs error, sorted, atomic), not the wire encoding (HTTP status code, envelope shape, schema). Cite appendix-supplied values when they exist; otherwise stay abstract.
-        3. Name invariants (uniqueness, ordering, atomicity), not the mechanism that enforces them (indexes, locks, algorithms).
-        4. Cite any concrete value the requirement already supplies — including values inside parenthetical examples ("(e.g., 4 characters)", "such as 30 seconds") — verbatim or paraphrased without loss of specificity. Use abstract placeholders ("the configured value", "the documented limit") ONLY when no value is supplied by the requirement or appendix. Never invent a number, threshold, latency, or retry count the requirement and appendix did not supply (this is the AC honesty rule applied to suggested_improvement). Never replace a supplied concrete value with a "configured" placeholder.
-        5. Internal choices — algorithms, data structures, libraries, frameworks, persistence schemas, log formats, UI pixel positions, error message wording — belong in design documentation, not in the spec.
-        6. Length matches normative substance: count the distinct normative claims in the original (excluding internal-choice sentences covered by rule 5). The rewrite contains at least that many claims, expressed as sentences or coordinated clauses. A 4-claim original yields a 4-claim rewrite, not a 1-claim summary.
-        7. When in doubt, prefer the rewrite that Stage 2 of this prompt could still extract honest AC from without inventing details.
+      Principles:
+        1. **Name what is observable, not how it is implemented.** Name fields (not their types, formats, nullability, defaults), name behavior shape (not wire encoding — HTTP status, envelope shape, schema), name invariants (not mechanisms — indexes, locks, algorithms). Cite appendix-supplied values when they exist; otherwise stay abstract.
+        2. **Cite values the requirement already supplies — verbatim.** Including values inside parenthetical examples ("(e.g., 4 characters)", "such as 30 seconds"). Use abstract placeholders ("the configured value", "the documented limit") ONLY when no value is supplied by the requirement or appendix. Never replace a supplied concrete value with a placeholder. Never invent a number, threshold, latency, or retry count the requirement and appendix did not supply (this is the AC honesty rule applied to suggested_improvement).
+        3. **Internal choices belong in design documentation, not in the spec.** Algorithms, data structures, libraries, frameworks, persistence schemas, log formats, UI pixel positions, error message wording — none of these belong in `suggested_improvement`.
+        4. **Length matches normative substance.** Count the distinct normative claims in the original (excluding internal-choice sentences). The rewrite contains at least that many claims, expressed as sentences or coordinated clauses. A 4-claim original yields a 4-claim rewrite, not a 1-claim summary.
 
       Worked example A — do not invent values:
         Original requirement: "Validates input quickly."
@@ -1152,20 +1234,11 @@ prompts:
         Why right: only sentence 2 changes ("should typically include" → "shall include"). Sentences 1, 3, 4 are kept verbatim because they are unflagged AND the rewrite of sentence 2 does not break inter-sentence logic with them. The reviewer sees a one-sentence diff and can validate the fix without re-reading the rest of the requirement.
 
       Dictionary-shaped gaps — keep abstract, then escalate via Stage 1.B:
-      When a rewrite would otherwise need to invent a value of a kind organizations typically maintain in a shared dictionary (error codes, validation formats, input contracts, configuration parameters, approved technology conventions, data dictionaries), and no such dictionary is supplied in appendix or sibling specs:
-        1. Keep the suggested_improvement abstract — use placeholders like "the configured value", "the standard format", "the documented contract". Do NOT invent the missing value.
-        2. The gap will be escalated as an appendix_recommendation entry in Stage 1.B (full mode only). Track which spec_ids hit which gap so Stage 1.B can cluster them.
+      Stage 0.5 already classified every deferred reference in this spec. Only UNRESOLVED references are eligible for Stage 1.B escalation. Do NOT emit an appendix_recommendation for a reference Stage 0.5 marked RESOLVED.
 
-      --- Consequence classification (REQUIRED on every manual_resolution_item) ---
-      For each manual_resolution_item, set consequence_class to the worst-case impact if this requirement is implemented incorrectly:
-        - cosmetic: presentational only (UI label, formatting, copy). No data or function impact.
-        - functional_defect: a feature does not work as intended, but no data is corrupted and no safety impact.
-        - data_integrity: incorrect, lost, or corrupted data; persistence or transmission errors that affect downstream truth.
-        - safety_or_clinical: potential harm to users, regulatory non-compliance, or clinical-decision impact (only when project_context indicates the system has clinical/safety surface).
-
-      Set worst_case to a concrete one-line description of what would happen in that worst case. Be specific: "user sees the wrong currency symbol" beats "display issue"; "patient record is associated with the wrong patient on import" beats "data error".
-
-      If you cannot reasonably estimate the consequence (the requirement is too vague to know what it controls), default to functional_defect with worst_case = "unknown — requirement too vague to estimate impact" and ensure vague_language is among concern_kinds.
+      For each UNRESOLVED reference whose missing value is of a kind organizations typically maintain in a shared dictionary (error codes, validation formats, configuration parameters, named enumerations, ordering rules):
+        1. Keep the suggested_improvement abstract — "the configured value", "the standard format". Do NOT invent the missing value.
+        2. Track the spec_id for Stage 1.B clustering.
 
       --- For CLEAN specs (no concerns flagged) ---
         - In enrich_mode = "triage": emit nothing for this spec. Stop.
@@ -1180,11 +1253,8 @@ prompts:
 
       Common dictionary kinds (use these labels when they fit; invent free-text labels for novel kinds):
         - error code registry — when specs reference distinguishable error responses without defined error codes.
-        - validation format dictionary — when specs reference "standard format" for email/phone/postal/etc. without a defined format spec.
-        - input contract registry — when specs require payload validation without per-endpoint contracts.
         - configuration parameter table — when specs reference "the configured value" without a known config key.
-        - approved technology conventions — when specs constrain implementation but no convention doc exists to ground the constraint.
-        - data dictionary — when specs reference field types, domain values, or reference data without definitions.
+      Other kinds (validation formats, ordering rules, named enumerations, observability-field dictionaries, etc.) follow the same pattern: pick a free-text label that names the missing artifact.
 
       Each appendix_recommendation entry has:
         - recommendation_id: stable string of the form "AR1", "AR2", ..., unique within this output.
@@ -1193,7 +1263,9 @@ prompts:
         - affected_spec_ids: every spec_id whose rewrite stayed abstract because this dictionary did not exist. May be a single id when only one spec was affected.
         - suggested_dictionary_shape: one-line description of what the missing dictionary should contain (e.g. "A table mapping each error code to its HTTP status, user-facing message, and triggering condition"). Scoped enough that an operator can decide whether to create it.
 
-      Cluster rule: emit ONE recommendation per missing dictionary kind, listing every affected spec_id. Do not emit per-spec recommendations.
+      Cluster rule: emit ONE recommendation per missing dictionary kind, listing every affected spec_id. Do not emit duplicate per-spec recommendations for the same dictionary kind.
+
+      Note on CLEAN-pending specs: `affected_spec_ids[]` may include CLEAN specs (specs not present in manual_resolution_items[]). When a spec's only UNRESOLVED deferred reference uses INDEFINITE wording, the spec is CLEAN but PENDING — its AC was authored with abstract placeholders awaiting the dictionary you are recommending. The orchestrator backstops coverage: any CLEAN-pending spec whose `dictionary_label` (from its enrichment's `pending_dictionaries[]`) is not already in some recommendation's `affected_spec_ids[]` will trigger a synthesized recommendation with the agent's label. Your job is to cluster what naturally clusters and emit named recommendations for those; isolated specs are handled deterministically downstream.
 
       Empty result: if no rewrite relied on a dictionary-shaped placeholder, emit appendix_recommendations[] as an empty array.
 
@@ -1267,18 +1339,16 @@ prompts:
       ============================================================
       STAGE 4 — COVERAGE SELF-CHECK (full mode only)
       ============================================================
-      Before assembling output, verify each of the following for every spec_id you processed:
+      Before assembling output, verify each of the following for every spec_id you processed. The JSON Schema validator enforces required fields, enum membership, and minItems/minLength; this list covers only semantic checks the schema cannot perform.
         1. The spec_id appears in EXACTLY ONE of enrichments[] or manual_resolution_items[].
-        2. If in enrichments[]: acceptance_criteria is non-empty AND criteria[] is non-empty (every enrichable spec carries at least one criterion). criterion_ids are unique within the spec and all match "AC<N>".
-        3. Every criterion's evidence_type is exactly one value from the enum (unit_test_execution_record / integration_test_execution_record / static_analysis_report / audit_trail / system_log / defect_report / build_version_record / ui_screenshot / screen_recording / serial_debug_log / network_packet_capture / database_export / api_response_log / performance_profiler_output).
-        4. Every criterion whose evidence_type is unit_test_execution_record or integration_test_execution_record is covered by at least one planned_test_case.criteria_ids[] entry.
-        5. Every test_plan criteria_ids[] entry references a criterion_id that exists in this spec's criteria[].
-        6. No two criterion_ids collide within a single spec; no two test_ids collide within a single spec's test_plan.
-        7. Every manual_resolution_item has consequence_class set and worst_case populated with concrete text.
-        8. Every manual_resolution_item has concern_evidence[] of the same length as concern_kinds[]. The set of concern_evidence[].kind values equals the set of concern_kinds[] values exactly — no missing entries, no extras.
-        9. Every concern_evidence entry has non-empty `evidence`. Entries with kind="untestable_outcome" populate test_type_if_fixed (one of unit | integration | e2e | manual). Entries with kind="legitimate_constraint" populate verification_method.
-        10. Every appendix_recommendation has a non-empty affected_spec_ids[]; every listed spec_id appears as an MR item in this output OR has a suggested_improvement that uses the abstract placeholder language the recommendation cites. Do not list spec_ids that were not actually affected.
-        11. Every planned_test_case has intent populated. framework_hint / target_file_hint / target_case_hint are absent unless explicitly grounded in project_context or appendix.
+        2. Every criterion whose evidence_type is unit_test_execution_record or integration_test_execution_record is covered by at least one planned_test_case.criteria_ids[] entry.
+        3. Every test_plan criteria_ids[] entry references a criterion_id that exists in this spec's criteria[].
+        4. No two criterion_ids collide within a single spec; no two test_ids collide within a single spec's test_plan.
+        5. Every manual_resolution_item has concern_evidence[] of the same length as concern_kinds[]. The set of concern_evidence[].kind values equals the set of concern_kinds[] values exactly — no missing entries, no extras.
+        6. Every concern_evidence entry has non-empty `evidence`. Entries with kind="untestable_outcome" populate test_type_if_fixed (one of unit | integration | e2e | manual). Entries with kind="legitimate_constraint" populate verification_method.
+        7. Every appendix_recommendation's listed spec_id appears as an MR item in this output OR has a suggested_improvement that uses the abstract placeholder language the recommendation cites. Do not list spec_ids that were not actually affected.
+        8. Every planned_test_case has intent populated. framework_hint / target_file_hint / target_case_hint are absent unless explicitly grounded in project_context or appendix.
+        9. For every manual_resolution_item, confirm you ran all four Stage 1 checks (A, B, C, D) on the spec before emitting. If any check was skipped because an earlier check fired, re-run the skipped check now and append any additional concern_kinds (and matching concern_evidence entries) it produces. The per-check-then-decide structure exists precisely to prevent silent downgrade of compound defects to single-kind.
 
       If any check fails for a spec, fix it before emitting output. The schema enforces structural shape; this stage enforces semantic coverage that the schema cannot.
 

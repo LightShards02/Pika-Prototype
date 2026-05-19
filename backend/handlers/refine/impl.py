@@ -28,6 +28,7 @@ from core.resolution import (
     RESOLUTION_SOURCE_VALIDATION,
     generate_resolution_template,
 )
+from core.vocab_loader import resolve_control_vocab_content
 
 from handlers.refine.config import _get_refine_cfg
 from handlers.refine.decomposition import _build_decomposition_items, run_decomposition_check
@@ -65,26 +66,6 @@ def _validate_required_columns(headers: list[str], required: list[str]) -> None:
     missing = [col for col in required if col.lower() not in lower_headers]
     if missing:
         raise WorksetValidationError(f"SADS CSV missing required columns: {', '.join(missing)}")
-
-
-_SEVERITY_ORDER = ("safety_or_clinical", "data_integrity", "functional_defect", "cosmetic")
-
-
-def _format_severity_breakdown(items: list[dict[str, Any]]) -> str:
-    """Return a comma-separated severity breakdown like '1 safety_or_clinical, 3 functional_defect'.
-
-    Zero-count classes are skipped. Items missing consequence_class are tallied as 'unknown'.
-    """
-    counts = Counter(
-        (item.get("consequence_class") or "unknown") for item in items
-    )
-    parts: list[str] = []
-    for cls in _SEVERITY_ORDER:
-        if counts.get(cls, 0) > 0:
-            parts.append(f"{counts[cls]} {cls}")
-    if counts.get("unknown", 0) > 0:
-        parts.append(f"{counts['unknown']} unknown")
-    return ", ".join(parts) if parts else "unspecified"
 
 
 # Canonical resolution options. Injected by the v3->v2 translator so the agent
@@ -131,9 +112,8 @@ def _synthesize_untestable_reason(item: dict[str, Any], concern_kinds: list[str]
     """Synthesize a v1-shaped untestable_reason for desktop-app rendering.
 
     Used only by the v3->v2 legacy translation. Prefers the concern_evidence
-    entry for kind="untestable_outcome" when present; otherwise builds a short
-    string from the dominant concern_kind plus worst_case so the gate panel has
-    something to display.
+    entry for kind="untestable_outcome" when present; otherwise returns a short
+    label keyed on the dominant concern_kind.
     """
     evidence_map = _evidence_by_kind(item)
     untestable_entry = evidence_map.get("untestable_outcome")
@@ -149,11 +129,7 @@ def _synthesize_untestable_reason(item: dict[str, Any], concern_kinds: list[str]
         "vague_language": "Requirement uses vague language",
     }
     primary = next((k for k in concern_kinds if k in label_map), "untestable_outcome")
-    base = label_map.get(primary, "Quality concern flagged")
-    worst = item.get("worst_case")
-    if isinstance(worst, str) and worst.strip():
-        return f"{base}. Worst case: {worst.strip()}"
-    return base
+    return label_map.get(primary, "Quality concern flagged")
 
 
 def _translate_v3_item_to_v2_legacy(item: dict[str, Any]) -> dict[str, Any]:
@@ -206,13 +182,9 @@ def _translate_v3_item_to_v2_legacy(item: dict[str, Any]) -> dict[str, Any]:
 
     # Pass v3-only metadata through as extra fields. The desktop-app's transform
     # reads named fields and ignores unknowns; the CLI resolution-template generator
-    # can surface these in resolutions.yaml so operators see severity/grounding info.
+    # can surface these in resolutions.yaml so operators see grounding info.
     if isinstance(item.get("concern_kinds"), list):
         out["concern_kinds"] = list(item["concern_kinds"])
-    if isinstance(item.get("consequence_class"), str):
-        out["consequence_class"] = item["consequence_class"]
-    if isinstance(item.get("worst_case"), str):
-        out["worst_case"] = item["worst_case"]
     legitimate_entry = evidence_map.get("legitimate_constraint")
     if isinstance(legitimate_entry, dict):
         vm = legitimate_entry.get("verification_method")
@@ -257,6 +229,124 @@ def _filter_by_consensus(
                 representatives[sid] = item
 
     return [representatives[sid] for sid in sorted(representatives)]
+
+
+def _normalize_label(label: str) -> str:
+    """Lowercase + collapse whitespace, for case-insensitive dictionary-label match."""
+    return " ".join((label or "").lower().strip().split())
+
+
+def _fill_appendix_coverage_gaps(
+    enrichments: list[dict[str, Any]],
+    recommendations: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Deterministic backstop for the Stage 0.5 INDEFINITE-pending coverage invariant.
+
+    Reads enrichments[].pending_dictionaries[].dictionary_label across enrichments
+    and reconciles it against the agent-emitted appendix_recommendations[]:
+      1. For each (spec_id, dictionary_label) pair claimed by an enrichment, check
+         whether an existing recommendation with matching normalized dictionary_type
+         already lists that spec_id in affected_spec_ids[].
+      2. If a matching recommendation exists but the spec_id is missing, append it.
+      3. If no matching recommendation exists, queue the pair for synthesis.
+      4. Synthesize one recommendation per cluster of unmatched labels with continued
+         AR ID numbering.
+
+    Returns the augmented recommendations list (original + appended spec_ids +
+    synthesized entries). Pure function; does not mutate inputs.
+    """
+    if not enrichments:
+        return list(recommendations)
+
+    # Step 1: collect claimed (spec_id, normalized_label) and label->canonical_label.
+    claimed: list[tuple[str, str, str]] = []  # (spec_id, normalized_label, original_label)
+    for enr in enrichments:
+        if not isinstance(enr, dict):
+            continue
+        sid = str(enr.get("spec_id", "")).strip()
+        if not sid:
+            continue
+        pending = enr.get("pending_dictionaries") or []
+        if not isinstance(pending, list):
+            continue
+        for entry in pending:
+            if not isinstance(entry, dict):
+                continue
+            label = entry.get("dictionary_label")
+            if not isinstance(label, str) or not label.strip():
+                continue
+            claimed.append((sid, _normalize_label(label), label.strip()))
+
+    if not claimed:
+        return list(recommendations)
+
+    # Step 2: index existing recommendations by normalized dictionary_type.
+    # Deep-copy entries we may mutate (affected_spec_ids appends).
+    out_recs: list[dict[str, Any]] = []
+    rec_index: dict[str, dict[str, Any]] = {}
+    for rec in recommendations:
+        if not isinstance(rec, dict):
+            out_recs.append(rec)
+            continue
+        copy = dict(rec)
+        # Ensure affected_spec_ids is a list we can mutate
+        copy["affected_spec_ids"] = list(copy.get("affected_spec_ids") or [])
+        out_recs.append(copy)
+        dt = copy.get("dictionary_type")
+        if isinstance(dt, str) and dt.strip():
+            rec_index[_normalize_label(dt)] = copy
+
+    # Step 3: walk claimed pairs; either append to existing or queue for synthesis.
+    queued_for_synthesis: dict[str, dict[str, Any]] = {}  # normalized_label -> {original_label, spec_ids}
+    for sid, norm_label, orig_label in claimed:
+        existing = rec_index.get(norm_label)
+        if existing is not None:
+            existing_ids = existing["affected_spec_ids"]
+            if sid not in existing_ids:
+                existing_ids.append(sid)
+            continue
+        cluster = queued_for_synthesis.setdefault(
+            norm_label, {"original_label": orig_label, "spec_ids": []}
+        )
+        if sid not in cluster["spec_ids"]:
+            cluster["spec_ids"].append(sid)
+
+    # Step 4: synthesize one recommendation per uncovered cluster.
+    if queued_for_synthesis:
+        # Find the highest existing AR index to continue numbering.
+        next_idx = 1
+        for rec in out_recs:
+            rid = rec.get("recommendation_id") if isinstance(rec, dict) else None
+            if isinstance(rid, str) and rid.startswith("AR"):
+                try:
+                    n = int(rid[2:])
+                    if n >= next_idx:
+                        next_idx = n + 1
+                except ValueError:
+                    pass
+
+        for _, cluster in sorted(queued_for_synthesis.items()):
+            label = cluster["original_label"]
+            specs = sorted(cluster["spec_ids"])
+            count = len(specs)
+            synthetic = {
+                "recommendation_id": f"AR{next_idx}",
+                "dictionary_type": label,
+                "rationale": (
+                    f"Auto-emitted to backstop coverage for {count} "
+                    f"spec{'s' if count != 1 else ''} whose enrichment flagged this "
+                    "dictionary as pending."
+                ),
+                "affected_spec_ids": specs,
+                "suggested_dictionary_shape": (
+                    f"Define the {label} referenced by the affected specs so a future "
+                    "refine run can replace their placeholder AC with concrete values."
+                ),
+            }
+            out_recs.append(synthetic)
+            next_idx += 1
+
+    return out_recs
 
 
 def _resolve_refine_schema(config: dict[str, Any], project_root: Path, schema_key: str) -> Path:
@@ -374,11 +464,12 @@ def _run_refine_agents(
     minimal_design_csv = rows_to_csv(minimal_headers, rows)
 
     from core import memory_store as _memory_store
+    control_vocab_section = resolve_control_vocab_content(config, project_root)
     common_base: dict[str, Any] = {
         "project_context": context_text,
         "manual_resolution_file": str(manual_dir),
         "run_summary_file": str(run_dir / "summary.json"),
-        "control_vocab_section": "",
+        "control_vocab_section": control_vocab_section,
         "appendix_content": appendix_text,
         "design_spec_csv": minimal_design_csv,
         "memory": _memory_store.memory_template_value(ctx),
@@ -400,7 +491,7 @@ def _run_refine_agents(
 
     _report_refine_step(
         "Agents", "running",
-        f"quality auditor x{agent_replicas} (1 full + {agent_replicas - 1} triage)",
+        f"quality auditor x{agent_replicas} (all full mode)",
     )
 
     def _make_caller(template_vars: dict[str, Any], schema_path: Path, idx: int, mode: str):
@@ -418,13 +509,15 @@ def _run_refine_agents(
     auditor_outputs: list[dict[str, Any] | None] = [None] * agent_replicas
     agent_errors: list[str] = []
 
+    # All replicas run in full mode. AC-authoring obligation acts as the forcing
+    # function that makes Stage 0.5 resolution discipline apply uniformly; triage
+    # mode (the legacy 1-full + N-1-triage layout) was found to under-apply Stage 0.5.
+    # Enrichments[] and appendix_recommendations[] are still taken from instance 0
+    # alone to avoid reconciling AC text across replicas.
     with ThreadPoolExecutor(max_workers=agent_replicas) as executor:
         futures = {}
         for i in range(agent_replicas):
-            if i == 0:
-                tvars, sch, mode = auditor_full_vars, auditor_full_schema, "full"
-            else:
-                tvars, sch, mode = auditor_triage_vars, auditor_triage_schema, "triage"
+            tvars, sch, mode = auditor_full_vars, auditor_full_schema, "full"
             futures[executor.submit(_make_caller(tvars, sch, i, mode))] = i
 
         for future, idx in futures.items():
@@ -437,6 +530,14 @@ def _run_refine_agents(
                 agent_errors.append(f"auditor[{idx}]: {exc}")
                 _report_refine_step(f"Agents.replica.{idx}", "failed", str(exc))
 
+    # Persist whatever replicas DID succeed before deciding to fail. Lets operators
+    # inspect partial runs when one replica hits an infrastructure error (e.g. Loca
+    # chunked-read drops). On success this is a no-op move; on failure it's the
+    # difference between "no artifacts" and "3 of 4 replicas available for diagnosis".
+    for i in range(agent_replicas):
+        if auditor_outputs[i] is not None:
+            _write_json(run_dir / f"auditor_output_{i}.json", auditor_outputs[i])
+
     if agent_errors:
         detail = "; ".join(agent_errors)
         _report_refine_step("Agents", "failed", detail)
@@ -444,10 +545,6 @@ def _run_refine_agents(
 
     completed_stages.append("agents")
     log_lifecycle_event("lifecycle_agent_invoked", command="refine", run_id=ctx.run_id)
-
-    # Per-instance outputs (preserved for debugging + resume).
-    for i in range(agent_replicas):
-        _write_json(run_dir / f"auditor_output_{i}.json", auditor_outputs[i] or {})
 
     # Consensus filtering across replicas (single rule family now).
     all_instance_items: list[list[dict[str, Any]]] = [
@@ -464,19 +561,6 @@ def _run_refine_agents(
             if isinstance(entry, dict):
                 appendix_recommendations.append(entry)
 
-    # Persist consolidated v3 output.
-    _write_json(run_dir / "auditor_output.json", {
-        "manual_resolution_items": consensus_items,
-        "appendix_recommendations": appendix_recommendations,
-    })
-    _write_json(run_dir / "consensus_meta.json", {
-        "agent_replicas": agent_replicas,
-        "consensus_min_votes": consensus_min_votes,
-        "items_pre_consensus": sum(len(items) for items in all_instance_items),
-        "items_post_consensus": len(consensus_items),
-        "appendix_recommendations": len(appendix_recommendations),
-    })
-
     # Collect enrichments from instance 0 (full mode only).
     # Guard: skip any spec_id that also appears in the consensus MR items.
     flagged_spec_ids: set[str] = {
@@ -492,6 +576,27 @@ def _run_refine_agents(
             sid = str(entry.get("spec_id", "")).strip()
             if sid and sid not in flagged_spec_ids:
                 enrichments.append(entry)
+
+    # Deterministic coverage backstop: ensure every enrichment's pending_dictionaries
+    # entry appears in some appendix_recommendation's affected_spec_ids[]. Appends
+    # uncovered spec_ids to matching existing recs and synthesizes new recs for
+    # unmatched labels. See _fill_appendix_coverage_gaps for the algorithm.
+    appendix_recommendations = _fill_appendix_coverage_gaps(
+        enrichments, appendix_recommendations,
+    )
+
+    # Persist consolidated v3 output.
+    _write_json(run_dir / "auditor_output.json", {
+        "manual_resolution_items": consensus_items,
+        "appendix_recommendations": appendix_recommendations,
+    })
+    _write_json(run_dir / "consensus_meta.json", {
+        "agent_replicas": agent_replicas,
+        "consensus_min_votes": consensus_min_votes,
+        "items_pre_consensus": sum(len(items) for items in all_instance_items),
+        "items_post_consensus": len(consensus_items),
+        "appendix_recommendations": len(appendix_recommendations),
+    })
 
     # Apply enrichments (acceptance_criteria only) to the working rows.
     # evidence_type is now per-criterion and lives in the per-spec test_plan
@@ -571,7 +676,6 @@ def _run_refine_agents(
             "dry_run": ctx.dry_run,
         }
 
-    severity = _format_severity_breakdown(consensus_items)
     rec_suffix = (
         f"; {len(appendix_recommendations)} appendix gap(s)"
         if appendix_recommendations else ""
@@ -579,7 +683,7 @@ def _run_refine_agents(
     _report_refine_step(
         "Refine",
         "blocked",
-        f"{len(consensus_items)} items require review (severity: {severity}){rec_suffix}",
+        f"{len(consensus_items)} items require review{rec_suffix}",
     )
     v2_items = [_translate_v3_item_to_v2_legacy(item) for item in consensus_items]
     _write_resolution_block(
@@ -595,7 +699,6 @@ def _run_refine_agents(
     _write_json(run_dir / "summary.json", {
         "status": "blocked",
         "blocking_items": len(consensus_items),
-        "severity_breakdown": severity,
         "appendix_recommendations": appendix_recommendations,
         "specs_enriched": len(enrichments),
         "input_design_spec_path": str(design_path),
@@ -780,14 +883,13 @@ def _resume_refine(
                     "dry_run": ctx.dry_run,
                 }
 
-            severity = _format_severity_breakdown(consensus_items)
             rec_suffix = (
                 f"; {len(appendix_recommendations)} appendix gap(s)"
                 if appendix_recommendations else ""
             )
             _report_refine_step(
                 "Refine", "blocked",
-                f"{len(consensus_items)} items require review (severity: {severity}){rec_suffix}",
+                f"{len(consensus_items)} items require review{rec_suffix}",
             )
             v2_items = [_translate_v3_item_to_v2_legacy(item) for item in consensus_items]
             _write_resolution_block(
@@ -799,7 +901,6 @@ def _resume_refine(
             _write_json(run_dir / "summary.json", {
                 "status": "blocked",
                 "blocking_items": len(consensus_items),
-                "severity_breakdown": severity,
                 "appendix_recommendations": appendix_recommendations,
                 "input_design_spec_path": str(design_path),
             })

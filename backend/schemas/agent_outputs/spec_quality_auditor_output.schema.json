@@ -47,6 +47,22 @@
         "test_plan": {
           "$ref": "#/$defs/test_plan",
           "description": "Per-spec planned test cases for criteria whose evidence_type calls for an executed test. planned_test_cases may be empty when no criterion's evidence_type requires test authoring."
+        },
+        "pending_dictionaries": {
+          "type": "array",
+          "description": "Dictionary-shaped gaps this spec depends on but that the appendix does not yet supply. The orchestrator uses this list to ensure every gap appears in some appendix_recommendation's affected_spec_ids[]. May be empty or omitted when the spec uses no UNRESOLVED-INDEFINITE deferred references.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["dictionary_label"],
+            "properties": {
+              "dictionary_label": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Natural-language name for the missing dictionary (e.g. 'correlation key dictionary', 'observability field dictionary'). Same shape as appendix_recommendation.dictionary_type. The orchestrator clusters specs by case-insensitive normalization of this label when synthesizing coverage-fill recommendations and when matching against existing agent-authored ARs."
+              }
+            }
+          }
         }
       }
     },
@@ -156,8 +172,6 @@
         "spec_id",
         "concern_kinds",
         "concern_evidence",
-        "consequence_class",
-        "worst_case",
         "suggested_improvement"
       ],
       "properties": {
@@ -197,21 +211,6 @@
           "minItems": 1,
           "items": { "$ref": "#/$defs/concern_evidence_entry" },
           "description": "Per-kind diagnostic payload — one entry per concern_kind flagged on this item. Each entry's 'kind' must match a value in concern_kinds. The 'evidence' field carries the kind-specific diagnostic content: vague_language -> the exact phrase from the requirement that triggered the rule; untestable_outcome -> a one-sentence explanation of why the requirement cannot produce a testable outcome; unresolvable_reference -> the unresolved reference text or the missing/conflicting appendix entry; implementation_leak -> the internal-choice clause and why it has no observable consequence; legitimate_constraint -> the external mandate that grounds the constraint."
-        },
-        "consequence_class": {
-          "type": "string",
-          "enum": [
-            "cosmetic",
-            "functional_defect",
-            "data_integrity",
-            "safety_or_clinical"
-          ],
-          "description": "Worst-case impact if this requirement is implemented incorrectly. cosmetic: presentational only, no functional or data impact. functional_defect: feature does not work as intended. data_integrity: incorrect, lost, or corrupted data. safety_or_clinical: potential harm to users or clinical/regulatory exposure."
-        },
-        "worst_case": {
-          "type": "string",
-          "minLength": 1,
-          "description": "One-line concrete description of the worst observable outcome that justifies the consequence_class."
         },
         "suggested_improvement": {
           "type": "string",
